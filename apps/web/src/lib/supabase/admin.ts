@@ -13,8 +13,8 @@
  */
 import { createClient } from '@supabase/supabase-js'
 
-import { clientEnv, getServerOnlyEnv } from '@/lib/env'
-import type { Database } from '@/lib/supabase/database.types'
+import { clientEnv, getServerOnlyEnv } from '@/config/env'
+import type { Database } from '@/types/database.types'
 
 if (typeof window !== 'undefined') {
   throw new Error(

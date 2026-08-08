@@ -1,5 +1,5 @@
 /**
- * lib/env.ts
+ * config/env.ts
  * Configuração de ambiente (item 26 — Sprint Foundation).
  *
  * Toda variável de ambiente usada pela aplicação passa por este módulo —

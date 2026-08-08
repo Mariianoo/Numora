@@ -1,23 +1,23 @@
 /**
- * features/authentication/repositories/auth.repository.ts
+ * features/auth/repositories/auth.repository.ts
  * Infrastructure layer da feature de auth (PROJECT_RULES.md §4.2,
  * DEVELOPMENT_GUIDE.md §14) — única camada que conhece o SDK do Supabase
  * Auth diretamente. `AuthService` depende apenas da interface `AuthRepository`,
  * nunca desta implementação diretamente.
  *
- * Escopo desta sprint: apenas operações de SESSÃO (obter, observar, encerrar).
- * Métodos de login/cadastro/OAuth/MFA/recuperação de senha são
- * deliberadamente NÃO incluídos aqui — pertencem a uma sprint futura de
- * "Auth Flows", fora do escopo de "Authentication Foundation".
+ * Escopo: operações de SESSÃO (obter, observar, encerrar) + login via Google
+ * OAuth. Demais métodos (cadastro por email/senha, outros provedores, MFA,
+ * recuperação de senha) ficam para uma etapa futura de "Auth Flows".
  */
-import type { Session } from '@supabase/supabase-js'
+import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { AuthSession, AuthUser } from '@/features/authentication/types/types'
+import type { AuthSession, AuthUser } from '@/features/auth/types'
 
 export interface AuthRepository {
   getSession(): Promise<AuthSession | null>
   onAuthStateChange(callback: (session: AuthSession | null) => void): () => void
+  signInWithGoogle(): Promise<void>
   signOut(): Promise<void>
 }
 
@@ -27,9 +27,9 @@ function toAuthSession(session: Session | null): AuthSession | null {
   const user: AuthUser = {
     id: session.user.id,
     email: session.user.email ?? null,
-    // `role` chega via custom claim do JWT (API_CONVENTIONS.md §2 — claims
-    // mínimas incluem `role`). Fallback para 'user' se a claim ainda não
-    // estiver presente no token (ex.: sessão criada antes da claim existir).
+    // `role` chega via custom claim do JWT. Fallback para 'user' se a claim
+    // ainda não estiver presente no token (ex.: sessão criada antes da
+    // claim existir).
     role: (session.user.app_metadata?.role as AuthUser['role'] | undefined) ?? 'user',
   }
 
@@ -55,11 +55,23 @@ export function createSupabaseAuthRepository(): AuthRepository {
     onAuthStateChange(callback) {
       const {
         data: { subscription },
-      } = supabase.auth.onAuthStateChange((_event, session) => {
+      } = supabase.auth.onAuthStateChange((_event: AuthChangeEvent, session: Session | null) => {
         callback(toAuthSession(session))
       })
 
       return () => subscription.unsubscribe()
+    },
+
+    async signInWithGoogle() {
+      const { error } = await supabase.auth.signInWithOAuth({
+        provider: 'google',
+        options: {
+          redirectTo: `${window.location.origin}/auth/callback`,
+        },
+      })
+      if (error) {
+        throw new Error(`[AuthRepository] Falha ao iniciar login com Google: ${error.message}`)
+      }
     },
 
     async signOut() {

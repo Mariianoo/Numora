@@ -1,5 +1,5 @@
 /**
- * lib/supabase/database.types.ts
+ * types/database.types.ts
  * PLACEHOLDER — este arquivo deve ser substituído pelo output real de:
  *
  *   supabase gen types typescript --project-id <id> > database.types.ts

@@ -9,10 +9,9 @@
 
 import { createBrowserClient } from '@supabase/ssr'
 
-import { clientEnv } from '@/config/env'
-import type { Database } from '@/types/database.types'
+import { clientEnv } from '@/lib/env'
 
-let browserClient: ReturnType<typeof createBrowserClient<Database>> | undefined
+let browserClient: ReturnType<typeof createBrowserClient> | undefined
 
 /**
  * Retorna uma instância singleton do client Supabase de browser.
@@ -20,7 +19,7 @@ let browserClient: ReturnType<typeof createBrowserClient<Database>> | undefined
  */
 export function getSupabaseBrowserClient() {
   if (!browserClient) {
-    browserClient = createBrowserClient<Database>(
+    browserClient = createBrowserClient(
       clientEnv.NEXT_PUBLIC_SUPABASE_URL,
       clientEnv.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     )
