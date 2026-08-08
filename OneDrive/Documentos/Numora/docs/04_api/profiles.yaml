@@ -1,0 +1,51 @@
+# paths/profiles.yaml
+# Tag: Profiles — visualização pública de perfis de colecionadores.
+
+byUsername:
+  get:
+    tags: [Profiles]
+    summary: Retorna o perfil público de um colecionador.
+    security: []
+    x-permissions: "Nenhuma (rota pública) — retorna apenas campos não-sensíveis."
+    x-rate-limit: "120 requisições / minuto / IP."
+    parameters:
+      - name: username
+        in: path
+        required: true
+        schema: { type: string }
+    responses:
+      '200':
+        description: Perfil público.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Profile' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+publicCollections:
+  get:
+    tags: [Profiles, Collections]
+    summary: Lista as coleções públicas de um colecionador.
+    security: []
+    x-permissions: "Nenhuma (rota pública) — apenas registros com is_public = true."
+    x-rate-limit: "120 requisições / minuto / IP."
+    parameters:
+      - name: username
+        in: path
+        required: true
+        schema: { type: string }
+      - $ref: '../components/parameters.yaml#/LimitParam'
+      - $ref: '../components/parameters.yaml#/CursorParam'
+      - $ref: '../components/parameters.yaml#/SortParam'
+    responses:
+      '200':
+        description: Lista paginada de coleções públicas.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                data: { type: array, items: { $ref: '../components/schemas.yaml#/Collection' } }
+                pagination: { $ref: '../components/schemas.yaml#/Pagination' }
+      '404': { $ref: '../components/responses.yaml#/NotFound' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }

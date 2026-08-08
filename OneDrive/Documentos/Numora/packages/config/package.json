@@ -1,0 +1,29 @@
+{
+  "name": "numora",
+  "private": true,
+  "description": "Numora monorepo — SaaS PWA para colecionadores de numismática. Ver DEVELOPMENT_GUIDE.md.",
+  "packageManager": "pnpm@9.12.0",
+  "engines": {
+    "node": ">=20.0.0",
+    "pnpm": ">=9.0.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter @numora/web dev",
+    "build": "pnpm --filter @numora/web build",
+    "start": "pnpm --filter @numora/web start",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "test:e2e": "pnpm --filter @numora/web test:e2e",
+    "storybook": "pnpm --filter @numora/web storybook",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "husky"
+  },
+  "devDependencies": {
+    "husky": "^9.1.6",
+    "lint-staged": "^15.2.10",
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3"
+  }
+}

@@ -1,0 +1,266 @@
+# paths/authentication.yaml
+# Tag: Authentication. Ver API_CONVENTIONS.md §2-§3 para JWT/Refresh Token.
+
+register:
+  post:
+    tags: [Authentication]
+    summary: Cria uma nova conta.
+    description: Cria o usuário no Supabase Auth e o registro correspondente em `profiles`. Dispara e-mail de verificação.
+    security: []
+    x-permissions: "Nenhuma (rota pública)."
+    x-rate-limit: "10 requisições / hora / IP."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            $ref: '../components/schemas.yaml#/RegisterRequest'
+          example:
+            email: thiago@example.com
+            password: "SenhaForte#2026"
+            username: thiago_numismata
+            display_name: "Thiago Almeida"
+    responses:
+      '201':
+        description: Conta criada — verificação de e-mail pendente.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                profile: { $ref: '../components/schemas.yaml#/ProfilePrivate' }
+                tokens: { $ref: '../components/schemas.yaml#/AuthTokens' }
+            example:
+              profile: { id: "b3f1...", username: thiago_numismata, display_name: "Thiago Almeida", role: user, plan_tier: free }
+              tokens: { access_token: "eyJhbGciOi...", refresh_token: "v1.MjM0NTY3...", expires_in: 3600, token_type: Bearer }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '409':
+        description: E-mail ou username já cadastrado.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+login:
+  post:
+    tags: [Authentication]
+    summary: Autentica com e-mail e senha.
+    security: []
+    x-permissions: "Nenhuma (rota pública)."
+    x-rate-limit: "10 requisições / minuto / IP — lockout progressivo após tentativas falhas (PROJECT_RULES.md §14.7)."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema: { $ref: '../components/schemas.yaml#/LoginRequest' }
+          example: { email: thiago@example.com, password: "SenhaForte#2026" }
+    responses:
+      '200':
+        description: Autenticado com sucesso.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/AuthTokens' }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401':
+        description: Credenciais inválidas ou MFA requerido/incorreto.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+            example: { error: { code: INVALID_CREDENTIALS, message: "E-mail ou senha incorretos." } }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+refresh:
+  post:
+    tags: [Authentication]
+    summary: Troca um refresh token válido por um novo par de tokens (rotação).
+    security: []
+    x-permissions: "Posse de refresh token válido."
+    x-rate-limit: "30 requisições / minuto / usuário."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [refresh_token]
+            properties:
+              refresh_token: { type: string }
+    responses:
+      '200':
+        description: Novo par de tokens emitido.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/AuthTokens' }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401':
+        description: Refresh token inválido, expirado ou já utilizado (rotação).
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+logout:
+  post:
+    tags: [Authentication]
+    summary: Revoga a sessão atual.
+    x-permissions: "Usuário autenticado."
+    x-rate-limit: "30 requisições / minuto / usuário."
+    responses:
+      '200':
+        description: Sessão encerrada.
+        content:
+          application/json:
+            schema: { type: object, properties: { success: { type: boolean, example: true } } }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+logoutAll:
+  post:
+    tags: [Authentication]
+    summary: Revoga todas as sessões ativas do usuário ("sair de todos os dispositivos").
+    x-permissions: "Usuário autenticado (próprio)."
+    x-rate-limit: "5 requisições / hora / usuário."
+    responses:
+      '200':
+        description: Todas as sessões revogadas.
+        content:
+          application/json:
+            schema: { type: object, properties: { revoked_sessions: { type: integer } } }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+passwordForgot:
+  post:
+    tags: [Authentication]
+    summary: Solicita e-mail de recuperação de senha.
+    security: []
+    x-permissions: "Nenhuma (rota pública)."
+    x-rate-limit: "5 requisições / hora / e-mail."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [email]
+            properties: { email: { type: string, format: email } }
+    responses:
+      '200':
+        description: >
+          Sempre retorna sucesso genérico, mesmo se o e-mail não existir
+          (evita enumeração de contas).
+        content:
+          application/json:
+            schema: { type: object, properties: { success: { type: boolean, example: true } } }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '429': { $ref: '../components/responses.yaml#/TooManyRequests' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+passwordReset:
+  post:
+    tags: [Authentication]
+    summary: Define nova senha usando token de recuperação de uso único.
+    security: []
+    x-permissions: "Posse de token de reset válido (expira em 1h — PROJECT_RULES.md §15.7)."
+    x-rate-limit: "10 requisições / hora / IP."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [token, new_password]
+            properties:
+              token: { type: string }
+              new_password: { type: string, minLength: 10 }
+    responses:
+      '200':
+        description: Senha alterada; todas as sessões ativas são revogadas (§15.7).
+        content:
+          application/json:
+            schema: { type: object, properties: { success: { type: boolean, example: true } } }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '401':
+        description: Token inválido ou expirado.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+emailVerify:
+  post:
+    tags: [Authentication]
+    summary: Confirma o e-mail cadastrado a partir do token enviado no cadastro.
+    security: []
+    x-permissions: "Posse de token de verificação válido."
+    x-rate-limit: "10 requisições / hora / IP."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [token]
+            properties: { token: { type: string } }
+    responses:
+      '200':
+        description: E-mail verificado.
+        content:
+          application/json:
+            schema: { type: object, properties: { success: { type: boolean, example: true } } }
+      '400': { $ref: '../components/responses.yaml#/BadRequest' }
+      '409':
+        description: Token já utilizado ou e-mail já verificado.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+mfaEnroll:
+  post:
+    tags: [Authentication]
+    summary: Inicia o cadastro de MFA (TOTP) — retorna QR/secret.
+    x-permissions: "Usuário autenticado (próprio)."
+    x-rate-limit: "10 requisições / hora / usuário."
+    responses:
+      '200':
+        description: Segredo TOTP gerado, aguardando confirmação via /auth/mfa/verify.
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                secret: { type: string }
+                qr_code_url: { type: string, format: uri }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
+
+mfaVerify:
+  post:
+    tags: [Authentication]
+    summary: Confirma o código TOTP e ativa o MFA na conta.
+    x-permissions: "Usuário autenticado (próprio)."
+    x-rate-limit: "10 requisições / hora / usuário."
+    requestBody:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [code]
+            properties: { code: { type: string, minLength: 6, maxLength: 6 } }
+    responses:
+      '200':
+        description: MFA ativado.
+        content:
+          application/json:
+            schema: { type: object, properties: { success: { type: boolean, example: true } } }
+      '400':
+        description: Código TOTP inválido.
+        content:
+          application/json:
+            schema: { $ref: '../components/schemas.yaml#/Error' }
+      '401': { $ref: '../components/responses.yaml#/Unauthorized' }
+      '500': { $ref: '../components/responses.yaml#/InternalError' }
