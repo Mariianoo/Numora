@@ -1,8 +1,10 @@
 /**
- * lib/env.ts
- * Configuração de ambiente — toda variável usada pela aplicação passa por
- * aqui, nunca acessada via `process.env.X` diretamente em código de feature
- * (PROJECT_RULES.md §8.3: toda fronteira externa é validada com Zod).
+ * lib/env.server.ts
+ * Configuração de ambiente (Zod) — usada por lib/supabase/client.ts e
+ * lib/supabase/server.ts (Node runtime / browser bundle), NUNCA por
+ * middleware.ts (Edge Runtime). Renomeado de env.ts para env.server.ts de
+ * propósito, para deixar explícito no nome do arquivo que isto não deve
+ * ser importado de código que roda em Edge.
  */
 import { z } from 'zod'
 

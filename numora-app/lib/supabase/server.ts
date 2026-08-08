@@ -7,7 +7,7 @@
 import { createServerClient } from '@supabase/ssr'
 import { cookies } from 'next/headers'
 
-import { clientEnv } from '@/lib/env'
+import { clientEnv } from '@/lib/env.server'
 
 /**
  * Cria um novo client por request (nunca singleton aqui — cada request tem

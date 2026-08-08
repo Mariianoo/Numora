@@ -9,7 +9,7 @@
 
 import { createBrowserClient } from '@supabase/ssr'
 
-import { clientEnv } from '@/lib/env'
+import { clientEnv } from '@/lib/env.server'
 
 let browserClient: ReturnType<typeof createBrowserClient> | undefined
 
