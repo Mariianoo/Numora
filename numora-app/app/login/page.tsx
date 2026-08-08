@@ -30,8 +30,10 @@ export default function LoginPage() {
   }, [])
 
   useEffect(() => {
-    // O middleware já protege as rotas; isto só evita mostrar o botão de
-    // login por um instante caso o usuário chegue aqui já autenticado.
+    // middleware.ts não roda em /login (só checa presença de cookie em
+    // /dashboard, sem validar sessão) — este redirect aqui é quem
+    // efetivamente tira o usuário já logado da tela de login, validando a
+    // sessão de verdade via supabase-js.
     if (session) {
       router.replace('/dashboard')
     }
