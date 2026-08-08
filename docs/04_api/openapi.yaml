@@ -1,0 +1,144 @@
+openapi: 3.1.0
+
+info:
+  title: CoinVerse (Numisphere) API
+  version: "1.0.0"
+  summary: API do SaaS PWA para colecionadores de moedas, cédulas, medalhas e tokens.
+  description: >
+    Especificação subordinada a PROJECT_RULES.md, ARCHITECTURE.md e DATABASE.md.
+    Documento apenas de contrato — sem implementação. Ver API_CONVENTIONS.md para
+    JWT, refresh token, paginação, filtros, ordenação, busca, upload, download e
+    versionamento.
+  contact:
+    name: Arquitetura CoinVerse
+  license:
+    name: Proprietary
+
+servers:
+  - url: https://api.coinverse.app/v1
+    description: Produção
+  - url: https://staging-api.coinverse.app/v1
+    description: Staging
+  - url: http://localhost:3000/api/v1
+    description: Desenvolvimento local
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Authentication
+    description: Registro, login, refresh, logout, MFA, recuperação de senha.
+  - name: Users
+    description: Gestão da própria conta e, para admin, de contas de terceiros.
+  - name: Profiles
+    description: Perfis públicos de colecionadores.
+  - name: Collections
+    description: Coleções e itens catalogados pelo usuário.
+  - name: Coins
+    description: Catálogo mestre — moedas.
+  - name: Banknotes
+    description: Catálogo mestre — cédulas.
+  - name: Tokens
+    description: Catálogo mestre — medalhas e tokens.
+  - name: Photos
+    description: Fotos e certificados vinculados a itens de coleção.
+  - name: AI
+    description: Reconhecimento e avaliação assistida por IA.
+  - name: Marketplace
+    description: Anúncios, ofertas e transações de compra/venda.
+  - name: Trades
+    description: Propostas de troca entre colecionadores.
+  - name: Wishlist
+    description: Lista de desejos.
+  - name: Notifications
+    description: Notificações do usuário.
+  - name: Payments
+    description: Transações de pagamento.
+  - name: Subscriptions
+    description: Planos e assinaturas.
+  - name: Messages
+    description: Conversas e mensagens diretas.
+  - name: Friends
+    description: Conexões/seguidores entre colecionadores.
+  - name: Reports
+    description: Denúncias de conteúdo.
+  - name: Admin
+    description: Moderação e administração da plataforma.
+  - name: Analytics
+    description: Métricas agregadas (uso interno/admin).
+  - name: Search
+    description: Busca global entre módulos.
+  - name: Uploads
+    description: Fluxo de upload/download de arquivos via Storage.
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Access token emitido pelo Supabase Auth. Ver API_CONVENTIONS.md seção 2.
+
+paths:
+  # ---- Authentication ----
+  /auth/register:
+    $ref: './paths/authentication.yaml#/register'
+  /auth/login:
+    $ref: './paths/authentication.yaml#/login'
+  /auth/refresh:
+    $ref: './paths/authentication.yaml#/refresh'
+  /auth/logout:
+    $ref: './paths/authentication.yaml#/logout'
+  /auth/logout-all:
+    $ref: './paths/authentication.yaml#/logoutAll'
+  /auth/password/forgot:
+    $ref: './paths/authentication.yaml#/passwordForgot'
+  /auth/password/reset:
+    $ref: './paths/authentication.yaml#/passwordReset'
+  /auth/email/verify:
+    $ref: './paths/authentication.yaml#/emailVerify'
+  /auth/mfa/enroll:
+    $ref: './paths/authentication.yaml#/mfaEnroll'
+  /auth/mfa/verify:
+    $ref: './paths/authentication.yaml#/mfaVerify'
+
+  # ---- Users ----
+  /users/me:
+    $ref: './paths/users.yaml#/me'
+  /users/me/devices:
+    $ref: './paths/users.yaml#/myDevices'
+  /users/me/devices/{deviceId}:
+    $ref: './paths/users.yaml#/myDeviceById'
+  /users/me/sessions:
+    $ref: './paths/users.yaml#/mySessions'
+  /users/me/sessions/{sessionId}:
+    $ref: './paths/users.yaml#/mySessionById'
+  /users:
+    $ref: './paths/users.yaml#/adminList'
+  /users/{userId}:
+    $ref: './paths/users.yaml#/adminById'
+  /users/{userId}/role:
+    $ref: './paths/users.yaml#/adminRole'
+
+  # ---- Profiles ----
+  /profiles/{username}:
+    $ref: './paths/profiles.yaml#/byUsername'
+  /profiles/{username}/collections:
+    $ref: './paths/profiles.yaml#/publicCollections'
+
+  # ---- Collections ----
+  /collections:
+    $ref: './paths/collections.yaml#/list'
+  /collections/{collectionId}:
+    $ref: './paths/collections.yaml#/byId'
+  /collections/{collectionId}/items:
+    $ref: './paths/collections.yaml#/items'
+  /collection-items/{itemId}:
+    $ref: './paths/collections.yaml#/itemById'
+
+x-progress-note: >
+  Tags Coins/Banknotes/Tokens/Photos/AI/Marketplace/Trades/Wishlist/Notifications/
+  Payments/Subscriptions/Messages/Friends/Reports/Admin/Analytics/Search/Uploads
+  são entregues no(s) próximo(s) lote(s) (arquivos em ./paths/), seguindo o mesmo
+  padrão. Este campo é apenas uma nota de progresso e não faz parte do contrato
+  OpenAPI final (remover ao concluir todos os lotes).

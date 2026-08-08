@@ -1,0 +1,29 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Next.js
+.next/
+out/
+apps/web/.next/
+
+# Build outputs
+dist/
+build/
+storybook-static/
+
+# Env
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Testing
+coverage/
+playwright-report/
+test-results/
+
+# Misc
+.DS_Store
+*.log
+.turbo/
