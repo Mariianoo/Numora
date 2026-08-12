@@ -24,7 +24,11 @@ export default function CollectionPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
+
+  /** `null` = modal em modo "adicionar"; caso contrário, id da moeda em edição. */
+  const [editingCoinId, setEditingCoinId] = useState<string | null>(null)
 
   const [country, setCountry] = useState('')
   const [year, setYear] = useState('')
@@ -51,10 +55,36 @@ export default function CollectionPage() {
     setPricePaid('')
   }
 
+  function openAddModal() {
+    setError(null)
+    setSuccessMessage(null)
+    setEditingCoinId(null)
+    resetForm()
+    setIsModalOpen(true)
+  }
+
+  function openEditModal(coin: Coin) {
+    setError(null)
+    setSuccessMessage(null)
+    setEditingCoinId(coin.id)
+    setCountry(coin.country)
+    setYear(coin.year !== null ? String(coin.year) : '')
+    setValue(coin.value !== null ? String(coin.value) : '')
+    setDescription(coin.description ?? '')
+    setPricePaid(coin.pricePaid !== null ? String(coin.pricePaid) : '')
+    setIsModalOpen(true)
+  }
+
+  function closeModal() {
+    setIsModalOpen(false)
+    setEditingCoinId(null)
+    resetForm()
+  }
+
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
 
-    if (limitReached) {
+    if (editingCoinId === null && limitReached) {
       setError(COIN_LIMIT_REACHED_MESSAGE)
       return
     }
@@ -62,18 +92,26 @@ export default function CollectionPage() {
     setError(null)
     setIsSaving(true)
 
-    try {
-      const newCoin = await coinsRepository.create({
-        country,
-        year: toNullableNumber(year),
-        value: toNullableNumber(value),
-        description: description.trim() === '' ? null : description,
-        pricePaid: toNullableNumber(pricePaid),
-      })
+    const input = {
+      country,
+      year: toNullableNumber(year),
+      value: toNullableNumber(value),
+      description: description.trim() === '' ? null : description,
+      pricePaid: toNullableNumber(pricePaid),
+    }
 
-      setCoins((current) => [newCoin, ...current])
-      resetForm()
-      setIsModalOpen(false)
+    try {
+      if (editingCoinId === null) {
+        const newCoin = await coinsRepository.create(input)
+        setCoins((current) => [newCoin, ...current])
+        setSuccessMessage('Moeda adicionada com sucesso.')
+      } else {
+        const updatedCoin = await coinsRepository.update(editingCoinId, input)
+        setCoins((current) => current.map((coin) => (coin.id === updatedCoin.id ? updatedCoin : coin)))
+        setSuccessMessage('Moeda atualizada com sucesso.')
+      }
+
+      closeModal()
     } catch (err) {
       setError((err as Error).message)
     } finally {
@@ -108,7 +146,7 @@ export default function CollectionPage() {
         <button
           type="button"
           className="border px-3 py-1 disabled:opacity-50"
-          onClick={() => setIsModalOpen(true)}
+          onClick={openAddModal}
           disabled={limitReached}
         >
           Adicionar moeda
@@ -117,6 +155,7 @@ export default function CollectionPage() {
 
       {limitReached && <p className="mt-4">{COIN_LIMIT_REACHED_MESSAGE}</p>}
       {error && <p className="mt-4">Erro: {error}</p>}
+      {successMessage && <p className="mt-4">{successMessage}</p>}
 
       <div className="mt-6">
         {isLoading ? (
@@ -132,9 +171,14 @@ export default function CollectionPage() {
                 <p>Valor: {coin.value ?? '—'}</p>
                 <p>Preço pago: {coin.pricePaid ?? '—'}</p>
                 {coin.description && <p>Descrição: {coin.description}</p>}
-                <button type="button" className="mt-2 border px-2 py-1" onClick={() => handleDelete(coin.id)}>
-                  Excluir
-                </button>
+                <div className="mt-2 flex gap-2">
+                  <button type="button" className="border px-2 py-1" onClick={() => openEditModal(coin)}>
+                    Editar
+                  </button>
+                  <button type="button" className="border px-2 py-1" onClick={() => handleDelete(coin.id)}>
+                    Excluir
+                  </button>
+                </div>
               </div>
             ))}
           </div>
@@ -145,8 +189,8 @@ export default function CollectionPage() {
         <div className="fixed inset-0 flex items-center justify-center bg-black/50">
           <div className="w-full max-w-sm bg-white p-6 dark:bg-black">
             <div className="flex items-center justify-between">
-              <h2 className="font-semibold">Adicionar moeda</h2>
-              <button type="button" onClick={() => setIsModalOpen(false)}>
+              <h2 className="font-semibold">{editingCoinId === null ? 'Adicionar moeda' : 'Editar moeda'}</h2>
+              <button type="button" onClick={closeModal}>
                 Fechar
               </button>
             </div>
@@ -198,9 +242,14 @@ export default function CollectionPage() {
                   onChange={(e) => setPricePaid(e.target.value)}
                 />
               </label>
-              <button type="submit" className="border px-3 py-1" disabled={isSaving}>
-                {isSaving ? 'Salvando...' : 'Salvar'}
-              </button>
+              <div className="flex gap-2">
+                <button type="submit" className="border px-3 py-1" disabled={isSaving}>
+                  {isSaving ? 'Salvando...' : 'Salvar'}
+                </button>
+                <button type="button" className="border px-3 py-1" onClick={closeModal} disabled={isSaving}>
+                  Cancelar
+                </button>
+              </div>
             </form>
           </div>
         </div>

@@ -8,6 +8,7 @@ import Link from 'next/link'
 import { redirect } from 'next/navigation'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
+import { LogoutButton } from '@/features/auth/components/LogoutButton'
 
 export default async function DashboardPage() {
   const supabase = await getSupabaseServerClient()
@@ -21,7 +22,10 @@ export default async function DashboardPage() {
 
   return (
     <div>
-      <p>Dashboard</p>
+      <div className="flex items-center justify-between">
+        <p>Dashboard</p>
+        <LogoutButton />
+      </div>
       <p>Logado como: {user.email}</p>
       <p>
         <Link href="/dashboard/collection">Minha Coleção</Link>

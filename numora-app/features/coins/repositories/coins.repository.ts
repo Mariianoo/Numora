@@ -15,6 +15,7 @@ const RLS_VIOLATION_CODE = '42501'
 export interface CoinsRepository {
   list(): Promise<Coin[]>
   create(input: NewCoinInput): Promise<Coin>
+  update(id: string, input: NewCoinInput): Promise<Coin>
   remove(id: string): Promise<void>
 }
 
@@ -94,6 +95,27 @@ export function createSupabaseCoinsRepository(): CoinsRepository {
           throw new Error(COIN_LIMIT_REACHED_MESSAGE)
         }
         throw new Error(`[CoinsRepository] Falha ao adicionar moeda: ${error.message}`)
+      }
+
+      return toCoin(data as CoinRow)
+    },
+
+    async update(id, input) {
+      const { data, error } = await supabase
+        .from('coins')
+        .update({
+          country: input.country,
+          year: input.year,
+          value: input.value,
+          description: input.description,
+          price_paid: input.pricePaid,
+        })
+        .eq('id', id)
+        .select('*')
+        .single()
+
+      if (error) {
+        throw new Error(`[CoinsRepository] Falha ao atualizar moeda: ${error.message}`)
       }
 
       return toCoin(data as CoinRow)
