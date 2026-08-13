@@ -11,9 +11,18 @@
  * `collection_items.purchase_id` (Etapa 4) é quem representa essa
  * relação; não existe conceito de "lote" separado — vários itens podem
  * apontar para a mesma compra, isso não é modelado aqui.
+ *
+ * Também orquestra `CollectionUnitsRepository` (Etapa collection_units):
+ * cada `collection_item` precisa de ao menos 1 `collection_unit` (o
+ * exemplar físico). `quantity` não é mais escrito aqui — é um espelho de
+ * `COUNT(collection_units)` mantido por trigger no banco; após
+ * criar/inserir exemplares, o item é buscado de novo para refletir o
+ * valor sincronizado. Reduzir a quantidade nunca é feito por aqui —
+ * exige excluir exemplares individualmente (`CollectionUnitsRepository.remove`).
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { createSupabasePurchasesRepository } from '@/features/purchases/repositories/purchases.repository'
+import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import type { CollectionItem, CollectionItemInput } from '@/features/collection/types'
 
 export interface CollectionRepository {
@@ -37,7 +46,6 @@ const ITEM_SELECT = `
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
-  grades ( label, scale ),
   purchases ( total_price, purchase_date, seller_name, notes )
 `
 
@@ -54,7 +62,6 @@ interface CollectionItemRow {
   secondary_metal_code: string | null
   gross_weight_g: number | null
   purity: number | null
-  grade_id: string | null
   face_value: number | null
   quantity: number
   unit_cost_override: number | null
@@ -66,7 +73,6 @@ interface CollectionItemRow {
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
   secondary_metals: { name: string } | null
-  grades: { label: string; scale: string } | null
   purchases: {
     total_price: number
     purchase_date: string | null
@@ -89,7 +95,6 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     secondaryMetalCode: row.secondary_metal_code,
     grossWeightG: row.gross_weight_g,
     purity: row.purity,
-    gradeId: row.grade_id,
     faceValue: row.face_value,
     quantity: row.quantity,
     unitCostOverride: row.unit_cost_override,
@@ -102,8 +107,6 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     countryFlagEmoji: row.countries?.flag_emoji ?? null,
     metalName: row.metals?.name ?? null,
     secondaryMetalName: row.secondary_metals?.name ?? null,
-    gradeLabel: row.grades?.label ?? null,
-    gradeScale: row.grades?.scale ?? null,
     purchase: row.purchases
       ? {
           totalPrice: row.purchases.total_price,
@@ -118,6 +121,7 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
 export function createSupabaseCollectionRepository(): CollectionRepository {
   const supabase = getSupabaseBrowserClient()
   const purchasesRepository = createSupabasePurchasesRepository()
+  const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
 
   async function get(id: string): Promise<CollectionItem | null> {
     const { data, error } = await supabase.from('collection_items').select(ITEM_SELECT).eq('id', id).maybeSingle()
@@ -173,9 +177,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
           purity: input.purity,
-          grade_id: input.gradeId,
           face_value: input.faceValue,
-          quantity: input.quantity,
         })
         .select(ITEM_SELECT)
         .single()
@@ -184,13 +186,35 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
         throw new Error(`[CollectionRepository] Falha ao adicionar item: ${error.message}`)
       }
 
-      return toCollectionItem(data as unknown as CollectionItemRow)
+      const created = toCollectionItem(data as unknown as CollectionItemRow)
+
+      // Todo item precisa de ao menos 1 exemplar físico — quantity (ainda no
+      // valor padrão da coluna) só reflete a realidade depois que o trigger
+      // de sincronização roda em resposta a este insert em collection_units.
+      await collectionUnitsRepository.createMany(created.id, Math.max(1, input.quantity), input.initialGradeId)
+
+      const withUnits = await get(created.id)
+      if (!withUnits) {
+        throw new Error('[CollectionRepository] Item criado, mas não foi possível recarregá-lo.')
+      }
+
+      return withUnits
     },
 
     async update(id, input) {
       const current = await get(id)
       if (!current) {
         throw new Error('[CollectionRepository] Item não encontrado.')
+      }
+
+      if (input.quantity < current.quantity) {
+        // A UI já bloqueia isso — esta checagem é só uma segunda camada de
+        // defesa. Reduzir quantidade exige excluir exemplares individuais
+        // (CollectionUnitsRepository.remove), nunca um número solto aqui:
+        // não há como saber qual exemplar o usuário quer remover.
+        throw new Error(
+          '[CollectionRepository] Não é possível reduzir a quantidade por aqui. Exclua exemplares individualmente.',
+        )
       }
 
       let purchaseId = current.purchaseId
@@ -214,9 +238,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
           purity: input.purity,
-          grade_id: input.gradeId,
           face_value: input.faceValue,
-          quantity: input.quantity,
         })
         .eq('id', id)
         .select(ITEM_SELECT)
@@ -226,7 +248,21 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
         throw new Error(`[CollectionRepository] Falha ao atualizar item: ${error.message}`)
       }
 
-      return toCollectionItem(data as unknown as CollectionItemRow)
+      const updated = toCollectionItem(data as unknown as CollectionItemRow)
+
+      const missingUnits = input.quantity - current.quantity
+      if (missingUnits > 0) {
+        // Exemplares novos nascem sem conservação própria (decisão aprovada
+        // — não herdar automaticamente de exemplares já existentes).
+        await collectionUnitsRepository.createMany(id, missingUnits, null)
+        const withUnits = await get(id)
+        if (!withUnits) {
+          throw new Error('[CollectionRepository] Item atualizado, mas não foi possível recarregá-lo.')
+        }
+        return withUnits
+      }
+
+      return updated
     },
 
     async remove(id) {

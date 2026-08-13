@@ -24,17 +24,26 @@ import {
   ClipboardList,
   HelpCircle,
   Landmark,
+  Layers,
   Pencil,
   PackageOpen,
   Plus,
   Receipt,
   Search,
+  Star,
   Trash2,
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
+import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import type { CollectionItem, Country, Grade, Metal } from '@/features/collection/types'
+import {
+  COLLECTION_UNIT_STATUS_LABELS,
+  COLLECTION_UNIT_STATUS_OPTIONS,
+  type CollectionUnit,
+  type CollectionUnitStatus,
+} from '@/features/collection-units/types'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -47,6 +56,17 @@ import { EmptyState } from '@/components/ui/EmptyState'
 
 const collectionRepository = createSupabaseCollectionRepository()
 const referenceRepository = createSupabaseReferenceRepository()
+const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
+
+/** Indicador visual rápido por status, usado na lista de exemplares (seção 12/13 da etapa). */
+const STATUS_EMOJI: Record<CollectionUnitStatus, string> = {
+  in_collection: '🟢',
+  for_trade: '🔄',
+  for_sale: '💰',
+  reserved: '🔒',
+  sold: '✅',
+  traded: '🔁',
+}
 
 const GRADE_SCALE_LABELS: Record<string, string> = {
   br: 'Escala brasileira',
@@ -165,6 +185,40 @@ function FieldRow({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">{children}</div>
 }
 
+/**
+ * Avaliação pessoal (1-5 estrelas), não a conservação numismática. `null`
+ * = não avaliado, nenhuma estrela preenchida. Clicar na estrela já
+ * selecionada limpa a avaliação de volta para `null` (toggle), evitando
+ * a necessidade de um botão "limpar" separado.
+ */
+function StarRatingInput({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: number | null
+  onChange: (rating: number | null) => void
+  disabled?: boolean
+}) {
+  return (
+    <div className="flex items-center gap-0.5" role="group" aria-label="Avaliação pessoal">
+      {[1, 2, 3, 4, 5].map((star) => (
+        <button
+          key={star}
+          type="button"
+          disabled={disabled}
+          onClick={() => onChange(value === star ? null : star)}
+          aria-label={`${star} estrela${star === 1 ? '' : 's'}`}
+          aria-pressed={value !== null && star <= value}
+          className="p-0.5 text-text-secondary/40 transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+        >
+          <Star className={`size-4 ${value !== null && star <= value ? 'fill-accent text-accent' : ''}`} aria-hidden />
+        </button>
+      ))}
+    </div>
+  )
+}
+
 export default function CollectionPage() {
   const [items, setItems] = useState<CollectionItem[]>([])
   const [countries, setCountries] = useState<Country[]>([])
@@ -179,13 +233,17 @@ export default function CollectionPage() {
   const [isGradeHelpOpen, setIsGradeHelpOpen] = useState(false)
 
   // Busca e filtros — somente client-side, sobre os itens já carregados.
+  // Não há filtro por conservação: desde que ela passou a ser propriedade de
+  // cada exemplar (collection_units), não existe mais um valor único por
+  // moeda para filtrar — ver relatório da etapa.
   const [searchTerm, setSearchTerm] = useState('')
   const [filterCountry, setFilterCountry] = useState('')
   const [filterMetal, setFilterMetal] = useState('')
-  const [filterGrade, setFilterGrade] = useState('')
 
   /** `null` = modal em modo "adicionar"; caso contrário, id do item em edição. */
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
+  /** Quantidade mínima aceita no campo — 1 ao criar, quantidade atual ao editar (nunca reduz por aqui). */
+  const [minQuantity, setMinQuantity] = useState(1)
 
   // Informações da moeda
   const [countryCode, setCountryCode] = useState('')
@@ -198,7 +256,8 @@ export default function CollectionPage() {
   // Características
   const [grossWeightG, setGrossWeightG] = useState('')
   const [purityPercent, setPurityPercent] = useState('')
-  const [gradeId, setGradeId] = useState('')
+  /** Conservação inicial dos exemplares criados agora — só se aplica ao ADICIONAR (ver seção 2/4 da etapa). */
+  const [initialGradeId, setInitialGradeId] = useState('')
   const [faceValue, setFaceValue] = useState('')
   const [quantity, setQuantity] = useState('1')
 
@@ -207,6 +266,14 @@ export default function CollectionPage() {
   const [purchaseDate, setPurchaseDate] = useState('')
   const [sellerName, setSellerName] = useState('')
   const [notes, setNotes] = useState('')
+
+  // Modal de exemplares (collection_units) de uma moeda específica
+  const [unitsModalItem, setUnitsModalItem] = useState<CollectionItem | null>(null)
+  const [units, setUnits] = useState<CollectionUnit[]>([])
+  const [isUnitsLoading, setIsUnitsLoading] = useState(false)
+  const [unitsError, setUnitsError] = useState<string | null>(null)
+  /** Exemplar aguardando confirmação explícita de exclusão (nunca excluído direto no clique). */
+  const [unitPendingDelete, setUnitPendingDelete] = useState<CollectionUnit | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -236,18 +303,17 @@ export default function CollectionPage() {
     return items.filter((item) => {
       if (filterCountry && item.countryCode !== filterCountry) return false
       if (filterMetal && item.metalCode !== filterMetal) return false
-      if (filterGrade && item.gradeId !== filterGrade) return false
 
       if (term === '') return true
 
-      const haystack = [item.denomination, item.countryDisplayName, item.metalName, item.gradeLabel]
+      const haystack = [item.denomination, item.countryDisplayName, item.metalName]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
 
       return haystack.includes(term)
     })
-  }, [items, searchTerm, filterCountry, filterMetal, filterGrade])
+  }, [items, searchTerm, filterCountry, filterMetal])
 
   const totalUnits = items.reduce((sum, item) => sum + item.quantity, 0)
 
@@ -260,9 +326,10 @@ export default function CollectionPage() {
     setSecondaryMetalCode('')
     setGrossWeightG('')
     setPurityPercent('')
-    setGradeId('')
+    setInitialGradeId('')
     setFaceValue('')
     setQuantity('1')
+    setMinQuantity(1)
     setPricePaid('')
     setPurchaseDate('')
     setSellerName('')
@@ -291,9 +358,10 @@ export default function CollectionPage() {
     setSecondaryMetalCode(item.secondaryMetalCode ?? '')
     setGrossWeightG(item.grossWeightG !== null ? String(item.grossWeightG) : '')
     setPurityPercent(purityToPercentString(item.purity))
-    setGradeId(item.gradeId ?? '')
+    setInitialGradeId('')
     setFaceValue(item.faceValue !== null ? String(item.faceValue) : '')
     setQuantity(String(item.quantity))
+    setMinQuantity(item.quantity)
     setPricePaid(item.purchase !== null ? String(item.purchase.totalPrice) : '')
     setPurchaseDate(item.purchase?.purchaseDate ?? '')
     setSellerName(item.purchase?.sellerName ?? '')
@@ -311,9 +379,17 @@ export default function CollectionPage() {
     event.preventDefault()
 
     setError(null)
-    setIsSaving(true)
 
     const parsedQuantity = Number.parseInt(quantity, 10)
+    const normalizedQuantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1
+
+    if (editingItemId !== null && normalizedQuantity < minQuantity) {
+      setError('Para reduzir a quantidade, exclua os exemplares individualmente na lista de exemplares da moeda.')
+      return
+    }
+
+    setIsSaving(true)
+
     const totalPrice = toNullableNumber(pricePaid)
 
     const input = {
@@ -324,9 +400,9 @@ export default function CollectionPage() {
       secondaryMetalCode: hasSecondMetal ? toNullableText(secondaryMetalCode) : null,
       grossWeightG: toNullableNumber(grossWeightG),
       purity: percentStringToPurity(purityPercent),
-      gradeId: toNullableText(gradeId),
       faceValue: toNullableNumber(faceValue),
-      quantity: Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1,
+      quantity: normalizedQuantity,
+      initialGradeId: toNullableText(initialGradeId),
       purchase:
         totalPrice !== null
           ? {
@@ -359,7 +435,7 @@ export default function CollectionPage() {
   }
 
   async function handleDelete(id: string) {
-    const confirmed = window.confirm('Tem certeza que deseja excluir esta moeda?')
+    const confirmed = window.confirm('Tem certeza que deseja excluir esta moeda? Todos os exemplares serão removidos.')
     if (!confirmed) return
 
     setError(null)
@@ -372,7 +448,75 @@ export default function CollectionPage() {
     }
   }
 
-  const hasActiveFilters = searchTerm !== '' || filterCountry !== '' || filterMetal !== '' || filterGrade !== ''
+  async function openUnitsModal(item: CollectionItem) {
+    setUnitsError(null)
+    setUnitsModalItem(item)
+    setIsUnitsLoading(true)
+
+    try {
+      const result = await collectionUnitsRepository.listByItem(item.id)
+      setUnits(result)
+    } catch (err) {
+      setUnitsError((err as Error).message)
+    } finally {
+      setIsUnitsLoading(false)
+    }
+  }
+
+  function closeUnitsModal() {
+    setUnitsModalItem(null)
+    setUnits([])
+    setUnitsError(null)
+  }
+
+  async function handleUnitFieldChange(
+    unit: CollectionUnit,
+    changes: Partial<{ gradeId: string | null; status: CollectionUnitStatus; rating: number | null }>,
+  ) {
+    setUnitsError(null)
+
+    try {
+      const updated = await collectionUnitsRepository.update(unit.id, {
+        gradeId: changes.gradeId !== undefined ? changes.gradeId : unit.gradeId,
+        status: changes.status ?? unit.status,
+        rating: changes.rating !== undefined ? changes.rating : unit.rating,
+      })
+      setUnits((current) => current.map((u) => (u.id === updated.id ? updated : u)))
+    } catch (err) {
+      setUnitsError((err as Error).message)
+    }
+  }
+
+  /** Abre a confirmação — a exclusão em si só acontece em `confirmUnitDelete`. */
+  function handleUnitDelete(unit: CollectionUnit) {
+    setUnitPendingDelete(unit)
+  }
+
+  async function confirmUnitDelete() {
+    const unit = unitPendingDelete
+    if (!unit) return
+
+    setUnitsError(null)
+
+    try {
+      await collectionUnitsRepository.remove(unit.id)
+      setUnits((current) => current.filter((u) => u.id !== unit.id))
+      setItems((current) =>
+        current.map((item) =>
+          item.id === unit.collectionItemId ? { ...item, quantity: item.quantity - 1 } : item,
+        ),
+      )
+      setUnitsModalItem((current) => (current ? { ...current, quantity: current.quantity - 1 } : current))
+      setUnitPendingDelete(null)
+    } catch (err) {
+      // Inclui a mensagem amigável de "último exemplar" vinda do banco (P0001).
+      // Fecha a confirmação para o erro ficar visível no modal de exemplares por trás.
+      setUnitPendingDelete(null)
+      setUnitsError((err as Error).message)
+    }
+  }
+
+  const hasActiveFilters = searchTerm !== '' || filterCountry !== '' || filterMetal !== ''
 
   return (
     <div className="flex flex-col gap-6">
@@ -412,7 +556,7 @@ export default function CollectionPage() {
                 className="pl-9"
               />
             </div>
-            <div className="grid grid-cols-3 gap-3 sm:w-auto sm:shrink-0">
+            <div className="grid grid-cols-2 gap-3 sm:w-auto sm:shrink-0">
               <Select
                 value={filterCountry}
                 onChange={(e) => setFilterCountry(e.target.value)}
@@ -436,22 +580,6 @@ export default function CollectionPage() {
                   <option key={metal.code} value={metal.code}>
                     {metal.name}
                   </option>
-                ))}
-              </Select>
-              <Select
-                value={filterGrade}
-                onChange={(e) => setFilterGrade(e.target.value)}
-                aria-label="Filtrar por conservação"
-              >
-                <option value="">Conservação</option>
-                {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
-                  <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
-                    {scaleGrades.map((grade) => (
-                      <option key={grade.id} value={grade.id}>
-                        {grade.label}
-                      </option>
-                    ))}
-                  </optgroup>
                 ))}
               </Select>
             </div>
@@ -506,11 +634,15 @@ export default function CollectionPage() {
                         {item.secondaryMetalName ? `${item.metalName} + ${item.secondaryMetalName}` : item.metalName}
                       </Badge>
                     )}
-                    {item.gradeLabel && <Badge tone="neutral">{item.gradeLabel}</Badge>}
                   </div>
-                  {item.quantity > 1 && (
-                    <span className="shrink-0 text-xs font-medium text-text-secondary">×{item.quantity}</span>
-                  )}
+                  <button
+                    type="button"
+                    onClick={() => openUnitsModal(item)}
+                    className="flex shrink-0 items-center gap-1 rounded text-xs font-medium text-accent transition-colors hover:text-accent-hover hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                  >
+                    <Layers className="size-3.5" aria-hidden />
+                    {item.quantity} exemplar{item.quantity === 1 ? '' : 'es'}
+                  </button>
                 </div>
 
                 <div className="mt-auto flex items-center justify-between border-t border-border pt-3.5">
@@ -676,33 +808,36 @@ export default function CollectionPage() {
             </FieldRow>
 
             <FieldRow>
-              <div className="flex flex-col gap-1.5">
-                <div className="flex items-center gap-1.5">
-                  <label htmlFor="grade-select" className="text-sm font-medium text-text-secondary">
-                    Conservação
-                  </label>
-                  <button
-                    type="button"
-                    onClick={() => setIsGradeHelpOpen(true)}
-                    aria-label="Ajuda sobre níveis de conservação"
-                    className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                  >
-                    <HelpCircle className="size-4" aria-hidden />
-                  </button>
+              {editingItemId === null && (
+                <div className="flex flex-col gap-1.5">
+                  <div className="flex items-center gap-1.5">
+                    <label htmlFor="grade-select" className="text-sm font-medium text-text-secondary">
+                      Conservação inicial
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => setIsGradeHelpOpen(true)}
+                      aria-label="Ajuda sobre níveis de conservação"
+                      className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                    >
+                      <HelpCircle className="size-4" aria-hidden />
+                    </button>
+                  </div>
+                  <Select id="grade-select" value={initialGradeId} onChange={(e) => setInitialGradeId(e.target.value)}>
+                    <option value="">Selecione...</option>
+                    {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
+                      <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
+                        {scaleGrades.map((grade) => (
+                          <option key={grade.id} value={grade.id}>
+                            {grade.label}
+                          </option>
+                        ))}
+                      </optgroup>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-text-secondary/70">Aplicada a todos os exemplares criados agora.</p>
                 </div>
-                <Select id="grade-select" value={gradeId} onChange={(e) => setGradeId(e.target.value)}>
-                  <option value="">Selecione...</option>
-                  {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
-                    <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
-                      {scaleGrades.map((grade) => (
-                        <option key={grade.id} value={grade.id}>
-                          {grade.label}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                </Select>
-              </div>
+              )}
               <Input
                 label="Valor de face"
                 type="number"
@@ -714,15 +849,22 @@ export default function CollectionPage() {
             </FieldRow>
 
             <FieldRow>
-              <Input
-                label="Quantidade"
-                type="number"
-                min="1"
-                step="1"
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                required
-              />
+              <div className="flex flex-col gap-1.5">
+                <Input
+                  label="Quantidade"
+                  type="number"
+                  min={minQuantity}
+                  step="1"
+                  value={quantity}
+                  onChange={(e) => setQuantity(e.target.value)}
+                  required
+                />
+                {editingItemId !== null && (
+                  <p className="text-xs text-text-secondary/70">
+                    Para reduzir, exclua exemplares na lista de exemplares da moeda.
+                  </p>
+                )}
+              </div>
             </FieldRow>
           </div>
 
@@ -798,6 +940,125 @@ export default function CollectionPage() {
             </dl>
           </div>
         </div>
+      </Modal>
+
+      <Modal
+        isOpen={unitsModalItem !== null}
+        onClose={closeUnitsModal}
+        title={unitsModalItem?.denomination ?? 'Exemplares'}
+        description={
+          unitsModalItem
+            ? `${unitsModalItem.countryDisplayName ?? unitsModalItem.countryCode ?? '—'}${
+                unitsModalItem.year !== null ? ` · ${unitsModalItem.year}` : ''
+              } — você possui ${unitsModalItem.quantity} exemplar${unitsModalItem.quantity === 1 ? '' : 'es'}`
+            : undefined
+        }
+      >
+        <div className="flex flex-col gap-4">
+          {unitsError && <p className="text-sm text-danger">{unitsError}</p>}
+
+          {isUnitsLoading ? (
+            <p className="text-sm text-text-secondary">Carregando exemplares...</p>
+          ) : units.length === 0 ? (
+            <p className="text-sm text-text-secondary">Este registro não possui exemplares.</p>
+          ) : (
+            units.map((unit, index) => (
+              <div key={unit.id} className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-text-primary">
+                    Exemplar #{index + 1}
+                    <span className="ml-2 font-mono text-xs font-normal text-text-secondary/50">
+                      {unit.id.slice(0, 8)}
+                    </span>
+                  </p>
+                  <button
+                    type="button"
+                    onClick={() => handleUnitDelete(unit)}
+                    aria-label="Excluir exemplar"
+                    className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+                  >
+                    <Trash2 className="size-4" aria-hidden />
+                  </button>
+                </div>
+
+                <FieldRow>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium text-text-secondary">Conservação</label>
+                      <button
+                        type="button"
+                        onClick={() => setIsGradeHelpOpen(true)}
+                        aria-label="Ajuda sobre níveis de conservação"
+                        className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      >
+                        <HelpCircle className="size-4" aria-hidden />
+                      </button>
+                    </div>
+                    <Select
+                      value={unit.gradeId ?? ''}
+                      onChange={(e) => handleUnitFieldChange(unit, { gradeId: toNullableText(e.target.value) })}
+                    >
+                      <option value="">Não informada</option>
+                      {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
+                        <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
+                          {scaleGrades.map((grade) => (
+                            <option key={grade.id} value={grade.id}>
+                              {grade.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <Select
+                    label="Status"
+                    value={unit.status}
+                    onChange={(e) =>
+                      handleUnitFieldChange(unit, { status: e.target.value as CollectionUnitStatus })
+                    }
+                  >
+                    {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
+                      </option>
+                    ))}
+                  </Select>
+                </FieldRow>
+
+                <div className="flex flex-col gap-1">
+                  <span className="text-sm font-medium text-text-secondary">Avaliação pessoal</span>
+                  <StarRatingInput
+                    value={unit.rating}
+                    onChange={(rating) => handleUnitFieldChange(unit, { rating })}
+                  />
+                  <p className="text-xs text-text-secondary/70">
+                    Avaliação pessoal do exemplar. Não representa a conservação.
+                  </p>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </Modal>
+
+      <Modal
+        isOpen={unitPendingDelete !== null}
+        onClose={() => setUnitPendingDelete(null)}
+        title="Excluir este exemplar?"
+        description="Esta ação removerá apenas este exemplar da coleção — a moeda e os demais exemplares não são afetados."
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={() => setUnitPendingDelete(null)}>
+              Cancelar
+            </Button>
+            <Button type="button" variant="danger" onClick={confirmUnitDelete}>
+              Excluir exemplar
+            </Button>
+          </>
+        }
+      >
+        {null}
       </Modal>
     </div>
   )

@@ -18,8 +18,12 @@ export interface CollectionItem {
   secondaryMetalCode: string | null
   grossWeightG: number | null
   purity: number | null
-  gradeId: string | null
   faceValue: number | null
+  /**
+   * Espelho de `COUNT(collection_units)`, mantido pelo banco (trigger) —
+   * nunca escrito diretamente pela aplicação. Fonte de verdade real é a
+   * tabela `collection_units` (ver features/collection-units).
+   */
   quantity: number
   unitCostOverride: number | null
   description: string | null
@@ -33,8 +37,6 @@ export interface CollectionItem {
   metalName: string | null
   /** Nome de exibição do segundo metal (moeda bimetálica), quando houver. */
   secondaryMetalName: string | null
-  gradeLabel: string | null
-  gradeScale: string | null
   /** Dados da compra vinculada (purchases), quando existir. */
   purchase: {
     totalPrice: number
@@ -47,16 +49,29 @@ export interface CollectionItem {
 /**
  * Dados do formulário "Adicionar/Editar moeda" — país, ano, denominação,
  * metal (+ segundo metal opcional, para moedas bimetálicas), peso,
- * pureza, grau, valor de face, quantidade. Os demais campos de
- * collection_items (mint, unit_cost_override, description, location,
- * tags) já existem no banco (Etapa 4) mas não têm UI ainda — permanecem
- * null nesta versão, sem perda de dado futuro.
+ * pureza, valor de face, quantidade. Os demais campos de collection_items
+ * (mint, unit_cost_override, description, location, tags) já existem no
+ * banco (Etapa 4) mas não têm UI ainda — permanecem null nesta versão,
+ * sem perda de dado futuro.
  *
  * `secondaryMetalCode`: `null` = moeda monometálica. Preenchido = moeda
  * bimetálica (ex.: núcleo de um metal, anel de outro). A coluna
  * `secondary_metal_code` já existe no banco desde a Etapa 4 — só não
  * tinha UI até agora. Trimetálicas não são representáveis com o schema
  * atual (só 2 colunas de metal); ficaria para uma etapa futura.
+ *
+ * Conservação não é mais um campo do item (Etapa collection_units): é
+ * propriedade de cada exemplar físico (`collection_units.grade_id`),
+ * porque duas unidades da mesma emissão podem ter conservações
+ * diferentes. `initialGradeId` só se aplica na criação — vira a
+ * conservação de todos os exemplares criados junto com o item; em
+ * edições que aumentam `quantity`, os exemplares novos nascem sem
+ * conservação (o usuário define depois, por exemplar).
+ *
+ * `quantity`: na criação, é o número de exemplares a criar. Na edição,
+ * só pode ser >= à quantidade atual (reduzir exige excluir exemplares
+ * individualmente — ver features/collection-units) — quem impõe isso é
+ * o repositório, não esta tipagem.
  *
  * `purchase` é opcional: se preenchido, o repositório cria (ou atualiza,
  * se o item já tiver uma) a compra vinculada; se null, o item não
@@ -71,9 +86,9 @@ export interface CollectionItemInput {
   secondaryMetalCode: string | null
   grossWeightG: number | null
   purity: number | null
-  gradeId: string | null
   faceValue: number | null
   quantity: number
+  initialGradeId: string | null
   purchase: PurchaseInput | null
 }
 
