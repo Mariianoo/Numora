@@ -35,3 +35,27 @@ export interface AuthState {
   status: AuthStatus
   session: AuthSession | null
 }
+
+/**
+ * Dados do formulário de cadastro (Etapa 7 — e-mail/senha). `name` e
+ * `countryCode` vão via `options.data` do `signUp()`: `name` é lido pelo
+ * trigger `handle_new_user` (banco) para popular `profiles.name`;
+ * `countryCode` não é lido pelo trigger — é aplicado separadamente pelo
+ * repositório (ver auth.repository.ts) depois que há sessão.
+ */
+export interface SignUpInput {
+  name: string
+  email: string
+  password: string
+  countryCode: string | null
+}
+
+export interface SignUpResult {
+  /**
+   * `true` = o Supabase já retornou uma sessão ativa (Confirm email
+   * desabilitado). `false` = cadastro criado, mas a sessão só existe
+   * depois que o usuário confirmar o e-mail (cenário confirmado como o
+   * real deste projeto).
+   */
+  hasSession: boolean
+}
