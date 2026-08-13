@@ -15,6 +15,7 @@ import { Avatar } from './Avatar'
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
   '/dashboard/collection': 'Minha Coleção',
+  '/dashboard/profile': 'Meu Perfil',
 }
 
 export interface TopbarProps {

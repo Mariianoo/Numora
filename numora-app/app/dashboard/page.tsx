@@ -14,6 +14,15 @@
  * Etapa UI/UX: única query nova é `profiles.name` (saudação "Bom dia,
  * {nome}", com fallback para a parte local do e-mail) — as 3 queries de
  * estatísticas permanecem exatamente como eram antes desta etapa.
+ *
+ * Etapa 8.1: o cálculo de estatísticas e a formatação de data foram
+ * extraídos para lib/stats/collection-stats.ts e lib/format/date.ts
+ * (reutilizados por app/dashboard/profile/page.tsx) — mesmo
+ * comportamento de antes, só movido de lugar. A query de
+ * `collection_items` passou a incluir `metal_code` (antes só
+ * `quantity, country_code`) porque o helper compartilhado também
+ * calcula metais representados, usado no Perfil; o Dashboard não exibe
+ * esse número, então não há mudança visível aqui.
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
@@ -24,15 +33,8 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-
-interface CollectionItemStatsRow {
-  quantity: number
-  country_code: string | null
-}
-
-interface PurchaseStatsRow {
-  total_price: number
-}
+import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow } from '@/lib/stats/collection-stats'
+import { formatDateOnly } from '@/lib/format/date'
 
 interface LastPurchaseRow {
   total_price: number
@@ -47,18 +49,6 @@ function getGreeting(): string {
   return 'Boa noite'
 }
 
-/**
- * `purchase_date` é uma coluna DATE (sem horário) — formatar via
- * `Date` + `toLocaleDateString` local sofreria deslocamento de fuso
- * (meia-noite UTC vira o dia anterior em fusos negativos, ex.: Brasil).
- * Extraímos os componentes literais da string "AAAA-MM-DD" em vez de
- * deixar o `Date` reinterpretar o fuso horário.
- */
-function formatDateOnly(isoDate: string): string {
-  const [year, month, day] = isoDate.split('-')
-  return `${day}/${month}/${year}`
-}
-
 export default async function DashboardPage() {
   const supabase = await getSupabaseServerClient()
   const {
@@ -70,7 +60,7 @@ export default async function DashboardPage() {
   }
 
   const [itemsResult, purchasesResult, lastPurchaseResult, profileResult] = await Promise.all([
-    supabase.from('collection_items').select('quantity, country_code'),
+    supabase.from('collection_items').select('quantity, country_code, metal_code'),
     supabase.from('purchases').select('total_price'),
     supabase
       .from('purchases')
@@ -88,12 +78,7 @@ export default async function DashboardPage() {
 
   const displayName = profileName?.trim() || user.email?.split('@')[0] || 'colecionador'
 
-  const totalItems = items.length
-  const totalUnits = items.reduce((sum, item) => sum + item.quantity, 0)
-  const totalInvested = purchases.reduce((sum, purchase) => sum + Number(purchase.total_price), 0)
-  const countryCount = new Set(
-    items.map((item) => item.country_code).filter((code): code is string => code !== null),
-  ).size
+  const { totalItems, totalUnits, countryCount, totalInvested } = computeCollectionStats(items, purchases)
 
   const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 

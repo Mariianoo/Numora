@@ -2,14 +2,14 @@
  * components/ui/Sidebar.tsx
  * Navegação lateral autenticada. Mostra somente rotas que existem de
  * verdade — sem links quebrados/desabilitados para funcionalidades
- * futuras (Wishlist, Compras, Vendas, Perfil, Configurações). A lista
+ * futuras (Wishlist, Compras, Vendas, Configurações). A lista
  * `MAIN_NAV` é o único lugar a estender quando essas rotas existirem.
  */
 'use client'
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Coins } from 'lucide-react'
+import { LayoutDashboard, Coins, UserRound } from 'lucide-react'
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
 import { cn } from './utils'
@@ -23,6 +23,7 @@ interface NavItem {
 const MAIN_NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/dashboard/collection', label: 'Minha Coleção', icon: Coins },
+  { href: '/dashboard/profile', label: 'Meu Perfil', icon: UserRound },
 ]
 
 function NavLink({ item, pathname }: { item: NavItem; pathname: string }) {
