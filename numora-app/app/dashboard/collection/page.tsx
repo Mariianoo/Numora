@@ -9,12 +9,28 @@
  * Etapa UI/UX: busca e filtros (país/metal/conservação) são somente
  * client-side sobre os itens já carregados por `collectionRepository.list()`
  * — nenhuma query nova, nenhuma mudança de repositório/regra de negócio.
+ *
+ * Etapa de correções do formulário: segundo metal (bimetálica) usa a
+ * coluna `secondary_metal_code`, que já existia no banco desde a Etapa 4
+ * — nenhuma migration nesta etapa. Data da compra vem pré-preenchida com
+ * hoje só ao ADICIONAR (nunca ao editar).
  */
 'use client'
 
-import { useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
-import { Coins, ClipboardList, Landmark, Pencil, PackageOpen, Plus, Receipt, Search, Trash2 } from 'lucide-react'
+import {
+  Coins,
+  ClipboardList,
+  HelpCircle,
+  Landmark,
+  Pencil,
+  PackageOpen,
+  Plus,
+  Receipt,
+  Search,
+  Trash2,
+} from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
@@ -36,6 +52,54 @@ const GRADE_SCALE_LABELS: Record<string, string> = {
   br: 'Escala brasileira',
   sheldon: 'Escala Sheldon',
 }
+
+/**
+ * Descrições da escala brasileira, chave = `code` real de `grades`
+ * (confirmado no banco antes de escrever isto: SOF, REG, BC, MBC, SOB,
+ * FC, PROOF — não os textos de exemplo genéricos, que não batiam com a
+ * taxonomia real do Numora).
+ */
+const GRADE_BR_HELP: Array<{ code: string; label: string; description: string }> = [
+  { code: 'SOF', label: 'Sofrível', description: 'Peça bastante desgastada, com detalhes muito reduzidos.' },
+  {
+    code: 'REG',
+    label: 'Regular',
+    description: 'Desgaste acentuado, com parte significativa dos detalhes comprometida.',
+  },
+  {
+    code: 'BC',
+    label: 'Bela Conservação',
+    description: 'Sinais de circulação evidentes, mas com detalhes principais ainda identificáveis.',
+  },
+  {
+    code: 'MBC',
+    label: 'Muito Bem Conservada',
+    description: 'Detalhes principais bem preservados, com sinais moderados de circulação.',
+  },
+  { code: 'SOB', label: 'Soberba', description: 'Excelente conservação, com mínimos sinais de circulação.' },
+  {
+    code: 'FC',
+    label: 'Flor de Cunho',
+    description: 'Conservação excepcional, praticamente sem sinais de circulação.',
+  },
+  {
+    code: 'PROOF',
+    label: 'Proof',
+    description: 'Cunhagem especial para colecionadores, acabamento espelhado — não destinada à circulação.',
+  },
+]
+
+const GRADE_SHELDON_HELP: Array<{ range: string; description: string }> = [
+  { range: 'Poor · Fair · About Good · Good', description: 'Desgaste severo; só o tipo básico é identificável.' },
+  { range: 'Very Good · Fine', description: 'Desgaste significativo, mas com os detalhes principais visíveis.' },
+  { range: 'Very Fine', description: 'Desgaste moderado; a maior parte dos detalhes ainda nítida.' },
+  { range: 'Extremely Fine', description: 'Desgaste leve; quase todos os detalhes preservados.' },
+  { range: 'About Uncirculated', description: 'Traços mínimos de manuseio, sem desgaste de circulação real.' },
+  {
+    range: 'Mint State (60–70)',
+    description: 'Sem circulação — o número indica o grau de perfeição, do mais baixo (60) ao mais alto (70).',
+  },
+]
 
 function toNullableNumber(value: string): number | null {
   if (value.trim() === '') return null
@@ -62,6 +126,28 @@ function percentStringToPurity(value: string): number | null {
   const percent = toNullableNumber(value)
   return percent !== null ? percent / 100 : null
 }
+
+/**
+ * Data local de hoje em "AAAA-MM-DD" para pré-preencher `<input
+ * type="date">`. `getFullYear`/`getMonth`/`getDate` já retornam os
+ * componentes no fuso horário LOCAL do navegador — ao contrário de
+ * `new Date("AAAA-MM-DD").toLocaleDateString()` (bug já corrigido em
+ * outro lugar do projeto), aqui não há nenhuma string sendo
+ * reinterpretada como UTC, então não há deslocamento de dia possível.
+ */
+function getTodayDateString(): string {
+  const now = new Date()
+  const year = now.getFullYear()
+  const month = String(now.getMonth() + 1).padStart(2, '0')
+  const day = String(now.getDate()).padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
+
+const CURRENT_YEAR = new Date().getFullYear()
+/** Ano numismático mínimo aceito pelo campo — ver relatório sobre a escolha. */
+const MIN_COIN_YEAR = 1
+/** Pequena margem para moedas comemorativas cunhadas com o ano seguinte. */
+const MAX_COIN_YEAR = CURRENT_YEAR + 1
 
 function SectionHeading({ icon: Icon, children }: { icon: LucideIcon; children: string }) {
   return (
@@ -90,6 +176,7 @@ export default function CollectionPage() {
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
   const [isModalOpen, setIsModalOpen] = useState(false)
+  const [isGradeHelpOpen, setIsGradeHelpOpen] = useState(false)
 
   // Busca e filtros — somente client-side, sobre os itens já carregados.
   const [searchTerm, setSearchTerm] = useState('')
@@ -104,7 +191,9 @@ export default function CollectionPage() {
   const [countryCode, setCountryCode] = useState('')
   const [year, setYear] = useState('')
   const [denomination, setDenomination] = useState('')
+  const [hasSecondMetal, setHasSecondMetal] = useState(false)
   const [metalCode, setMetalCode] = useState('')
+  const [secondaryMetalCode, setSecondaryMetalCode] = useState('')
 
   // Características
   const [grossWeightG, setGrossWeightG] = useState('')
@@ -166,7 +255,9 @@ export default function CollectionPage() {
     setCountryCode('')
     setYear('')
     setDenomination('')
+    setHasSecondMetal(false)
     setMetalCode('')
+    setSecondaryMetalCode('')
     setGrossWeightG('')
     setPurityPercent('')
     setGradeId('')
@@ -183,6 +274,8 @@ export default function CollectionPage() {
     setSuccessMessage(null)
     setEditingItemId(null)
     resetForm()
+    // Só ao adicionar — editar preserva a data já registrada da compra.
+    setPurchaseDate(getTodayDateString())
     setIsModalOpen(true)
   }
 
@@ -193,7 +286,9 @@ export default function CollectionPage() {
     setCountryCode(item.countryCode ?? '')
     setYear(item.year !== null ? String(item.year) : '')
     setDenomination(item.denomination ?? '')
+    setHasSecondMetal(item.secondaryMetalCode !== null)
     setMetalCode(item.metalCode ?? '')
+    setSecondaryMetalCode(item.secondaryMetalCode ?? '')
     setGrossWeightG(item.grossWeightG !== null ? String(item.grossWeightG) : '')
     setPurityPercent(purityToPercentString(item.purity))
     setGradeId(item.gradeId ?? '')
@@ -206,11 +301,11 @@ export default function CollectionPage() {
     setIsModalOpen(true)
   }
 
-  function closeModal() {
+  const closeModal = useCallback(() => {
     setIsModalOpen(false)
     setEditingItemId(null)
     resetForm()
-  }
+  }, [])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -226,6 +321,7 @@ export default function CollectionPage() {
       year: toNullableInt(year),
       denomination: toNullableText(denomination),
       metalCode: toNullableText(metalCode),
+      secondaryMetalCode: hasSecondMetal ? toNullableText(secondaryMetalCode) : null,
       grossWeightG: toNullableNumber(grossWeightG),
       purity: percentStringToPurity(purityPercent),
       gradeId: toNullableText(gradeId),
@@ -325,6 +421,7 @@ export default function CollectionPage() {
                 <option value="">País</option>
                 {countries.map((country) => (
                   <option key={country.code} value={country.code}>
+                    {country.flagEmoji ? `${country.flagEmoji} ` : ''}
                     {country.name}
                   </option>
                 ))}
@@ -404,7 +501,11 @@ export default function CollectionPage() {
 
                 <div className="flex items-center justify-between text-sm">
                   <div className="flex flex-wrap gap-1.5">
-                    {item.metalName && <Badge tone="accent">{item.metalName}</Badge>}
+                    {item.metalName && (
+                      <Badge tone="accent">
+                        {item.secondaryMetalName ? `${item.metalName} + ${item.secondaryMetalName}` : item.metalName}
+                      </Badge>
+                    )}
                     {item.gradeLabel && <Badge tone="neutral">{item.gradeLabel}</Badge>}
                   </div>
                   {item.quantity > 1 && (
@@ -474,17 +575,58 @@ export default function CollectionPage() {
                   </option>
                 ))}
               </Select>
-              <Input label="Ano" type="number" value={year} onChange={(e) => setYear(e.target.value)} />
+              <Input
+                label="Ano"
+                type="number"
+                inputMode="numeric"
+                min={MIN_COIN_YEAR}
+                max={MAX_COIN_YEAR}
+                step={1}
+                placeholder={`Ex.: 1900`}
+                value={year}
+                onChange={(e) => setYear(e.target.value)}
+              />
             </FieldRow>
 
+            <Input
+              label="Denominação"
+              value={denomination}
+              onChange={(e) => setDenomination(e.target.value)}
+              placeholder="Ex.: 200 Réis"
+            />
+
+            <div className="flex flex-col gap-2">
+              <span className="text-sm font-medium text-text-secondary">Composição</span>
+              <div className="flex gap-5">
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                  <input
+                    type="radio"
+                    name="metal-composition"
+                    checked={!hasSecondMetal}
+                    onChange={() => setHasSecondMetal(false)}
+                    className="accent-accent"
+                  />
+                  Um metal
+                </label>
+                <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
+                  <input
+                    type="radio"
+                    name="metal-composition"
+                    checked={hasSecondMetal}
+                    onChange={() => setHasSecondMetal(true)}
+                    className="accent-accent"
+                  />
+                  Dois metais
+                </label>
+              </div>
+            </div>
+
             <FieldRow>
-              <Input
-                label="Denominação"
-                value={denomination}
-                onChange={(e) => setDenomination(e.target.value)}
-                placeholder="Ex.: 200 Réis"
-              />
-              <Select label="Metal" value={metalCode} onChange={(e) => setMetalCode(e.target.value)}>
+              <Select
+                label={hasSecondMetal ? 'Metal principal' : 'Metal'}
+                value={metalCode}
+                onChange={(e) => setMetalCode(e.target.value)}
+              >
                 <option value="">Selecione...</option>
                 {metals.map((metal) => (
                   <option key={metal.code} value={metal.code}>
@@ -492,6 +634,20 @@ export default function CollectionPage() {
                   </option>
                 ))}
               </Select>
+              {hasSecondMetal && (
+                <Select
+                  label="Segundo metal"
+                  value={secondaryMetalCode}
+                  onChange={(e) => setSecondaryMetalCode(e.target.value)}
+                >
+                  <option value="">Selecione...</option>
+                  {metals.map((metal) => (
+                    <option key={metal.code} value={metal.code}>
+                      {metal.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
             </FieldRow>
           </div>
 
@@ -520,18 +676,33 @@ export default function CollectionPage() {
             </FieldRow>
 
             <FieldRow>
-              <Select label="Conservação" value={gradeId} onChange={(e) => setGradeId(e.target.value)}>
-                <option value="">Selecione...</option>
-                {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
-                  <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
-                    {scaleGrades.map((grade) => (
-                      <option key={grade.id} value={grade.id}>
-                        {grade.label}
-                      </option>
-                    ))}
-                  </optgroup>
-                ))}
-              </Select>
+              <div className="flex flex-col gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <label htmlFor="grade-select" className="text-sm font-medium text-text-secondary">
+                    Conservação
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setIsGradeHelpOpen(true)}
+                    aria-label="Ajuda sobre níveis de conservação"
+                    className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                  >
+                    <HelpCircle className="size-4" aria-hidden />
+                  </button>
+                </div>
+                <Select id="grade-select" value={gradeId} onChange={(e) => setGradeId(e.target.value)}>
+                  <option value="">Selecione...</option>
+                  {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
+                    <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
+                      {scaleGrades.map((grade) => (
+                        <option key={grade.id} value={grade.id}>
+                          {grade.label}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </Select>
+              </div>
               <Input
                 label="Valor de face"
                 type="number"
@@ -588,6 +759,45 @@ export default function CollectionPage() {
             />
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={isGradeHelpOpen}
+        onClose={() => setIsGradeHelpOpen(false)}
+        title="Níveis de conservação"
+        description="O que cada sigla significa, nas duas escalas usadas no Numora."
+      >
+        <div className="flex flex-col gap-6">
+          <div>
+            <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+              Escala brasileira
+            </p>
+            <dl className="mt-3 flex flex-col gap-3">
+              {GRADE_BR_HELP.map((entry) => (
+                <div key={entry.code}>
+                  <dt className="text-sm font-medium text-text-primary">
+                    {entry.code} — {entry.label}
+                  </dt>
+                  <dd className="mt-0.5 text-sm text-text-secondary">{entry.description}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+
+          <div className="border-t border-border pt-5">
+            <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+              Escala Sheldon (internacional)
+            </p>
+            <dl className="mt-3 flex flex-col gap-3">
+              {GRADE_SHELDON_HELP.map((entry) => (
+                <div key={entry.range}>
+                  <dt className="text-sm font-medium text-text-primary">{entry.range}</dt>
+                  <dd className="mt-0.5 text-sm text-text-secondary">{entry.description}</dd>
+                </div>
+              ))}
+            </dl>
+          </div>
+        </div>
       </Modal>
     </div>
   )

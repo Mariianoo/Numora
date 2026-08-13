@@ -31,6 +31,8 @@ export interface CollectionItem {
   countryDisplayName: string | null
   countryFlagEmoji: string | null
   metalName: string | null
+  /** Nome de exibição do segundo metal (moeda bimetálica), quando houver. */
+  secondaryMetalName: string | null
   gradeLabel: string | null
   gradeScale: string | null
   /** Dados da compra vinculada (purchases), quando existir. */
@@ -43,12 +45,18 @@ export interface CollectionItem {
 }
 
 /**
- * Dados do formulário "Adicionar/Editar moeda" — só os campos expostos na
- * primeira versão da tela (país, ano, denominação, metal, peso, pureza,
- * grau, valor de face, quantidade). Os demais campos de collection_items
- * (mint, secondary_metal_code, unit_cost_override, description, location,
+ * Dados do formulário "Adicionar/Editar moeda" — país, ano, denominação,
+ * metal (+ segundo metal opcional, para moedas bimetálicas), peso,
+ * pureza, grau, valor de face, quantidade. Os demais campos de
+ * collection_items (mint, unit_cost_override, description, location,
  * tags) já existem no banco (Etapa 4) mas não têm UI ainda — permanecem
  * null nesta versão, sem perda de dado futuro.
+ *
+ * `secondaryMetalCode`: `null` = moeda monometálica. Preenchido = moeda
+ * bimetálica (ex.: núcleo de um metal, anel de outro). A coluna
+ * `secondary_metal_code` já existe no banco desde a Etapa 4 — só não
+ * tinha UI até agora. Trimetálicas não são representáveis com o schema
+ * atual (só 2 colunas de metal); ficaria para uma etapa futura.
  *
  * `purchase` é opcional: se preenchido, o repositório cria (ou atualiza,
  * se o item já tiver uma) a compra vinculada; se null, o item não
@@ -60,6 +68,7 @@ export interface CollectionItemInput {
   year: number | null
   denomination: string | null
   metalCode: string | null
+  secondaryMetalCode: string | null
   grossWeightG: number | null
   purity: number | null
   gradeId: string | null

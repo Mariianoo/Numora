@@ -35,6 +35,10 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
           'transition-colors outline-none',
           'focus:border-accent focus:ring-2 focus:ring-accent/20',
           'disabled:cursor-not-allowed disabled:opacity-50',
+          // Remove as setas nativas de spin de inputs number (visualmente
+          // pesadas) sem afetar o comportamento — ainda dá pra usar as
+          // setas do teclado normalmente.
+          '[appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none',
           error ? 'border-danger focus:border-danger focus:ring-danger/20' : 'border-border',
           className,
         )}

@@ -25,15 +25,18 @@ export interface CollectionRepository {
 }
 
 /**
- * `metals` precisa de desambiguação (`!metal_code`) porque
- * collection_items tem duas FKs para metals (metal_code e
- * secondary_metal_code) — sem isso o PostgREST não sabe qual relação
- * usar. As demais tabelas embutidas têm só uma FK cada, sem ambiguidade.
+ * `metals` precisa de desambiguação (`!metal_code`/`!secondary_metal_code`)
+ * porque collection_items tem duas FKs para metals — sem isso o
+ * PostgREST não sabe qual relação usar. O alias `secondary_metals:`
+ * renomeia o segundo embed para não colidir com `metals` no JSON de
+ * resposta. As demais tabelas embutidas têm só uma FK cada, sem
+ * ambiguidade.
  */
 const ITEM_SELECT = `
   *,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
+  secondary_metals:metals!secondary_metal_code ( name ),
   grades ( label, scale ),
   purchases ( total_price, purchase_date, seller_name, notes )
 `
@@ -62,6 +65,7 @@ interface CollectionItemRow {
   updated_at: string
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
+  secondary_metals: { name: string } | null
   grades: { label: string; scale: string } | null
   purchases: {
     total_price: number
@@ -97,6 +101,7 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     countryDisplayName: row.countries?.name ?? null,
     countryFlagEmoji: row.countries?.flag_emoji ?? null,
     metalName: row.metals?.name ?? null,
+    secondaryMetalName: row.secondary_metals?.name ?? null,
     gradeLabel: row.grades?.label ?? null,
     gradeScale: row.grades?.scale ?? null,
     purchase: row.purchases
@@ -165,6 +170,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           year: input.year,
           denomination: input.denomination,
           metal_code: input.metalCode,
+          secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
           purity: input.purity,
           grade_id: input.gradeId,
@@ -205,6 +211,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           year: input.year,
           denomination: input.denomination,
           metal_code: input.metalCode,
+          secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
           purity: input.purity,
           grade_id: input.gradeId,
