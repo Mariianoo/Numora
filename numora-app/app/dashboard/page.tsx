@@ -1,8 +1,8 @@
 /**
  * app/dashboard/page.tsx
- * Página protegida (sem estilização avançada). O proxy já bloqueia
- * acesso sem sessão, mas a página também verifica a sessão via supabase
- * server client — segunda camada de defesa, não depende só do proxy.
+ * Página protegida. O proxy já bloqueia acesso sem sessão, mas a página
+ * também verifica a sessão via supabase server client — segunda camada
+ * de defesa, não depende só do proxy.
  *
  * Estatísticas com dado real (Etapa de integração): esta é uma página
  * Server Component, que usa o client Supabase de servidor diretamente
@@ -10,12 +10,20 @@
  * repositories de features/collection e features/purchases, que são
  * client-side (usam o client de browser) e servem os componentes
  * interativos de /dashboard/collection.
+ *
+ * Etapa UI/UX: única query nova é `profiles.name` (saudação "Bom dia,
+ * {nome}", com fallback para a parte local do e-mail) — as 3 queries de
+ * estatísticas permanecem exatamente como eram antes desta etapa.
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
+import { Coins, Layers, Globe2, Wallet, ShoppingBag, PackageOpen } from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
-import { LogoutButton } from '@/features/auth/components/LogoutButton'
+import { PageHeader } from '@/components/ui/PageHeader'
+import { StatCard } from '@/components/ui/StatCard'
+import { Card } from '@/components/ui/Card'
+import { EmptyState } from '@/components/ui/EmptyState'
 
 interface CollectionItemStatsRow {
   quantity: number
@@ -32,6 +40,25 @@ interface LastPurchaseRow {
   purchase_date: string | null
 }
 
+function getGreeting(): string {
+  const hour = new Date().getHours()
+  if (hour < 12) return 'Bom dia'
+  if (hour < 18) return 'Boa tarde'
+  return 'Boa noite'
+}
+
+/**
+ * `purchase_date` é uma coluna DATE (sem horário) — formatar via
+ * `Date` + `toLocaleDateString` local sofreria deslocamento de fuso
+ * (meia-noite UTC vira o dia anterior em fusos negativos, ex.: Brasil).
+ * Extraímos os componentes literais da string "AAAA-MM-DD" em vez de
+ * deixar o `Date` reinterpretar o fuso horário.
+ */
+function formatDateOnly(isoDate: string): string {
+  const [year, month, day] = isoDate.split('-')
+  return `${day}/${month}/${year}`
+}
+
 export default async function DashboardPage() {
   const supabase = await getSupabaseServerClient()
   const {
@@ -42,7 +69,7 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
-  const [itemsResult, purchasesResult, lastPurchaseResult] = await Promise.all([
+  const [itemsResult, purchasesResult, lastPurchaseResult, profileResult] = await Promise.all([
     supabase.from('collection_items').select('quantity, country_code'),
     supabase.from('purchases').select('total_price'),
     supabase
@@ -51,11 +78,15 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
   ])
 
   const items = (itemsResult.data ?? []) as CollectionItemStatsRow[]
   const purchases = (purchasesResult.data ?? []) as PurchaseStatsRow[]
   const lastPurchase = lastPurchaseResult.data as LastPurchaseRow | null
+  const profileName = (profileResult.data as { name: string | null } | null)?.name
+
+  const displayName = profileName?.trim() || user.email?.split('@')[0] || 'colecionador'
 
   const totalItems = items.length
   const totalUnits = items.reduce((sum, item) => sum + item.quantity, 0)
@@ -64,44 +95,102 @@ export default async function DashboardPage() {
     items.map((item) => item.country_code).filter((code): code is string => code !== null),
   ).size
 
+  const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+
   return (
-    <div>
-      <div className="flex items-center justify-between">
-        <p>Dashboard</p>
-        <LogoutButton />
-      </div>
-      <p>Logado como: {user.email}</p>
+    <div className="flex flex-col gap-10">
+      <PageHeader title={`${getGreeting()}, ${displayName}`} description="Veja como está sua coleção." />
 
-      <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
-        <div className="border p-3">
-          <p className="text-sm">Itens na coleção</p>
-          <p className="text-xl font-semibold">{totalItems}</p>
+      <section className="flex flex-col gap-4">
+        <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+          Resumo da coleção
+        </p>
+        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <StatCard icon={Coins} label="Moedas" value={String(totalItems)} description="Itens cadastrados" />
+          <StatCard icon={Layers} label="Unidades" value={String(totalUnits)} description="Peças na coleção" />
+          <StatCard
+            icon={Globe2}
+            label="Países"
+            value={String(countryCount)}
+            description="Países representados"
+          />
+          <StatCard
+            icon={Wallet}
+            label="Investido"
+            value={currencyFormatter.format(totalInvested)}
+            description="Valor total de aquisição"
+          />
         </div>
-        <div className="border p-3">
-          <p className="text-sm">Total de unidades</p>
-          <p className="text-xl font-semibold">{totalUnits}</p>
-        </div>
-        <div className="border p-3">
-          <p className="text-sm">Países</p>
-          <p className="text-xl font-semibold">{countryCount}</p>
-        </div>
-        <div className="border p-3">
-          <p className="text-sm">Total investido</p>
-          <p className="text-xl font-semibold">R$ {totalInvested.toFixed(2)}</p>
-        </div>
-        <div className="border p-3 sm:col-span-2">
-          <p className="text-sm">Última aquisição</p>
-          <p className="text-xl font-semibold">
-            {lastPurchase
-              ? `R$ ${Number(lastPurchase.total_price).toFixed(2)}${lastPurchase.seller_name ? ` — ${lastPurchase.seller_name}` : ''}`
-              : '—'}
-          </p>
-        </div>
-      </div>
+      </section>
 
-      <p className="mt-6">
-        <Link href="/dashboard/collection">Minha Coleção</Link>
-      </p>
+      <section className="flex flex-col gap-4">
+        <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+          Atividade recente
+        </p>
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+          <Card className="p-6">
+            <h2 className="text-base font-semibold text-text-primary">Minha coleção</h2>
+            {totalItems === 0 ? (
+              <div className="mt-4">
+                <EmptyState
+                  icon={PackageOpen}
+                  title="Sua coleção ainda está vazia"
+                  description="Comece cadastrando sua primeira moeda."
+                  className="border-none px-0 py-6"
+                  action={
+                    <Link
+                      href="/dashboard/collection"
+                      className="inline-flex h-9 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium text-background transition-colors hover:bg-accent-hover"
+                    >
+                      Adicionar primeira moeda
+                    </Link>
+                  }
+                />
+              </div>
+            ) : (
+              <>
+                <p className="mt-2 text-sm text-text-secondary">
+                  Você tem {totalItems} moeda{totalItems === 1 ? '' : 's'} catalogada
+                  {totalItems === 1 ? '' : 's'} em {countryCount} país{countryCount === 1 ? '' : 'es'}.
+                </p>
+                <Link
+                  href="/dashboard/collection"
+                  className="mt-5 inline-flex h-9 items-center justify-center rounded-lg border border-border bg-surface-hover px-4 text-sm font-medium text-text-primary transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                >
+                  Ver coleção completa
+                </Link>
+              </>
+            )}
+          </Card>
+
+          <Card className="p-6">
+            <h2 className="text-base font-semibold text-text-primary">Última aquisição</h2>
+            {lastPurchase === null ? (
+              <div className="mt-4">
+                <EmptyState
+                  icon={ShoppingBag}
+                  title="Nenhuma aquisição registrada"
+                  className="border-none px-0 py-6"
+                />
+              </div>
+            ) : (
+              <div className="mt-4 flex items-center justify-between rounded-lg border border-border bg-background px-4 py-3.5">
+                <div>
+                  <p className="font-semibold text-text-primary">
+                    {currencyFormatter.format(Number(lastPurchase.total_price))}
+                  </p>
+                  <p className="text-sm text-text-secondary">
+                    {lastPurchase.seller_name ?? 'Vendedor não informado'}
+                  </p>
+                </div>
+                {lastPurchase.purchase_date && (
+                  <p className="text-sm text-text-secondary">{formatDateOnly(lastPurchase.purchase_date)}</p>
+                )}
+              </div>
+            )}
+          </Card>
+        </div>
+      </section>
     </div>
   )
 }

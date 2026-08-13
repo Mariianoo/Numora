@@ -7,6 +7,7 @@
 
 import { useState } from 'react'
 import { useRouter } from 'next/navigation'
+import { LogOut } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 
@@ -35,13 +36,14 @@ export function LogoutButton() {
     <div>
       <button
         type="button"
-        className="border px-3 py-1 disabled:opacity-50"
         onClick={handleLogout}
         disabled={isSigningOut}
+        className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-danger disabled:cursor-not-allowed disabled:opacity-50"
       >
+        <LogOut className="size-4" aria-hidden />
         {isSigningOut ? 'Saindo...' : 'Sair'}
       </button>
-      {error && <p className="mt-2 text-sm">Erro ao sair: {error}</p>}
+      {error && <p className="mt-2 px-3 text-sm text-danger">Erro ao sair: {error}</p>}
     </div>
   )
 }

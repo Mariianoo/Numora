@@ -13,8 +13,13 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
 import Link from 'next/link'
+import { CheckCircle2, Loader2, TriangleAlert } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Card } from '@/components/ui/Card'
+import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
 const MIN_PASSWORD_LENGTH = 8
@@ -82,72 +87,85 @@ export default function ResetPasswordPage() {
 
   if (success) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="text-2xl font-semibold">Senha atualizada</h1>
-        <p>Redirecionando para o painel...</p>
-      </div>
+      <AuthShell tagline="Nova senha">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-success/10 text-success">
+            <CheckCircle2 className="size-7" aria-hidden />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">Senha atualizada</h2>
+            <p className="mt-2 text-sm text-text-secondary">Redirecionando para o painel...</p>
+          </div>
+        </div>
+      </AuthShell>
     )
   }
 
   if (linkInvalid) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="text-2xl font-semibold">Link inválido ou expirado</h1>
-        <p>Solicite um novo link de recuperação.</p>
-        <Link href="/forgot-password" className="underline">
-          Solicitar novo link
-        </Link>
-      </div>
+      <AuthShell tagline="Nova senha">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-danger/10 text-danger">
+            <TriangleAlert className="size-7" aria-hidden />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">Link inválido ou expirado</h2>
+            <p className="mt-2 text-sm text-text-secondary">Solicite um novo link de recuperação.</p>
+          </div>
+          <Link href="/forgot-password" className="text-sm text-accent transition-colors hover:text-accent-hover">
+            Solicitar novo link
+          </Link>
+        </div>
+      </AuthShell>
     )
   }
 
   if (!isReady) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <p>Verificando o link de recuperação...</p>
-      </div>
+      <AuthShell tagline="Nova senha">
+        <div className="flex flex-col items-center gap-3">
+          <Loader2 className="size-6 animate-spin text-text-secondary" aria-hidden />
+          <p className="text-sm text-text-secondary">Verificando o link de recuperação...</p>
+        </div>
+      </AuthShell>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold">Nova senha</h1>
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex w-full max-w-sm flex-col gap-3">
-        <label>
-          Nova senha
-          <input
-            className="block w-full border px-2 py-1"
+    <AuthShell tagline="Defina sua nova senha">
+      <Card className="w-full max-w-sm p-7">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Input
+            label="Nova senha"
             type="password"
+            autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             minLength={MIN_PASSWORD_LENGTH}
             required
           />
-        </label>
-        <label>
-          Confirmar nova senha
-          <input
-            className="block w-full border px-2 py-1"
+          <Input
+            label="Confirmar nova senha"
             type="password"
+            autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
           />
-        </label>
 
-        {error && <p className="text-sm">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
 
-        <button type="submit" className="border px-3 py-1 disabled:opacity-50" disabled={isSubmitting}>
-          {isSubmitting ? 'Salvando...' : 'Salvar nova senha'}
-        </button>
-      </form>
+          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
+            {isSubmitting ? 'Salvando...' : 'Salvar nova senha'}
+          </Button>
+        </form>
 
-      <Link href="/login" className="text-sm underline">
-        Cancelar
-      </Link>
-    </div>
+        <div className="mt-6 flex justify-center border-t border-border pt-5">
+          <Link href="/login" className="text-sm text-text-secondary transition-colors hover:text-accent">
+            Cancelar
+          </Link>
+        </div>
+      </Card>
+    </AuthShell>
   )
 }

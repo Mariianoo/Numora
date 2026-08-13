@@ -8,8 +8,13 @@
 
 import { useState, type FormEvent } from 'react'
 import Link from 'next/link'
+import { MailCheck } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Card } from '@/components/ui/Card'
+import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
 
@@ -36,45 +41,52 @@ export default function ForgotPasswordPage() {
 
   if (submitted) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="text-2xl font-semibold">Verifique seu e-mail</h1>
-        <p>Se {email} estiver cadastrado, enviamos um link para redefinir sua senha.</p>
-        <Link href="/login" className="underline">
-          Voltar para o login
-        </Link>
-      </div>
+      <AuthShell tagline="Esqueci minha senha">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-accent/10 text-accent">
+            <MailCheck className="size-7" aria-hidden />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">Verifique seu e-mail</h2>
+            <p className="mt-2 max-w-sm text-sm text-text-secondary">
+              Se <span className="text-text-primary">{email}</span> estiver cadastrado, enviamos um link para
+              redefinir sua senha.
+            </p>
+          </div>
+          <Link href="/login" className="text-sm text-accent transition-colors hover:text-accent-hover">
+            Voltar para o login
+          </Link>
+        </div>
+      </AuthShell>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold">Esqueci minha senha</h1>
-        <p className="text-sm">Informe seu e-mail para receber o link de redefinição</p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex w-full max-w-sm flex-col gap-3">
-        <label>
-          E-mail
-          <input
-            className="block w-full border px-2 py-1"
+    <AuthShell tagline="Esqueci minha senha">
+      <Card className="w-full max-w-sm p-7">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Input
+            label="E-mail"
             type="email"
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-        </label>
 
-        {error && <p className="text-sm">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
 
-        <button type="submit" className="border px-3 py-1 disabled:opacity-50" disabled={isSubmitting}>
-          {isSubmitting ? 'Enviando...' : 'Enviar link de recuperação'}
-        </button>
-      </form>
+          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
+            {isSubmitting ? 'Enviando...' : 'Enviar link de recuperação'}
+          </Button>
+        </form>
 
-      <Link href="/login" className="text-sm underline">
-        Voltar para o login
-      </Link>
-    </div>
+        <div className="mt-6 flex justify-center border-t border-border pt-5">
+          <Link href="/login" className="text-sm text-text-secondary transition-colors hover:text-accent">
+            Voltar para o login
+          </Link>
+        </div>
+      </Card>
+    </AuthShell>
   )
 }

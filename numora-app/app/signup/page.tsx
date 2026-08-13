@@ -14,10 +14,16 @@
 import { useEffect, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
+import { MailCheck } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import type { Country } from '@/features/collection/types'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
+import { Select } from '@/components/ui/Select'
+import { Card } from '@/components/ui/Card'
+import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
 const referenceRepository = createSupabaseReferenceRepository()
@@ -92,68 +98,58 @@ export default function SignupPage() {
 
   if (needsEmailConfirmation) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 p-6 text-center">
-        <h1 className="text-2xl font-semibold">Verifique seu e-mail</h1>
-        <p>Enviamos um link de confirmação para {email}. Abra o e-mail e clique no link para ativar sua conta.</p>
-        <Link href="/login" className="underline">
-          Voltar para o login
-        </Link>
-      </div>
+      <AuthShell tagline="Comece a organizar sua coleção">
+        <div className="flex flex-col items-center gap-4 text-center">
+          <div className="flex size-14 items-center justify-center rounded-full bg-accent/10 text-accent">
+            <MailCheck className="size-7" aria-hidden />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-text-primary">Verifique seu e-mail</h2>
+            <p className="mt-2 max-w-sm text-sm text-text-secondary">
+              Enviamos um link de confirmação para <span className="text-text-primary">{email}</span>. Abra o
+              e-mail e clique no link para ativar sua conta.
+            </p>
+          </div>
+          <Link href="/login" className="text-sm text-accent transition-colors hover:text-accent-hover">
+            Voltar para o login
+          </Link>
+        </div>
+      </AuthShell>
     )
   }
 
   return (
-    <div className="flex flex-1 flex-col items-center justify-center gap-6 p-6">
-      <div className="text-center">
-        <h1 className="text-2xl font-semibold">Criar conta</h1>
-        <p className="text-sm">Comece a organizar sua coleção no Numora</p>
-      </div>
-
-      <form onSubmit={handleSubmit} className="flex w-full max-w-sm flex-col gap-3">
-        <label>
-          Nome
-          <input
-            className="block w-full border px-2 py-1"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            required
-          />
-        </label>
-        <label>
-          E-mail
-          <input
-            className="block w-full border px-2 py-1"
+    <AuthShell tagline="Comece a organizar sua coleção">
+      <Card className="w-full max-w-sm p-7">
+        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+          <Input label="Nome" value={name} onChange={(e) => setName(e.target.value)} required />
+          <Input
+            label="E-mail"
             type="email"
+            autoComplete="email"
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-        </label>
-        <label>
-          Senha
-          <input
-            className="block w-full border px-2 py-1"
+          <Input
+            label="Senha"
             type="password"
+            autoComplete="new-password"
             value={password}
             onChange={(e) => setPassword(e.target.value)}
             minLength={MIN_PASSWORD_LENGTH}
             required
           />
-        </label>
-        <label>
-          Confirmar senha
-          <input
-            className="block w-full border px-2 py-1"
+          <Input
+            label="Confirmar senha"
             type="password"
+            autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
           />
-        </label>
-        <label>
-          País
-          <select
-            className="block w-full border px-2 py-1"
+          <Select
+            label="País"
             value={countryCode}
             onChange={(e) => setCountryCode(e.target.value)}
             disabled={isLoadingCountries}
@@ -165,19 +161,21 @@ export default function SignupPage() {
                 {country.name}
               </option>
             ))}
-          </select>
-        </label>
+          </Select>
 
-        {error && <p className="text-sm">{error}</p>}
+          {error && <p className="text-sm text-danger">{error}</p>}
 
-        <button type="submit" className="border px-3 py-1 disabled:opacity-50" disabled={isSubmitting}>
-          {isSubmitting ? 'Criando conta...' : 'Criar minha conta'}
-        </button>
-      </form>
+          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
+            {isSubmitting ? 'Criando conta...' : 'Criar minha conta'}
+          </Button>
+        </form>
 
-      <Link href="/login" className="text-sm underline">
-        Já tenho uma conta
-      </Link>
-    </div>
+        <div className="mt-6 flex justify-center border-t border-border pt-5">
+          <Link href="/login" className="text-sm text-text-secondary transition-colors hover:text-accent">
+            Já tenho uma conta
+          </Link>
+        </div>
+      </Card>
+    </AuthShell>
   )
 }
