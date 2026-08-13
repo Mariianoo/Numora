@@ -6,16 +6,20 @@
  * diretamente. Protegida pelo mesmo proxy/layout que cobre
  * /dashboard/:path*.
  *
- * Passport público: o toggle aparece desabilitado de propósito — a rota
- * pública (/passport/[username]) e a RLS que permitiria leitura pública
- * de profiles ainda não existem (ver análise da Etapa 8). Habilitar o
- * toggle agora criaria um estado no banco ("meu Passport é público") sem
- * nenhuma superfície pública para honrá-lo.
+ * Passport público (Etapa 8.2): o toggle agora é real — ativa/desativa
+ * `passport_public` via `profileRepository.setPassportPublic()`. A rota
+ * pública é `/passport/[username]`, que nunca consulta `profiles`
+ * diretamente: só a RPC `get_public_passport` (`SECURITY DEFINER`,
+ * migration `create_get_public_passport_rpc`), testada isoladamente
+ * contra o banco antes desta UI existir. Exigir `username` antes de
+ * ativar é reforçado em 3 camadas: aqui (UX imediata), no repositório
+ * (`setPassportPublic`), e no banco (`CHECK
+ * chk_profiles_passport_requires_username`, a garantia real).
  */
 'use client'
 
 import { useEffect, useState, type FormEvent } from 'react'
-import { Coins, Layers, Globe2, Gem, Wallet, Loader2 } from 'lucide-react'
+import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy } from 'lucide-react'
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
@@ -31,6 +35,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { StatCard } from '@/components/ui/StatCard'
 import { Avatar } from '@/components/ui/Avatar'
+import { cn } from '@/components/ui/utils'
 
 const profileRepository = createSupabaseProfileRepository()
 const referenceRepository = createSupabaseReferenceRepository()
@@ -47,6 +52,10 @@ export default function ProfilePage() {
   const [loadError, setLoadError] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
+
+  const [isTogglingPassport, setIsTogglingPassport] = useState(false)
+  const [passportError, setPassportError] = useState<string | null>(null)
+  const [linkCopied, setLinkCopied] = useState(false)
 
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
@@ -88,6 +97,40 @@ export default function ProfilePage() {
     } finally {
       setIsSaving(false)
     }
+  }
+
+  async function handleTogglePassport() {
+    if (!profile) return
+
+    setPassportError(null)
+    setLinkCopied(false)
+
+    const nextValue = !profile.passportPublic
+
+    if (nextValue && !profile.username) {
+      setPassportError('Defina um nome de usuário antes de ativar seu Passport público.')
+      return
+    }
+
+    setIsTogglingPassport(true)
+
+    try {
+      const updated = await profileRepository.setPassportPublic(nextValue)
+      setProfile(updated)
+    } catch (err) {
+      setPassportError((err as Error).message)
+    } finally {
+      setIsTogglingPassport(false)
+    }
+  }
+
+  function handleCopyPassportLink() {
+    if (!profile?.username) return
+
+    const url = `${window.location.origin}/passport/${profile.username}`
+    navigator.clipboard.writeText(url)
+    setLinkCopied(true)
+    setTimeout(() => setLinkCopied(false), 2000)
   }
 
   if (isLoading) {
@@ -187,19 +230,55 @@ export default function ProfilePage() {
             <Card className="p-6">
               <div className="flex items-center justify-between gap-4">
                 <h2 className="text-base font-semibold text-text-primary">Passport público</h2>
-                <div
+                <button
+                  type="button"
                   role="switch"
-                  aria-checked="false"
-                  aria-disabled="true"
-                  aria-label="Passport público — em breve"
-                  className="relative inline-flex h-6 w-11 shrink-0 cursor-not-allowed items-center rounded-full bg-surface-hover opacity-60"
+                  aria-checked={profile.passportPublic}
+                  aria-label="Ativar Passport público"
+                  onClick={handleTogglePassport}
+                  disabled={isTogglingPassport}
+                  className={cn(
+                    'relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                    'disabled:cursor-not-allowed disabled:opacity-50',
+                    profile.passportPublic ? 'bg-accent' : 'bg-surface-hover',
+                  )}
                 >
-                  <span className="inline-block size-4 translate-x-1 rounded-full bg-text-secondary" />
-                </div>
+                  <span
+                    className={cn(
+                      'inline-block size-4 rounded-full bg-background transition-transform',
+                      profile.passportPublic ? 'translate-x-6' : 'translate-x-1',
+                    )}
+                  />
+                </button>
               </div>
+
               <p className="mt-2 text-sm text-text-secondary">
-                Em breve — seu Passport será uma identidade pública compartilhável dentro do Numora.
+                {profile.passportPublic
+                  ? 'Seu Passport está visível publicamente.'
+                  : 'Compartilhe sua identidade de colecionador publicamente.'}
               </p>
+
+              {passportError && <p className="mt-2 text-sm text-danger">{passportError}</p>}
+
+              {profile.passportPublic && profile.username && (
+                <div className="mt-4 flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2.5">
+                  <p className="truncate text-sm text-text-secondary">/passport/{profile.username}</p>
+                  <Button type="button" variant="ghost" size="sm" onClick={handleCopyPassportLink}>
+                    {linkCopied ? (
+                      <>
+                        <Check className="size-4" aria-hidden />
+                        Copiado
+                      </>
+                    ) : (
+                      <>
+                        <Copy className="size-4" aria-hidden />
+                        Copiar
+                      </>
+                    )}
+                  </Button>
+                </div>
+              )}
             </Card>
           </div>
         </div>

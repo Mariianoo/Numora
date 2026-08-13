@@ -30,6 +30,17 @@
  * (somente leitura, nunca escreve) usando exatamente o mesmo cálculo do
  * Dashboard (`computeCollectionStats`, Etapa 8.1) — não duplica a
  * lógica, só troca a origem do client (browser em vez de servidor).
+ *
+ * `setPassportPublic` (Etapa 8.2): método dedicado, separado de
+ * `updateOwnProfile`, para deixar essa ação sensível auditável
+ * isoladamente. Ao ativar (`true`), checa `username` antes de tentar —
+ * mas a garantia real é do banco: `CHECK
+ * chk_profiles_passport_requires_username` (migration
+ * `add_passport_public_username_check`) rejeita qualquer tentativa de
+ * `passport_public = true` com `username` nulo, mesmo vinda de fora
+ * deste repositório. A leitura pública do Passport (`/passport/[username]`)
+ * não passa por aqui — é a RPC `get_public_passport`, chamada
+ * diretamente pela página (Server Component), sem repositório.
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { Profile, ProfileUpdateInput } from '@/features/profile/types'
@@ -40,7 +51,10 @@ export interface ProfileRepository {
   getOwnProfile(): Promise<Profile>
   updateOwnProfile(input: ProfileUpdateInput): Promise<Profile>
   getOwnStats(): Promise<CollectionStats>
+  setPassportPublic(value: boolean): Promise<Profile>
 }
+
+const PASSPORT_REQUIRES_USERNAME_MESSAGE = 'Defina um nome de usuário antes de ativar seu Passport público.'
 
 const PROFILE_SELECT =
   'id, numora_id, email, name, username, avatar_url, country_code, plan_tier, passport_public, collector_since, created_at'
@@ -118,7 +132,7 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     if (normalizedUsername === null) {
       const current = await getOwnProfile()
       if (current.passportPublic) {
-        throw new Error('Defina um nome de usuário antes de tornar seu Passport público.')
+        throw new Error(PASSPORT_REQUIRES_USERNAME_MESSAGE)
       }
     }
 
@@ -165,5 +179,32 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     )
   }
 
-  return { getOwnProfile, updateOwnProfile, getOwnStats }
+  async function setPassportPublic(value: boolean): Promise<Profile> {
+    const userId = await requireUserId()
+
+    if (value) {
+      const current = await getOwnProfile()
+      if (!current.username) {
+        throw new Error(PASSPORT_REQUIRES_USERNAME_MESSAGE)
+      }
+    }
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ passport_public: value })
+      .eq('id', userId)
+      .select(PROFILE_SELECT)
+      .single()
+
+    if (error) {
+      if (error.code === '23514') {
+        throw new Error(PASSPORT_REQUIRES_USERNAME_MESSAGE)
+      }
+      throw new Error(`[ProfileRepository] Falha ao atualizar visibilidade do Passport: ${error.message}`)
+    }
+
+    return toProfile(data as ProfileRow)
+  }
+
+  return { getOwnProfile, updateOwnProfile, getOwnStats, setPassportPublic }
 }
