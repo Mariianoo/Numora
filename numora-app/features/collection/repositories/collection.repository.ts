@@ -23,6 +23,7 @@
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { createSupabasePurchasesRepository } from '@/features/purchases/repositories/purchases.repository'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
+import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CollectionItem, CollectionItemInput } from '@/features/collection/types'
 
 export interface CollectionRepository {
@@ -122,6 +123,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
   const supabase = getSupabaseBrowserClient()
   const purchasesRepository = createSupabasePurchasesRepository()
   const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
+  const coinImagesRepository = createSupabaseCoinImagesRepository()
 
   async function get(id: string): Promise<CollectionItem | null> {
     const { data, error } = await supabase.from('collection_items').select(ITEM_SELECT).eq('id', id).maybeSingle()
@@ -266,6 +268,19 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
     },
 
     async remove(id) {
+      // Excluir a moeda cascateia todos os collection_units (banco), e cada
+      // unit cascateia suas linhas de coin_images — mas não os arquivos
+      // físicos no Storage. Por isso limpamos o Storage de todas as units
+      // do item ANTES de excluir o item; se alguma remoção falhar, a
+      // exclusão da moeda inteira é abortada.
+      const units = await collectionUnitsRepository.listByItem(id)
+      for (const unit of units) {
+        const images = await coinImagesRepository.listByUnit(unit.id)
+        for (const image of images) {
+          await coinImagesRepository.remove(image)
+        }
+      }
+
       const { error } = await supabase.from('collection_items').delete().eq('id', id)
 
       if (error) {

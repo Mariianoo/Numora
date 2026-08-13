@@ -17,18 +17,21 @@
  */
 'use client'
 
-import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
   Coins,
   ClipboardList,
   HelpCircle,
+  ImagePlus,
   Landmark,
   Layers,
+  Loader2,
   Pencil,
   PackageOpen,
   Plus,
   Receipt,
+  RefreshCcw,
   Search,
   Star,
   Trash2,
@@ -37,6 +40,7 @@ import {
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
+import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CollectionItem, Country, Grade, Metal } from '@/features/collection/types'
 import {
   COLLECTION_UNIT_STATUS_LABELS,
@@ -44,6 +48,8 @@ import {
   type CollectionUnit,
   type CollectionUnitStatus,
 } from '@/features/collection-units/types'
+import { COIN_IMAGE_KINDS, COIN_IMAGE_KIND_LABELS, type CoinImage, type CoinImageKind } from '@/features/coin-images/types'
+import { processCoinImage, UnsupportedImageFormatError, ImageTooLargeError } from '@/lib/images/process-coin-image'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -57,6 +63,7 @@ import { EmptyState } from '@/components/ui/EmptyState'
 const collectionRepository = createSupabaseCollectionRepository()
 const referenceRepository = createSupabaseReferenceRepository()
 const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
+const coinImagesRepository = createSupabaseCoinImagesRepository()
 
 /** Indicador visual rápido por status, usado na lista de exemplares (seção 12/13 da etapa). */
 const STATUS_EMOJI: Record<CollectionUnitStatus, string> = {
@@ -215,6 +222,192 @@ function StarRatingInput({
           <Star className={`size-4 ${value !== null && star <= value ? 'fill-accent text-accent' : ''}`} aria-hidden />
         </button>
       ))}
+    </div>
+  )
+}
+
+type CoinImageSlotStatus = 'loading' | 'idle' | 'processing' | 'uploading' | 'saved' | 'error'
+
+const SLOT_STATUS_LABEL: Partial<Record<CoinImageSlotStatus, string>> = {
+  processing: 'Processando...',
+  uploading: 'Enviando...',
+  saved: 'Salvo',
+}
+
+/**
+ * Uma foto (frente/verso/borda) de um exemplar. Estado próprio e
+ * independente por slot — cada quadro busca/faz upload/exclui sua
+ * própria imagem sem afetar os outros dois. Nunca mostra "Salvo" antes
+ * do upload E da gravação dos metadados terem os dois confirmado
+ * sucesso (ver CoinImagesRepository.upload).
+ */
+function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; kind: CoinImageKind }) {
+  const [image, setImage] = useState<CoinImage | null>(null)
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null)
+  const [status, setStatus] = useState<CoinImageSlotStatus>('loading')
+  const [error, setError] = useState<string | null>(null)
+  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function load() {
+      setStatus('loading')
+      setError(null)
+      try {
+        const existing = await coinImagesRepository.getByUnitAndKind(collectionUnitId, kind)
+        if (cancelled) return
+        setImage(existing)
+        if (existing) {
+          const url = await coinImagesRepository.getSignedUrl(existing.storagePath)
+          if (!cancelled) setPreviewUrl(url)
+        } else {
+          setPreviewUrl(null)
+        }
+        if (!cancelled) setStatus('idle')
+      } catch (err) {
+        if (!cancelled) {
+          setError((err as Error).message)
+          setStatus('error')
+        }
+      }
+    }
+
+    load()
+    return () => {
+      cancelled = true
+    }
+  }, [collectionUnitId, kind])
+
+  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0]
+    event.target.value = ''
+    if (!file) return
+
+    setError(null)
+    setStatus('processing')
+
+    try {
+      const processed = await processCoinImage(file, kind)
+      setStatus('uploading')
+      const uploaded = await coinImagesRepository.upload(collectionUnitId, {
+        kind,
+        blob: processed.blob,
+        width: processed.width,
+        height: processed.height,
+      })
+      const url = await coinImagesRepository.getSignedUrl(uploaded.storagePath)
+      setImage(uploaded)
+      setPreviewUrl(url)
+      setStatus('saved')
+      setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1500)
+    } catch (err) {
+      const message =
+        err instanceof UnsupportedImageFormatError || err instanceof ImageTooLargeError
+          ? err.message
+          : (err as Error).message
+      setError(message)
+      setStatus('error')
+    }
+  }
+
+  async function handleRemove() {
+    if (!image) return
+    const confirmed = window.confirm(`Excluir a foto de ${COIN_IMAGE_KIND_LABELS[kind].toLowerCase()}?`)
+    if (!confirmed) return
+
+    setError(null)
+    try {
+      await coinImagesRepository.remove(image)
+      setImage(null)
+      setPreviewUrl(null)
+      setStatus('idle')
+    } catch (err) {
+      setError((err as Error).message)
+    }
+  }
+
+  const isBusy = status === 'processing' || status === 'uploading'
+
+  return (
+    <div className="flex flex-col gap-1.5">
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/jpeg,image/jpg,image/png,image/webp"
+        className="hidden"
+        onChange={handleFileSelected}
+      />
+
+      {image && previewUrl ? (
+        <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
+          <button
+            type="button"
+            onClick={() => setIsPreviewOpen(true)}
+            className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[kind]} ampliada`}
+          >
+            {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
+            <img src={previewUrl} alt={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`} className="size-full object-cover" />
+          </button>
+
+          <div className="absolute inset-x-0 bottom-0 flex justify-center gap-1 bg-background/80 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
+            <button
+              type="button"
+              onClick={() => inputRef.current?.click()}
+              disabled={isBusy}
+              aria-label="Substituir foto"
+              className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              <RefreshCcw className="size-3.5" aria-hidden />
+            </button>
+            <button
+              type="button"
+              onClick={handleRemove}
+              disabled={isBusy}
+              aria-label="Excluir foto"
+              className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+            >
+              <Trash2 className="size-3.5" aria-hidden />
+            </button>
+          </div>
+
+          {isBusy && (
+            <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+              <Loader2 className="size-5 animate-spin text-accent" aria-hidden />
+            </div>
+          )}
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={() => inputRef.current?.click()}
+          disabled={isBusy}
+          className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-background text-text-secondary transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {isBusy ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <ImagePlus className="size-5" aria-hidden />}
+          <span className="text-[11px] font-medium">Adicionar foto</span>
+        </button>
+      )}
+
+      <p className="text-center text-xs font-medium text-text-secondary">{COIN_IMAGE_KIND_LABELS[kind]}</p>
+
+      {status !== 'idle' && status !== 'loading' && status !== 'error' && SLOT_STATUS_LABEL[status] && (
+        <p className="text-center text-[11px] text-text-secondary/70">{SLOT_STATUS_LABEL[status]}</p>
+      )}
+      {error && <p className="text-center text-[11px] text-danger">{error}</p>}
+
+      <Modal
+        isOpen={isPreviewOpen}
+        onClose={() => setIsPreviewOpen(false)}
+        title={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`}
+      >
+        {previewUrl && (
+          // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária
+          <img src={previewUrl} alt={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`} className="w-full rounded-lg" />
+        )}
+      </Modal>
     </div>
   )
 }
@@ -979,6 +1172,15 @@ export default function CollectionPage() {
                   >
                     <Trash2 className="size-4" aria-hidden />
                   </button>
+                </div>
+
+                <div className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-text-secondary">Imagens do exemplar</span>
+                  <div className="grid grid-cols-3 gap-2.5">
+                    {COIN_IMAGE_KINDS.map((kind) => (
+                      <CoinImageSlot key={kind} collectionUnitId={unit.id} kind={kind} />
+                    ))}
+                  </div>
                 </div>
 
                 <FieldRow>
