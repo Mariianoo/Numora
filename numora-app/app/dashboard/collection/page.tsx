@@ -43,6 +43,7 @@ import { createSupabaseCollectionUnitsRepository } from '@/features/collection-u
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CollectionItem, Country, Grade, Metal } from '@/features/collection/types'
 import {
+  COLLECTION_UNIT_STATUS_EMOJI,
   COLLECTION_UNIT_STATUS_LABELS,
   COLLECTION_UNIT_STATUS_OPTIONS,
   type CollectionUnit,
@@ -58,6 +59,7 @@ import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
 import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
+import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
 
@@ -67,15 +69,6 @@ const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
 const coinImagesRepository = createSupabaseCoinImagesRepository()
 
 /** Indicador visual rápido por status, usado na lista de exemplares (seção 12/13 da etapa). */
-const STATUS_EMOJI: Record<CollectionUnitStatus, string> = {
-  in_collection: '🟢',
-  for_trade: '🔄',
-  for_sale: '💰',
-  reserved: '🔒',
-  sold: '✅',
-  traded: '🔁',
-}
-
 const GRADE_SCALE_LABELS: Record<string, string> = {
   br: 'Escala brasileira',
   sheldon: 'Escala Sheldon',
@@ -260,17 +253,19 @@ function CoinImageSlot({
   collectionUnitId,
   kind,
   unitLabel,
+  onView,
 }: {
   collectionUnitId: string
   kind: CoinImageKind
   /** Ex.: "Exemplar #1" — identifica no título do editor qual exemplar está sendo fotografado. */
   unitLabel: string
+  /** Abre o CoinImageViewer compartilhado (Etapa 9.3) nesta moeda/exemplar/tipo. */
+  onView: () => void
 }) {
   const [image, setImage] = useState<CoinImage | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [status, setStatus] = useState<CoinImageSlotStatus>('loading')
   const [error, setError] = useState<string | null>(null)
-  const [isPreviewOpen, setIsPreviewOpen] = useState(false)
   const [editingFile, setEditingFile] = useState<File | null>(null)
   /** Muda a cada novo arquivo escolhido — força o editor a remontar com estado limpo (zoom/pan/erro). */
   const [editorKey, setEditorKey] = useState(0)
@@ -389,7 +384,7 @@ function CoinImageSlot({
           <div className="relative bg-background" style={aspectStyle}>
             <button
               type="button"
-              onClick={() => setIsPreviewOpen(true)}
+              onClick={onView}
               className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
               aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[kind]} ampliada`}
             >
@@ -464,17 +459,6 @@ function CoinImageSlot({
         onCancel={() => setEditingFile(null)}
         onConfirm={handleEditorConfirm}
       />
-
-      <Modal
-        isOpen={isPreviewOpen}
-        onClose={() => setIsPreviewOpen(false)}
-        title={`${unitLabel} — ${COIN_IMAGE_KIND_LABELS[kind]}`}
-      >
-        {previewUrl && (
-          // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária
-          <img src={previewUrl} alt={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`} className="w-full rounded-lg" />
-        )}
-      </Modal>
     </div>
   )
 }
@@ -534,6 +518,18 @@ export default function CollectionPage() {
   const [unitsError, setUnitsError] = useState<string | null>(null)
   /** Exemplar aguardando confirmação explícita de exclusão (nunca excluído direto no clique). */
   const [unitPendingDelete, setUnitPendingDelete] = useState<CollectionUnit | null>(null)
+
+  /**
+   * CoinImageViewer (Etapa 9.3) — um único viewer compartilhado por todos
+   * os exemplares da moeda aberta, não um por slot. `key` força remontar
+   * o viewer com estado limpo (zoom/pan/aba) a cada nova abertura, mesmo
+   * clicando em outra foto enquanto ele já está aberto.
+   */
+  const [viewerState, setViewerState] = useState<{ unitId: string; kind: CoinImageKind; key: number } | null>(null)
+
+  function openImageViewer(unitId: string, kind: CoinImageKind) {
+    setViewerState((current) => ({ unitId, kind, key: (current?.key ?? 0) + 1 }))
+  }
 
   useEffect(() => {
     Promise.all([
@@ -1250,6 +1246,7 @@ export default function CollectionPage() {
                         collectionUnitId={unit.id}
                         kind={kind}
                         unitLabel={`Exemplar #${index + 1}`}
+                        onView={() => openImageViewer(unit.id, kind)}
                       />
                     ))}
                   </div>
@@ -1294,7 +1291,7 @@ export default function CollectionPage() {
                   >
                     {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
                       <option key={status} value={status}>
-                        {STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
+                        {COLLECTION_UNIT_STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
                       </option>
                     ))}
                   </Select>
@@ -1334,6 +1331,15 @@ export default function CollectionPage() {
       >
         {null}
       </Modal>
+
+      <CoinImageViewer
+        key={viewerState?.key}
+        isOpen={viewerState !== null}
+        units={units}
+        initialUnitId={viewerState?.unitId ?? ''}
+        initialKind={viewerState?.kind ?? 'front'}
+        onClose={() => setViewerState(null)}
+      />
     </div>
   )
 }

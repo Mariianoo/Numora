@@ -32,6 +32,16 @@ export const COLLECTION_UNIT_STATUS_OPTIONS: CollectionUnitStatus[] = [
   'traded',
 ]
 
+/** Indicador visual rápido por status — reaproveitado no card de exemplares e no CoinImageViewer. */
+export const COLLECTION_UNIT_STATUS_EMOJI: Record<CollectionUnitStatus, string> = {
+  in_collection: '🟢',
+  for_trade: '🔄',
+  for_sale: '💰',
+  reserved: '🔒',
+  sold: '✅',
+  traded: '🔁',
+}
+
 export interface CollectionUnit {
   id: string
   collectionItemId: string
