@@ -20,10 +20,11 @@
 import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
+  Check,
+  Circle,
   Coins,
   ClipboardList,
   HelpCircle,
-  ImagePlus,
   Landmark,
   Layers,
   Loader2,
@@ -31,7 +32,6 @@ import {
   PackageOpen,
   Plus,
   Receipt,
-  RefreshCcw,
   Search,
   Star,
   Trash2,
@@ -49,7 +49,7 @@ import {
   type CollectionUnitStatus,
 } from '@/features/collection-units/types'
 import { COIN_IMAGE_KINDS, COIN_IMAGE_KIND_LABELS, type CoinImage, type CoinImageKind } from '@/features/coin-images/types'
-import { processCoinImage, UnsupportedImageFormatError, ImageTooLargeError } from '@/lib/images/process-coin-image'
+import { OUTPUT_SIZE, encodeCroppedCoinImage, UnsupportedImageFormatError, ImageTooLargeError } from '@/lib/images/process-coin-image'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -57,6 +57,7 @@ import { Textarea } from '@/components/ui/Textarea'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
+import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
 
@@ -228,10 +229,20 @@ function StarRatingInput({
 
 type CoinImageSlotStatus = 'loading' | 'idle' | 'processing' | 'uploading' | 'saved' | 'error'
 
+/**
+ * Só os estados transitórios (em andamento) têm mensagem própria — o
+ * sucesso já fica visível de forma permanente no card da foto ("✓ Foto
+ * salva"), então não repetimos a mesma informação aqui por baixo.
+ */
 const SLOT_STATUS_LABEL: Partial<Record<CoinImageSlotStatus, string>> = {
-  processing: 'Processando...',
-  uploading: 'Enviando...',
-  saved: 'Salvo',
+  processing: 'Processando foto...',
+  uploading: 'Salvando foto...',
+}
+
+const COIN_IMAGE_EDITOR_CONFIG: Record<CoinImageKind, { shape: 'circle' | 'wide'; hint: string }> = {
+  front: { shape: 'circle', hint: 'Centralize a moeda dentro do círculo.' },
+  back: { shape: 'circle', hint: 'Centralize a moeda dentro do círculo.' },
+  edge: { shape: 'wide', hint: 'Fotografe a moeda de lado.' },
 }
 
 /**
@@ -240,13 +251,29 @@ const SLOT_STATUS_LABEL: Partial<Record<CoinImageSlotStatus, string>> = {
  * própria imagem sem afetar os outros dois. Nunca mostra "Salvo" antes
  * do upload E da gravação dos metadados terem os dois confirmado
  * sucesso (ver CoinImagesRepository.upload).
+ *
+ * Seleção de arquivo nunca envia direto — sempre abre o `CoinImageEditor`
+ * primeiro (Etapa 9.2); só o canvas já recortado por ele chega a
+ * `encodeCroppedCoinImage`/upload.
  */
-function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; kind: CoinImageKind }) {
+function CoinImageSlot({
+  collectionUnitId,
+  kind,
+  unitLabel,
+}: {
+  collectionUnitId: string
+  kind: CoinImageKind
+  /** Ex.: "Exemplar #1" — identifica no título do editor qual exemplar está sendo fotografado. */
+  unitLabel: string
+}) {
   const [image, setImage] = useState<CoinImage | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
   const [status, setStatus] = useState<CoinImageSlotStatus>('loading')
   const [error, setError] = useState<string | null>(null)
   const [isPreviewOpen, setIsPreviewOpen] = useState(false)
+  const [editingFile, setEditingFile] = useState<File | null>(null)
+  /** Muda a cada novo arquivo escolhido — força o editor a remontar com estado limpo (zoom/pan/erro). */
+  const [editorKey, setEditorKey] = useState(0)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -280,16 +307,22 @@ function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; k
     }
   }, [collectionUnitId, kind])
 
-  async function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
+  function handleFileSelected(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0]
     event.target.value = ''
     if (!file) return
+    setError(null)
+    setEditorKey((k) => k + 1)
+    setEditingFile(file)
+  }
 
+  async function handleEditorConfirm(canvas: HTMLCanvasElement) {
+    setEditingFile(null)
     setError(null)
     setStatus('processing')
 
     try {
-      const processed = await processCoinImage(file, kind)
+      const processed = await encodeCroppedCoinImage(canvas, kind)
       setStatus('uploading')
       const uploaded = await coinImagesRepository.upload(collectionUnitId, {
         kind,
@@ -306,7 +339,7 @@ function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; k
       const message =
         err instanceof UnsupportedImageFormatError || err instanceof ImageTooLargeError
           ? err.message
-          : (err as Error).message
+          : 'Não foi possível salvar a foto. Tente novamente.'
       setError(message)
       setStatus('error')
     }
@@ -314,7 +347,7 @@ function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; k
 
   async function handleRemove() {
     if (!image) return
-    const confirmed = window.confirm(`Excluir a foto de ${COIN_IMAGE_KIND_LABELS[kind].toLowerCase()}?`)
+    const confirmed = window.confirm(`Remover esta foto? Esta ação removerá a imagem de ${COIN_IMAGE_KIND_LABELS[kind].toLowerCase()} deste exemplar.`)
     if (!confirmed) return
 
     setError(null)
@@ -323,85 +356,119 @@ function CoinImageSlot({ collectionUnitId, kind }: { collectionUnitId: string; k
       setImage(null)
       setPreviewUrl(null)
       setStatus('idle')
-    } catch (err) {
-      setError((err as Error).message)
+    } catch {
+      // A remoção do Storage acontece antes da do registro (CoinImagesRepository.remove) —
+      // se algo falhar, nada muda visualmente além do erro: a foto continua lá.
+      setError('Não foi possível remover a foto. Tente novamente.')
     }
   }
 
   const isBusy = status === 'processing' || status === 'uploading'
+  const { shape, hint } = COIN_IMAGE_EDITOR_CONFIG[kind]
+  const outputSize = OUTPUT_SIZE[kind]
+  const aspectStyle = { aspectRatio: `${outputSize.width} / ${outputSize.height}` }
+  const EmptyIcon = kind === 'edge' ? Circle : Coins
 
   return (
     <div className="flex flex-col gap-1.5">
+      <p className="text-center text-xs font-semibold tracking-wide text-text-secondary uppercase">
+        {COIN_IMAGE_KIND_LABELS[kind]}
+      </p>
+
       <input
         ref={inputRef}
         type="file"
-        accept="image/jpeg,image/jpg,image/png,image/webp"
+        accept="image/jpeg,image/jpg,image/png,image/webp,image/heic,image/heif"
+        capture="environment"
         className="hidden"
         onChange={handleFileSelected}
       />
 
       {image && previewUrl ? (
-        <div className="group relative aspect-square overflow-hidden rounded-lg border border-border bg-background">
-          <button
-            type="button"
-            onClick={() => setIsPreviewOpen(true)}
-            className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-            aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[kind]} ampliada`}
-          >
-            {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
-            <img src={previewUrl} alt={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`} className="size-full object-cover" />
-          </button>
+        <div className="flex flex-col overflow-hidden rounded-lg border border-border">
+          <div className="relative bg-background" style={aspectStyle}>
+            <button
+              type="button"
+              onClick={() => setIsPreviewOpen(true)}
+              className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[kind]} ampliada`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
+              <img src={previewUrl} alt={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`} className="size-full object-cover" />
+            </button>
 
-          <div className="absolute inset-x-0 bottom-0 flex justify-center gap-1 bg-background/80 p-1.5 opacity-0 backdrop-blur-sm transition-opacity group-hover:opacity-100 group-focus-within:opacity-100">
-            <button
-              type="button"
-              onClick={() => inputRef.current?.click()}
-              disabled={isBusy}
-              aria-label="Substituir foto"
-              className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-            >
-              <RefreshCcw className="size-3.5" aria-hidden />
-            </button>
-            <button
-              type="button"
-              onClick={handleRemove}
-              disabled={isBusy}
-              aria-label="Excluir foto"
-              className="rounded-md p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-            >
-              <Trash2 className="size-3.5" aria-hidden />
-            </button>
+            {isBusy && (
+              <div className="absolute inset-0 flex items-center justify-center bg-background/70">
+                <Loader2 className="size-5 animate-spin text-accent" aria-hidden />
+              </div>
+            )}
           </div>
 
-          {isBusy && (
-            <div className="absolute inset-0 flex items-center justify-center bg-background/70">
-              <Loader2 className="size-5 animate-spin text-accent" aria-hidden />
+          <div className="flex flex-col items-center gap-1.5 border-t border-border bg-surface/60 px-2 py-2">
+            <p className="flex items-center justify-center gap-1 text-[11px] font-medium text-success">
+              <Check className="size-3" aria-hidden />
+              Foto salva
+            </p>
+
+            <div className="flex justify-center gap-2">
+              <button
+                type="button"
+                onClick={() => inputRef.current?.click()}
+                disabled={isBusy}
+                className="rounded-md px-2.5 py-2 text-[11px] font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+              >
+                Substituir
+              </button>
+              <button
+                type="button"
+                onClick={handleRemove}
+                disabled={isBusy}
+                className="rounded-md px-2.5 py-2 text-[11px] font-medium text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+              >
+                Remover
+              </button>
             </div>
-          )}
+          </div>
         </div>
       ) : (
         <button
           type="button"
           onClick={() => inputRef.current?.click()}
           disabled={isBusy}
-          className="flex aspect-square flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-background text-text-secondary transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          style={aspectStyle}
+          className="flex flex-col items-center justify-center gap-1.5 rounded-lg border border-dashed border-border bg-background p-3 text-text-secondary transition-colors hover:border-accent/50 hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
         >
-          {isBusy ? <Loader2 className="size-5 animate-spin" aria-hidden /> : <ImagePlus className="size-5" aria-hidden />}
-          <span className="text-[11px] font-medium">Adicionar foto</span>
+          {isBusy ? (
+            <Loader2 className="size-6 animate-spin" aria-hidden />
+          ) : (
+            <EmptyIcon className="size-6 opacity-60" aria-hidden />
+          )}
+          <span className="text-[11px] text-text-secondary/70">Nenhuma foto adicionada</span>
+          <span className="text-xs font-medium text-accent">Adicionar foto</span>
         </button>
       )}
-
-      <p className="text-center text-xs font-medium text-text-secondary">{COIN_IMAGE_KIND_LABELS[kind]}</p>
 
       {status !== 'idle' && status !== 'loading' && status !== 'error' && SLOT_STATUS_LABEL[status] && (
         <p className="text-center text-[11px] text-text-secondary/70">{SLOT_STATUS_LABEL[status]}</p>
       )}
       {error && <p className="text-center text-[11px] text-danger">{error}</p>}
 
+      <CoinImageEditor
+        key={editorKey}
+        file={editingFile}
+        shape={shape}
+        outputWidth={outputSize.width}
+        outputHeight={outputSize.height}
+        title={`${unitLabel} — ${COIN_IMAGE_KIND_LABELS[kind]}`}
+        hint={hint}
+        onCancel={() => setEditingFile(null)}
+        onConfirm={handleEditorConfirm}
+      />
+
       <Modal
         isOpen={isPreviewOpen}
         onClose={() => setIsPreviewOpen(false)}
-        title={`Foto de ${COIN_IMAGE_KIND_LABELS[kind]}`}
+        title={`${unitLabel} — ${COIN_IMAGE_KIND_LABELS[kind]}`}
       >
         {previewUrl && (
           // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária
@@ -1176,9 +1243,14 @@ export default function CollectionPage() {
 
                 <div className="flex flex-col gap-2">
                   <span className="text-sm font-medium text-text-secondary">Imagens do exemplar</span>
-                  <div className="grid grid-cols-3 gap-2.5">
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-2.5">
                     {COIN_IMAGE_KINDS.map((kind) => (
-                      <CoinImageSlot key={kind} collectionUnitId={unit.id} kind={kind} />
+                      <CoinImageSlot
+                        key={kind}
+                        collectionUnitId={unit.id}
+                        kind={kind}
+                        unitLabel={`Exemplar #${index + 1}`}
+                      />
                     ))}
                   </div>
                 </div>
