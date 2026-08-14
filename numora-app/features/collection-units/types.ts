@@ -56,6 +56,17 @@ export interface CollectionUnit {
    * que "0 estrelas").
    */
   rating: number | null
+  /**
+   * Exemplar usado para representar a moeda (miniatura/dados na
+   * Grid/Lista/Passport/futuras transações) — Etapa 10. No máximo um
+   * `true` por `collectionItemId` (garantido por índice único parcial no
+   * banco, não só pela aplicação). NÃO é o mesmo conceito que `rating`:
+   * um pode ser 5 estrelas e não ser o principal, e vice-versa. Só é
+   * alterado via `CollectionUnitsRepository.setPrimary` (RPC atômica) —
+   * nunca faz parte de `CollectionUnitInput`/`update()` de propósito, para
+   * impedir que a troca de principal aconteça por fora da RPC transacional.
+   */
+  isPrimary: boolean
   createdAt: string
   updatedAt: string
 }

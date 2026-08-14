@@ -22,9 +22,14 @@
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { createSupabasePurchasesRepository } from '@/features/purchases/repositories/purchases.repository'
-import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
+import {
+  createSupabaseCollectionUnitsRepository,
+  toCollectionUnit,
+  type CollectionUnitRow,
+} from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
-import type { CollectionItem, CollectionItemInput } from '@/features/collection/types'
+import type { CoinImageKind } from '@/features/coin-images/types'
+import type { CollectionItem, CollectionItemInput, CollectionItemUnit } from '@/features/collection/types'
 
 export interface CollectionRepository {
   list(): Promise<CollectionItem[]>
@@ -41,13 +46,23 @@ export interface CollectionRepository {
  * renomeia o segundo embed para não colidir com `metals` no JSON de
  * resposta. As demais tabelas embutidas têm só uma FK cada, sem
  * ambiguidade.
+ *
+ * `collection_units` (com `grades` e `coin_images` aninhados) foi
+ * incorporado nesta mesma query na Etapa 10 — a experiência de coleção
+ * (busca/filtro/agrupamento por conservação e status, miniatura do
+ * exemplar preferido) precisa desses dados por item, e embuti-los aqui
+ * evita N+1 (uma query por item) que existiria se cada card chamasse
+ * `CollectionUnitsRepository.listByItem` individualmente. Só os campos
+ * leves de `coin_images` (kind + storage_path) são trazidos — nenhum
+ * byte de imagem, nenhuma signed URL é gerada aqui.
  */
 const ITEM_SELECT = `
   *,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
-  purchases ( total_price, purchase_date, seller_name, notes )
+  purchases ( total_price, purchase_date, seller_name, notes ),
+  collection_units ( *, grades ( label, scale ), coin_images ( kind, storage_path ) )
 `
 
 interface CollectionItemRow {
@@ -80,6 +95,16 @@ interface CollectionItemRow {
     seller_name: string | null
     notes: string | null
   } | null
+  collection_units: (CollectionUnitRow & { coin_images: { kind: CoinImageKind; storage_path: string }[] })[]
+}
+
+function toCollectionItemUnit(
+  row: CollectionUnitRow & { coin_images: { kind: CoinImageKind; storage_path: string }[] },
+): CollectionItemUnit {
+  return {
+    ...toCollectionUnit(row),
+    images: row.coin_images.map((image) => ({ kind: image.kind, storagePath: image.storage_path })),
+  }
 }
 
 function toCollectionItem(row: CollectionItemRow): CollectionItem {
@@ -116,6 +141,13 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
           notes: row.purchases.notes,
         }
       : null,
+    // Ordenado aqui (não confiando na ordem de retorno do embed). `id` como
+    // desempate: exemplares criados em lote (createMany) têm createdAt
+    // IDÊNTICO (mesma transação) — sem isso, a numeração "#1/#2/#3" na UI
+    // poderia mudar entre requisições para os mesmos dados.
+    units: row.collection_units
+      .map(toCollectionItemUnit)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)),
   }
 }
 

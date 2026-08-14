@@ -4,6 +4,25 @@
  * tabelas de referência que a alimentam (countries, metals, grades).
  */
 import type { PurchaseInput } from '@/features/purchases/types'
+import type { CollectionUnit } from '@/features/collection-units/types'
+import type { CoinImageKind } from '@/features/coin-images/types'
+
+/** Só o necessário para saber "existe foto de frente?" sem baixar a imagem — a URL assinada é gerada à parte, sob demanda (Etapa 10). */
+export interface CollectionItemUnitImage {
+  kind: CoinImageKind
+  storagePath: string
+}
+
+/**
+ * Exemplar físico com suas fotos (metadados, não os bytes), embutido
+ * dentro de `CollectionItem.units` pela mesma query de `list()`/`get()` —
+ * evita N+1 ao exibir conservação/status/rating por exemplar na lista de
+ * moedas (Etapa 10). Continua sendo a mesma entidade de
+ * `features/collection-units`, só que carregada em lote.
+ */
+export interface CollectionItemUnit extends CollectionUnit {
+  images: CollectionItemUnitImage[]
+}
 
 export interface CollectionItem {
   id: string
@@ -44,6 +63,8 @@ export interface CollectionItem {
     sellerName: string | null
     notes: string | null
   } | null
+  /** Ordenados por `createdAt` ascendente — `units[0]` é o exemplar mais antigo (convenção de "exemplar preferido" desta etapa, ver Etapa 10). */
+  units: CollectionItemUnit[]
 }
 
 /**

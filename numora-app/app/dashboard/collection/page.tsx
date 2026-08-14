@@ -20,13 +20,17 @@
 import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
+  ArrowUpDown,
   Check,
   Circle,
   Coins,
   ClipboardList,
+  FolderTree,
   HelpCircle,
   Landmark,
   Layers,
+  LayoutGrid,
+  List,
   Loader2,
   Pencil,
   PackageOpen,
@@ -35,13 +39,14 @@ import {
   Search,
   Star,
   Trash2,
+  X,
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
-import type { CollectionItem, Country, Grade, Metal } from '@/features/collection/types'
+import type { CollectionItem, CollectionItemUnit, Country, Grade, Metal } from '@/features/collection/types'
 import {
   COLLECTION_UNIT_STATUS_EMOJI,
   COLLECTION_UNIT_STATUS_LABELS,
@@ -62,6 +67,7 @@ import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
 import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { cn } from '@/components/ui/utils'
 
 const collectionRepository = createSupabaseCollectionRepository()
 const referenceRepository = createSupabaseReferenceRepository()
@@ -170,6 +176,196 @@ const MIN_COIN_YEAR = 1
 /** Pequena margem para moedas comemorativas cunhadas com o ano seguinte. */
 const MAX_COIN_YEAR = CURRENT_YEAR + 1
 
+// ---------------------------------------------------------------------------
+// Etapa 10 — busca, filtros, ordenação e agrupamento (Numora Collection
+// Experience). Tudo client-side sobre os itens já carregados por
+// `collectionRepository.list()`, que desde esta etapa já embute
+// `collection_units` (com `grades`) e os metadados leves de `coin_images`
+// na mesma query — nenhuma consulta nova é disparada por busca/filtro/
+// ordenação/agrupamento em si.
+// ---------------------------------------------------------------------------
+
+type ViewMode = 'grid' | 'list'
+type SortOption = 'recent' | 'oldest' | 'yearAsc' | 'yearDesc' | 'denomination' | 'country' | 'value'
+type GroupOption = 'none' | 'country' | 'metal' | 'period' | 'status'
+
+const SORT_LABELS: Record<SortOption, string> = {
+  recent: 'Mais recente adicionado',
+  oldest: 'Mais antigo adicionado',
+  yearAsc: 'Ano crescente',
+  yearDesc: 'Ano decrescente',
+  denomination: 'Denominação (A–Z)',
+  country: 'País (A–Z)',
+  value: 'Maior valor de aquisição',
+}
+
+const GROUP_LABELS: Record<GroupOption, string> = {
+  none: 'Sem agrupamento',
+  country: 'País',
+  metal: 'Metal',
+  period: 'Período',
+  status: 'Status do exemplar',
+}
+
+/** `null` sempre por último, independente da direção — evita que "sem informação" pareça o menor/maior valor real. */
+function compareNullableString(a: string | null, b: string | null): number {
+  if (a === null && b === null) return 0
+  if (a === null) return 1
+  if (b === null) return -1
+  return a.localeCompare(b, 'pt-BR')
+}
+
+function compareNullableNumber(a: number | null, b: number | null, direction: 1 | -1): number {
+  if (a === null && b === null) return 0
+  if (a === null) return 1
+  if (b === null) return -1
+  return direction * (a - b)
+}
+
+const SORTERS: Record<SortOption, (a: CollectionItem, b: CollectionItem) => number> = {
+  recent: (a, b) => b.createdAt.localeCompare(a.createdAt),
+  oldest: (a, b) => a.createdAt.localeCompare(b.createdAt),
+  yearAsc: (a, b) => compareNullableNumber(a.year, b.year, 1),
+  yearDesc: (a, b) => compareNullableNumber(a.year, b.year, -1),
+  denomination: (a, b) => compareNullableString(a.denomination, b.denomination),
+  country: (a, b) => compareNullableString(a.countryDisplayName ?? a.countryCode, b.countryDisplayName ?? b.countryCode),
+  value: (a, b) => compareNullableNumber(a.purchase?.totalPrice ?? null, b.purchase?.totalPrice ?? null, -1),
+}
+
+interface GroupEntry {
+  key: string
+  label: string
+  items: CollectionItem[]
+}
+
+/** Chave usada para os grupos "sem informação" (sem país/metal/ano/exemplar) — sempre exibidos por último. */
+const GROUP_NONE_KEY = '__none'
+
+/**
+ * Avaliação pessoal compacta (só leitura), usada nos resumos de exemplar
+ * da lista de moedas — não confundir com `StarRatingInput`, que é
+ * interativo e vive no modal de edição de exemplares.
+ */
+function MiniStars({ rating }: { rating: number | null }) {
+  if (rating === null) {
+    return <span className="text-[11px] text-text-secondary/50">Sem avaliação</span>
+  }
+  return (
+    <span className="flex items-center gap-0.5" aria-label={`Avaliação pessoal: ${rating} de 5 estrelas`}>
+      {[1, 2, 3, 4, 5].map((n) => (
+        <Star key={n} className={`size-3 ${n <= rating ? 'fill-accent text-accent' : 'text-text-secondary/25'}`} aria-hidden />
+      ))}
+    </span>
+  )
+}
+
+/**
+ * Exemplar principal do item (Etapa 10) — fonte de verdade é
+ * `unit.isPrimary`, nunca mais a antiga convenção "mais antigo = principal".
+ * O fallback para `units[0]` (que `CollectionRepository` sempre ordena por
+ * `createdAt` ascendente) só existe para o caso defensivo de um item chegar
+ * sem nenhum principal marcado — não deveria acontecer dado o backfill +
+ * o índice único parcial no banco, mas a UI nunca fica sem exemplar
+ * nenhum para representar a moeda.
+ */
+function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
+  return item.units.find((u) => u.isPrimary) ?? item.units[0] ?? null
+}
+
+/**
+ * Miniatura do card — SEMPRE a foto de FRENTE do exemplar PRINCIPAL,
+ * nunca "qualquer foto de qualquer exemplar" (Etapa 10). Se o principal
+ * não tiver foto de frente, mostra o placeholder — não procura em outro
+ * exemplar nem em outro tipo de foto (verso/borda) do mesmo exemplar.
+ */
+function CollectionItemThumbnail({
+  item,
+  thumbUrls,
+  onOpenViewer,
+}: {
+  item: CollectionItem
+  thumbUrls: Record<string, string>
+  onOpenViewer: (units: CollectionUnit[], unitId: string, kind: CoinImageKind) => void
+}) {
+  const primaryUnit = getPrimaryUnit(item)
+  const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
+  const url = frontImage ? thumbUrls[frontImage.storagePath] : undefined
+
+  if (primaryUnit && frontImage && url) {
+    return (
+      <button
+        type="button"
+        onClick={() => onOpenViewer(item.units, primaryUnit.id, 'front')}
+        className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        aria-label={`Ver foto do exemplar principal — ${item.denomination ?? 'moeda sem denominação'}`}
+      >
+        {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
+        <img
+          src={url}
+          alt={`Frente do exemplar principal — ${item.denomination ?? 'moeda'}`}
+          className="size-full object-cover"
+        />
+      </button>
+    )
+  }
+
+  return (
+    <div className="flex size-full flex-col items-center justify-center gap-1 text-text-secondary">
+      <Coins className="size-9 opacity-30" aria-hidden />
+      <span className="text-[10px] font-medium tracking-wide text-text-secondary/70 uppercase">Sem imagem</span>
+    </div>
+  )
+}
+
+/**
+ * Resumo por exemplar da visão GRID (Etapa 10, seção 7) — conservação,
+ * status e avaliação de CADA exemplar, sem misturar dados entre eles.
+ * Rolável além de poucos itens para não estourar a altura do card.
+ */
+function GridUnitSummary({ units }: { units: CollectionItemUnit[] }) {
+  return (
+    <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-0.5">
+      {units.map((unit, index) => (
+        <div
+          key={unit.id}
+          className="flex items-center gap-2 rounded-md bg-surface-hover/60 px-2 py-1 text-xs"
+        >
+          <span className="flex shrink-0 items-center gap-1 font-medium text-text-secondary">
+            {unit.isPrimary && <Star className="size-3 fill-accent text-accent" aria-hidden />}#{index + 1}
+          </span>
+          <MiniStars rating={unit.rating} />
+          <span className="min-w-0 flex-1 truncate text-text-secondary">{unit.gradeLabel ?? '—'}</span>
+          <Badge tone="neutral" className="shrink-0 whitespace-nowrap">
+            {COLLECTION_UNIT_STATUS_EMOJI[unit.status]} {COLLECTION_UNIT_STATUS_LABELS[unit.status]}
+          </Badge>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * Resumo compacto da visão LISTA (Etapa 10, seção 10) — contagem por
+ * status em vez do detalhe exemplar-a-exemplar, para caber numa linha em
+ * coleções grandes.
+ */
+function ListStatusCounts({ units }: { units: CollectionItemUnit[] }) {
+  const counts = new Map<CollectionUnitStatus, number>()
+  for (const unit of units) {
+    counts.set(unit.status, (counts.get(unit.status) ?? 0) + 1)
+  }
+
+  return (
+    <div className="flex flex-wrap items-center gap-1">
+      {COLLECTION_UNIT_STATUS_OPTIONS.filter((status) => (counts.get(status) ?? 0) > 0).map((status) => (
+        <Badge key={status} tone="neutral" className="whitespace-nowrap">
+          {COLLECTION_UNIT_STATUS_EMOJI[status]} {counts.get(status)}
+        </Badge>
+      ))}
+    </div>
+  )
+}
+
 function SectionHeading({ icon: Icon, children }: { icon: LucideIcon; children: string }) {
   return (
     <div className="flex items-center gap-2">
@@ -254,6 +450,7 @@ function CoinImageSlot({
   kind,
   unitLabel,
   onView,
+  onImageChange,
 }: {
   collectionUnitId: string
   kind: CoinImageKind
@@ -261,6 +458,13 @@ function CoinImageSlot({
   unitLabel: string
   /** Abre o CoinImageViewer compartilhado (Etapa 9.3) nesta moeda/exemplar/tipo. */
   onView: () => void
+  /**
+   * Notifica o pai quando este slot ganha/perde uma foto (Etapa 10) —
+   * sem isso, o embed `item.units[].images` usado pela miniatura do
+   * card ficaria desatualizado até um novo `list()`. Não altera nada do
+   * fluxo de upload/edição em si, só espelha o resultado já confirmado.
+   */
+  onImageChange?: (image: CoinImage | null) => void
 }) {
   const [image, setImage] = useState<CoinImage | null>(null)
   const [previewUrl, setPreviewUrl] = useState<string | null>(null)
@@ -329,6 +533,7 @@ function CoinImageSlot({
       setImage(uploaded)
       setPreviewUrl(url)
       setStatus('saved')
+      onImageChange?.(uploaded)
       setTimeout(() => setStatus((current) => (current === 'saved' ? 'idle' : current)), 1500)
     } catch (err) {
       const message =
@@ -351,6 +556,7 @@ function CoinImageSlot({
       setImage(null)
       setPreviewUrl(null)
       setStatus('idle')
+      onImageChange?.(null)
     } catch {
       // A remoção do Storage acontece antes da do registro (CoinImagesRepository.remove) —
       // se algo falhar, nada muda visualmente além do erro: a foto continua lá.
@@ -476,13 +682,31 @@ export default function CollectionPage() {
   const [isModalOpen, setIsModalOpen] = useState(false)
   const [isGradeHelpOpen, setIsGradeHelpOpen] = useState(false)
 
-  // Busca e filtros — somente client-side, sobre os itens já carregados.
-  // Não há filtro por conservação: desde que ela passou a ser propriedade de
-  // cada exemplar (collection_units), não existe mais um valor único por
-  // moeda para filtrar — ver relatório da etapa.
+  // Busca, filtros, ordenação, agrupamento e modo de visualização — tudo
+  // client-side, sobre os itens já carregados (Etapa 10). Conservação e
+  // status são propriedades do EXEMPLAR (collection_units), não da moeda:
+  // um item só passa no filtro se existir um MESMO exemplar satisfazendo
+  // os dois simultaneamente — nunca combinamos características de
+  // exemplares diferentes para "montar" um match artificial.
   const [searchTerm, setSearchTerm] = useState('')
   const [filterCountry, setFilterCountry] = useState('')
   const [filterMetal, setFilterMetal] = useState('')
+  const [filterGradeId, setFilterGradeId] = useState('')
+  const [filterStatus, setFilterStatus] = useState<CollectionUnitStatus | ''>('')
+  const [filterYearMin, setFilterYearMin] = useState('')
+  const [filterYearMax, setFilterYearMax] = useState('')
+  const [sortBy, setSortBy] = useState<SortOption>('recent')
+  const [groupBy, setGroupBy] = useState<GroupOption>('none')
+  const [viewMode, setViewMode] = useState<ViewMode>('grid')
+
+  /**
+   * Signed URLs das miniaturas dos cards — só do exemplar PRINCIPAL de
+   * cada moeda (Etapa 10), nunca de "qualquer exemplar com foto". Buscadas
+   * em lote (`getSignedUrls`) e só para as moedas que passam na
+   * busca/filtro atual, nunca para o catálogo inteiro.
+   */
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({})
+  const fetchedThumbPathsRef = useRef(new Set<string>())
 
   /** `null` = modal em modo "adicionar"; caso contrário, id do item em edição. */
   const [editingItemId, setEditingItemId] = useState<string | null>(null)
@@ -526,8 +750,11 @@ export default function CollectionPage() {
    * clicando em outra foto enquanto ele já está aberto.
    */
   const [viewerState, setViewerState] = useState<{ unitId: string; kind: CoinImageKind; key: number } | null>(null)
+  /** Exemplares que o viewer aberto no momento pode navegar — do modal de edição OU direto do embed de um card (Etapa 10). */
+  const [viewerUnits, setViewerUnits] = useState<CollectionUnit[]>([])
 
-  function openImageViewer(unitId: string, kind: CoinImageKind) {
+  function openImageViewer(unitsForViewer: CollectionUnit[], unitId: string, kind: CoinImageKind) {
+    setViewerUnits(unitsForViewer)
     setViewerState((current) => ({ unitId, kind, key: (current?.key ?? 0) + 1 }))
   }
 
@@ -555,23 +782,138 @@ export default function CollectionPage() {
 
   const filteredItems = useMemo(() => {
     const term = searchTerm.trim().toLowerCase()
+    const yearMin = filterYearMin.trim() !== '' ? Number.parseInt(filterYearMin, 10) : null
+    const yearMax = filterYearMax.trim() !== '' ? Number.parseInt(filterYearMax, 10) : null
 
     return items.filter((item) => {
+      // País, metal e ano são atributos da MOEDA — sempre avaliados sobre o item.
       if (filterCountry && item.countryCode !== filterCountry) return false
       if (filterMetal && item.metalCode !== filterMetal) return false
+      if (yearMin !== null && (item.year === null || item.year < yearMin)) return false
+      if (yearMax !== null && (item.year === null || item.year > yearMax)) return false
+
+      // Conservação e status são atributos do EXEMPLAR — a moeda só passa se
+      // existir um MESMO exemplar satisfazendo os dois ao mesmo tempo.
+      // `is_primary` não participa desta regra (aprovado explicitamente).
+      if (filterGradeId || filterStatus) {
+        const hasMatchingUnit = item.units.some((unit) => {
+          if (filterGradeId && unit.gradeId !== filterGradeId) return false
+          if (filterStatus && unit.status !== filterStatus) return false
+          return true
+        })
+        if (!hasMatchingUnit) return false
+      }
 
       if (term === '') return true
 
-      const haystack = [item.denomination, item.countryDisplayName, item.metalName]
+      const haystack = [item.denomination, item.countryDisplayName, item.countryCode, item.year?.toString(), item.metalName]
         .filter(Boolean)
         .join(' ')
         .toLowerCase()
 
       return haystack.includes(term)
     })
-  }, [items, searchTerm, filterCountry, filterMetal])
+  }, [items, searchTerm, filterCountry, filterMetal, filterGradeId, filterStatus, filterYearMin, filterYearMax])
+
+  const sortedItems = useMemo(() => [...filteredItems].sort(SORTERS[sortBy]), [filteredItems, sortBy])
+
+  const groupedEntries = useMemo<GroupEntry[]>(() => {
+    if (groupBy === 'none') {
+      return [{ key: GROUP_NONE_KEY, label: '', items: sortedItems }]
+    }
+
+    const buckets = new Map<string, GroupEntry>()
+    function pushTo(key: string, label: string, item: CollectionItem) {
+      const existing = buckets.get(key)
+      if (existing) existing.items.push(item)
+      else buckets.set(key, { key, label, items: [item] })
+    }
+
+    for (const item of sortedItems) {
+      if (groupBy === 'country') {
+        pushTo(item.countryCode ?? GROUP_NONE_KEY, item.countryDisplayName ?? item.countryCode ?? 'Sem país', item)
+      } else if (groupBy === 'metal') {
+        pushTo(item.metalCode ?? GROUP_NONE_KEY, item.metalName ?? 'Sem metal', item)
+      } else if (groupBy === 'period') {
+        if (item.year === null) {
+          pushTo(GROUP_NONE_KEY, 'Sem ano', item)
+        } else {
+          const decade = Math.floor(item.year / 10) * 10
+          pushTo(String(decade), `Década de ${decade}`, item)
+        }
+      } else if (groupBy === 'status') {
+        // Um mesmo item pode ter exemplares em status diferentes — ele
+        // aparece em CADA grupo de status que algum de seus exemplares
+        // tiver. Isto é intencional (aprovado): reflete a realidade dos
+        // exemplares, não é duplicação de dado.
+        const statuses = new Set(item.units.map((u) => u.status))
+        if (statuses.size === 0) {
+          pushTo(GROUP_NONE_KEY, 'Sem exemplares', item)
+        } else {
+          for (const status of statuses) {
+            pushTo(status, `${COLLECTION_UNIT_STATUS_EMOJI[status]} ${COLLECTION_UNIT_STATUS_LABELS[status]}`, item)
+          }
+        }
+      }
+    }
+
+    return Array.from(buckets.values()).sort((a, b) => {
+      if (groupBy === 'status') {
+        const indexA = COLLECTION_UNIT_STATUS_OPTIONS.indexOf(a.key as CollectionUnitStatus)
+        const indexB = COLLECTION_UNIT_STATUS_OPTIONS.indexOf(b.key as CollectionUnitStatus)
+        if (indexA !== -1 && indexB !== -1) return indexA - indexB
+      }
+      if (a.key === GROUP_NONE_KEY) return 1
+      if (b.key === GROUP_NONE_KEY) return -1
+      return a.label.localeCompare(b.label, 'pt-BR')
+    })
+  }, [sortedItems, groupBy])
 
   const totalUnits = items.reduce((sum, item) => sum + item.quantity, 0)
+  // Mesmo cálculo do resumo público do Passport (get_public_passport) — países/metais distintos entre TODAS as moedas, não só as filtradas.
+  const countryCount = new Set(items.map((item) => item.countryCode).filter((code): code is string => code !== null)).size
+  const metalCount = new Set(items.map((item) => item.metalCode).filter((code): code is string => code !== null)).size
+
+  const neededThumbPaths = useMemo(() => {
+    const paths: string[] = []
+    for (const item of filteredItems) {
+      const primaryUnit = getPrimaryUnit(item)
+      const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
+      if (frontImage) paths.push(frontImage.storagePath)
+    }
+    return paths
+  }, [filteredItems])
+
+  // Miniaturas em lote (Etapa 10): só para as moedas que passam na
+  // busca/filtro atual (`neededThumbPaths` deriva de `filteredItems`, não
+  // de `items`), uma única chamada `getSignedUrls` por leva de paths
+  // novos — nunca uma signed URL por card, nunca regerada para um path já
+  // conhecido. Mesmo padrão `{cancelled, settled}` do CoinImageViewer
+  // (Etapa 9.3) para sobreviver ao double-invoke do StrictMode em dev sem
+  // perder o resultado de um fetch que já estava em voo.
+  useEffect(() => {
+    const fetchedPaths = fetchedThumbPathsRef.current
+    const missing = neededThumbPaths.filter((path) => !fetchedPaths.has(path))
+    if (missing.length === 0) return
+    missing.forEach((path) => fetchedPaths.add(path))
+
+    const state = { cancelled: false, settled: false }
+    coinImagesRepository
+      .getSignedUrls(missing)
+      .then((urls) => {
+        state.settled = true
+        if (!state.cancelled) setThumbUrls((current) => ({ ...current, ...urls }))
+      })
+      .catch(() => {
+        state.settled = true
+        missing.forEach((path) => fetchedPaths.delete(path))
+      })
+
+    return () => {
+      state.cancelled = true
+      if (!state.settled) missing.forEach((path) => fetchedPaths.delete(path))
+    }
+  }, [neededThumbPaths])
 
   function resetForm() {
     setCountryCode('')
@@ -738,6 +1080,68 @@ export default function CollectionPage() {
         rating: changes.rating !== undefined ? changes.rating : unit.rating,
       })
       setUnits((current) => current.map((u) => (u.id === updated.id ? updated : u)))
+      // Mesmo motivo do handleUnitImageChange (Etapa 10): sem isto, o embed
+      // `items[].units` usado por filtros/Grid/Lista ficaria com
+      // conservação/status/rating desatualizados até um novo `list()`.
+      // `{ ...u, ...updated }` preserva `images` (que só existe no embed,
+      // não em `CollectionUnit`) e sobrescreve o resto com o valor confirmado.
+      setItems((current) =>
+        current.map((item) =>
+          item.units.some((u) => u.id === updated.id)
+            ? { ...item, units: item.units.map((u) => (u.id === updated.id ? { ...u, ...updated } : u)) }
+            : item,
+        ),
+      )
+    } catch (err) {
+      setUnitsError((err as Error).message)
+    }
+  }
+
+  /**
+   * Mantém `items[].units[].images` em dia quando uma foto é
+   * adicionada/removida num `CoinImageSlot` (Etapa 10) — é esse embed
+   * que a miniatura do card em Grid/Lista usa; sem isto, ela só
+   * atualizaria depois de um novo `list()` (reload).
+   */
+  function handleUnitImageChange(unitId: string, kind: CoinImageKind, image: CoinImage | null) {
+    setItems((current) =>
+      current.map((item) => {
+        if (!item.units.some((u) => u.id === unitId)) return item
+        return {
+          ...item,
+          units: item.units.map((u) => {
+            if (u.id !== unitId) return u
+            const otherImages = u.images.filter((existing) => existing.kind !== kind)
+            return {
+              ...u,
+              images: image ? [...otherImages, { kind: image.kind, storagePath: image.storagePath }] : otherImages,
+            }
+          }),
+        }
+      }),
+    )
+  }
+
+  /**
+   * Troca o exemplar principal via RPC atômica (`set_primary_collection_unit`
+   * — Etapa 10): nunca 0 nem 2 principais simultâneos, garantido pelo
+   * banco. Atualiza os dois estados locais (`units` do modal e o embed
+   * `items[].units` usado pela Grid/Lista) para refletir a mudança na
+   * hora, sem esperar um novo `list()`.
+   */
+  async function handleSetPrimaryUnit(unit: CollectionUnit) {
+    setUnitsError(null)
+
+    try {
+      await collectionUnitsRepository.setPrimary(unit.id)
+      setUnits((current) => current.map((u) => ({ ...u, isPrimary: u.id === unit.id })))
+      setItems((current) =>
+        current.map((item) =>
+          item.id === unit.collectionItemId
+            ? { ...item, units: item.units.map((u) => ({ ...u, isPrimary: u.id === unit.id })) }
+            : item,
+        ),
+      )
     } catch (err) {
       setUnitsError((err as Error).message)
     }
@@ -748,6 +1152,22 @@ export default function CollectionPage() {
     setUnitPendingDelete(unit)
   }
 
+  /**
+   * Espelha localmente a mesma regra do trigger `promote_primary_after_unit_delete`
+   * (o mais antigo entre os restantes vira principal) para a UI refletir a
+   * troca sem precisar recarregar — o banco é quem garante isso de
+   * verdade; isto só evita uma query extra no caminho comum.
+   */
+  function withPrimaryReassignedAfterRemoval<T extends CollectionUnit>(remaining: T[], removedWasPrimary: boolean): T[] {
+    if (!removedWasPrimary || remaining.length === 0 || remaining.some((u) => u.isPrimary)) return remaining
+    // `id` como desempate — mesmo motivo do trigger no banco: exemplares
+    // criados em lote têm createdAt idêntico entre si.
+    const oldest = [...remaining].sort(
+      (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id),
+    )[0]
+    return remaining.map((u) => (u.id === oldest.id ? { ...u, isPrimary: true } : u))
+  }
+
   async function confirmUnitDelete() {
     const unit = unitPendingDelete
     if (!unit) return
@@ -756,10 +1176,19 @@ export default function CollectionPage() {
 
     try {
       await collectionUnitsRepository.remove(unit.id)
-      setUnits((current) => current.filter((u) => u.id !== unit.id))
+      setUnits((current) => withPrimaryReassignedAfterRemoval(current.filter((u) => u.id !== unit.id), unit.isPrimary))
       setItems((current) =>
         current.map((item) =>
-          item.id === unit.collectionItemId ? { ...item, quantity: item.quantity - 1 } : item,
+          item.id === unit.collectionItemId
+            ? {
+                ...item,
+                quantity: item.quantity - 1,
+                units: withPrimaryReassignedAfterRemoval(
+                  item.units.filter((u) => u.id !== unit.id),
+                  unit.isPrimary,
+                ),
+              }
+            : item,
         ),
       )
       setUnitsModalItem((current) => (current ? { ...current, quantity: current.quantity - 1 } : current))
@@ -772,7 +1201,24 @@ export default function CollectionPage() {
     }
   }
 
-  const hasActiveFilters = searchTerm !== '' || filterCountry !== '' || filterMetal !== ''
+  const hasActiveFilters =
+    searchTerm !== '' ||
+    filterCountry !== '' ||
+    filterMetal !== '' ||
+    filterGradeId !== '' ||
+    filterStatus !== '' ||
+    filterYearMin !== '' ||
+    filterYearMax !== ''
+
+  function clearFilters() {
+    setSearchTerm('')
+    setFilterCountry('')
+    setFilterMetal('')
+    setFilterGradeId('')
+    setFilterStatus('')
+    setFilterYearMin('')
+    setFilterYearMax('')
+  }
 
   return (
     <div className="flex flex-col gap-6">
@@ -793,52 +1239,150 @@ export default function CollectionPage() {
       {items.length > 0 && (
         <>
           <p className="text-sm text-text-secondary">
-            <span className="font-medium text-text-primary">{items.length}</span> moeda
-            {items.length === 1 ? '' : 's'} <span className="text-text-secondary/50">·</span>{' '}
-            <span className="font-medium text-text-primary">{totalUnits}</span> unidade
-            {totalUnits === 1 ? '' : 's'}
+            <span className="font-medium text-text-primary">{items.length}</span> moeda{items.length === 1 ? '' : 's'}{' '}
+            <span className="text-text-secondary/50">·</span> <span className="font-medium text-text-primary">{totalUnits}</span>{' '}
+            exemplar{totalUnits === 1 ? '' : 'es'} <span className="text-text-secondary/50">·</span>{' '}
+            <span className="font-medium text-text-primary">{countryCount}</span> país{countryCount === 1 ? '' : 'es'}{' '}
+            <span className="text-text-secondary/50">·</span> <span className="font-medium text-text-primary">{metalCount}</span>{' '}
+            {metalCount === 1 ? 'metal' : 'metais'}
           </p>
 
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="relative flex-1">
-              <Search
-                className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-text-secondary"
-                aria-hidden
-              />
+          <div className="relative">
+            <Search
+              className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-text-secondary"
+              aria-hidden
+            />
+            <Input
+              placeholder="Buscar por denominação, país, ano, metal..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
+            <Select value={filterCountry} onChange={(e) => setFilterCountry(e.target.value)} aria-label="Filtrar por país">
+              <option value="">País</option>
+              {countries.map((country) => (
+                <option key={country.code} value={country.code}>
+                  {country.flagEmoji ? `${country.flagEmoji} ` : ''}
+                  {country.name}
+                </option>
+              ))}
+            </Select>
+            <Select value={filterMetal} onChange={(e) => setFilterMetal(e.target.value)} aria-label="Filtrar por metal">
+              <option value="">Metal</option>
+              {metals.map((metal) => (
+                <option key={metal.code} value={metal.code}>
+                  {metal.name}
+                </option>
+              ))}
+            </Select>
+            <Select value={filterGradeId} onChange={(e) => setFilterGradeId(e.target.value)} aria-label="Filtrar por conservação">
+              <option value="">Conservação</option>
+              {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
+                <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
+                  {scaleGrades.map((grade) => (
+                    <option key={grade.id} value={grade.id}>
+                      {grade.label}
+                    </option>
+                  ))}
+                </optgroup>
+              ))}
+            </Select>
+            <Select
+              value={filterStatus}
+              onChange={(e) => setFilterStatus(e.target.value as CollectionUnitStatus | '')}
+              aria-label="Filtrar por status do exemplar"
+            >
+              <option value="">Status</option>
+              {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
+                <option key={status} value={status}>
+                  {COLLECTION_UNIT_STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
+                </option>
+              ))}
+            </Select>
+            <div className="col-span-2 flex items-center gap-1.5 sm:col-span-1">
               <Input
-                placeholder="Buscar por denominação, país, metal..."
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                className="pl-9"
+                type="number"
+                inputMode="numeric"
+                placeholder="Ano de"
+                aria-label="Ano mínimo"
+                value={filterYearMin}
+                onChange={(e) => setFilterYearMin(e.target.value)}
+              />
+              <span className="shrink-0 text-text-secondary/50">–</span>
+              <Input
+                type="number"
+                inputMode="numeric"
+                placeholder="Ano até"
+                aria-label="Ano máximo"
+                value={filterYearMax}
+                onChange={(e) => setFilterYearMax(e.target.value)}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3 sm:w-auto sm:shrink-0">
-              <Select
-                value={filterCountry}
-                onChange={(e) => setFilterCountry(e.target.value)}
-                aria-label="Filtrar por país"
-              >
-                <option value="">País</option>
-                {countries.map((country) => (
-                  <option key={country.code} value={country.code}>
-                    {country.flagEmoji ? `${country.flagEmoji} ` : ''}
-                    {country.name}
-                  </option>
-                ))}
-              </Select>
-              <Select
-                value={filterMetal}
-                onChange={(e) => setFilterMetal(e.target.value)}
-                aria-label="Filtrar por metal"
-              >
-                <option value="">Metal</option>
-                {metals.map((metal) => (
-                  <option key={metal.code} value={metal.code}>
-                    {metal.name}
+          </div>
+
+          <div className="flex flex-wrap items-center gap-3">
+            <div className="flex items-center gap-1.5">
+              <ArrowUpDown className="size-4 shrink-0 text-text-secondary" aria-hidden />
+              <Select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortOption)} aria-label="Ordenar por">
+                {(Object.keys(SORT_LABELS) as SortOption[]).map((option) => (
+                  <option key={option} value={option}>
+                    {SORT_LABELS[option]}
                   </option>
                 ))}
               </Select>
             </div>
+
+            <div className="flex items-center gap-1.5">
+              <FolderTree className="size-4 shrink-0 text-text-secondary" aria-hidden />
+              <Select value={groupBy} onChange={(e) => setGroupBy(e.target.value as GroupOption)} aria-label="Agrupar por">
+                {(Object.keys(GROUP_LABELS) as GroupOption[]).map((option) => (
+                  <option key={option} value={option}>
+                    {GROUP_LABELS[option]}
+                  </option>
+                ))}
+              </Select>
+            </div>
+
+            <div className="flex items-center gap-0.5 rounded-lg border border-border p-0.5" role="group" aria-label="Modo de visualização">
+              <button
+                type="button"
+                onClick={() => setViewMode('grid')}
+                aria-pressed={viewMode === 'grid'}
+                aria-label="Visualização em grade"
+                className={cn(
+                  'flex size-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                  viewMode === 'grid' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary',
+                )}
+              >
+                <LayoutGrid className="size-4" aria-hidden />
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode('list')}
+                aria-pressed={viewMode === 'list'}
+                aria-label="Visualização em lista"
+                className={cn(
+                  'flex size-11 items-center justify-center rounded-md transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50',
+                  viewMode === 'list' ? 'bg-accent/10 text-accent' : 'text-text-secondary hover:text-text-primary',
+                )}
+              >
+                <List className="size-4" aria-hidden />
+              </button>
+            </div>
+
+            {hasActiveFilters && (
+              <button
+                type="button"
+                onClick={clearFilters}
+                className="flex items-center gap-1 rounded-lg px-2.5 py-2 text-sm font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+              >
+                <X className="size-3.5" aria-hidden />
+                Limpar filtros
+              </button>
+            )}
           </div>
         </>
       )}
@@ -861,74 +1405,148 @@ export default function CollectionPage() {
         <EmptyState
           icon={Search}
           title="Nenhuma moeda encontrada"
-          description={hasActiveFilters ? 'Ajuste a busca ou os filtros para ver mais resultados.' : undefined}
+          description={hasActiveFilters ? 'Experimente remover alguns filtros.' : undefined}
         />
       ) : (
-        <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
-          {filteredItems.map((item) => (
-            <Card key={item.id} hoverable className="flex flex-col overflow-hidden">
-              <div className="relative flex aspect-[4/3] items-center justify-center bg-gradient-to-br from-surface-hover to-surface text-text-secondary">
-                <Coins className="size-9 opacity-30" aria-hidden />
-                <span className="absolute bottom-2.5 left-1/2 -translate-x-1/2 text-[10px] font-medium tracking-wide text-text-secondary/70 uppercase">
-                  Sem imagem
-                </span>
-              </div>
+        <div className="flex flex-col gap-6">
+          {groupedEntries.map((group) => (
+            <div key={group.key} className="flex flex-col gap-3">
+              {groupBy !== 'none' && (
+                <h2 className="flex items-center gap-2 text-sm font-semibold text-text-primary">
+                  {group.label}
+                  <span className="font-normal text-text-secondary">
+                    ({group.items.length} moeda{group.items.length === 1 ? '' : 's'})
+                  </span>
+                </h2>
+              )}
 
-              <div className="flex flex-1 flex-col gap-3.5 p-4">
-                <div>
-                  <p className="font-semibold text-text-primary">{item.denomination ?? 'Sem denominação'}</p>
-                  <p className="mt-0.5 text-sm text-text-secondary">
-                    {item.countryFlagEmoji ? `${item.countryFlagEmoji} ` : ''}
-                    {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
-                  </p>
-                </div>
+              {viewMode === 'grid' ? (
+                <div className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3">
+                  {group.items.map((item) => (
+                    <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col overflow-hidden">
+                      <div className="relative aspect-[4/3] bg-gradient-to-br from-surface-hover to-surface">
+                        <CollectionItemThumbnail item={item} thumbUrls={thumbUrls} onOpenViewer={openImageViewer} />
+                      </div>
 
-                <div className="flex items-center justify-between text-sm">
-                  <div className="flex flex-wrap gap-1.5">
-                    {item.metalName && (
-                      <Badge tone="accent">
-                        {item.secondaryMetalName ? `${item.metalName} + ${item.secondaryMetalName}` : item.metalName}
-                      </Badge>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => openUnitsModal(item)}
-                    className="flex shrink-0 items-center gap-1 rounded text-xs font-medium text-accent transition-colors hover:text-accent-hover hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                  >
-                    <Layers className="size-3.5" aria-hidden />
-                    {item.quantity} exemplar{item.quantity === 1 ? '' : 'es'}
-                  </button>
-                </div>
+                      <div className="flex flex-1 flex-col gap-3.5 p-4">
+                        <div>
+                          <p className="font-semibold text-text-primary">{item.denomination ?? 'Sem denominação'}</p>
+                          <p className="mt-0.5 text-sm text-text-secondary">
+                            {item.countryFlagEmoji ? `${item.countryFlagEmoji} ` : ''}
+                            {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
+                          </p>
+                        </div>
 
-                <div className="mt-auto flex items-center justify-between border-t border-border pt-3.5">
-                  <div>
-                    <p className="text-xs text-text-secondary">Preço de aquisição</p>
-                    <p className="font-semibold text-text-primary">
-                      {item.purchase ? `R$ ${item.purchase.totalPrice.toFixed(2)}` : '—'}
-                    </p>
-                  </div>
-                  <div className="flex gap-1">
-                    <button
-                      type="button"
-                      onClick={() => openEditModal(item)}
-                      aria-label="Editar moeda"
-                      className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                    >
-                      <Pencil className="size-4" aria-hidden />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => handleDelete(item.id)}
-                      aria-label="Excluir moeda"
-                      className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-                    >
-                      <Trash2 className="size-4" aria-hidden />
-                    </button>
-                  </div>
+                        {item.metalName && (
+                          <div className="flex flex-wrap gap-1.5">
+                            <Badge tone="accent">
+                              {item.secondaryMetalName ? `${item.metalName} + ${item.secondaryMetalName}` : item.metalName}
+                            </Badge>
+                          </div>
+                        )}
+
+                        {item.units.length > 0 && (
+                          <div className="flex flex-col gap-1.5 border-t border-border pt-3">
+                            <button
+                              type="button"
+                              onClick={() => openUnitsModal(item)}
+                              className="flex shrink-0 items-center gap-1 self-start rounded text-xs font-medium text-accent transition-colors hover:text-accent-hover hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                            >
+                              <Layers className="size-3.5" aria-hidden />
+                              {item.units.length} exemplar{item.units.length === 1 ? '' : 'es'}
+                            </button>
+                            <GridUnitSummary units={item.units} />
+                          </div>
+                        )}
+
+                        <div className="mt-auto flex items-center justify-between border-t border-border pt-3.5">
+                          <div>
+                            <p className="text-xs text-text-secondary">Preço de aquisição</p>
+                            <p className="font-semibold text-text-primary">
+                              {item.purchase ? `R$ ${item.purchase.totalPrice.toFixed(2)}` : '—'}
+                            </p>
+                          </div>
+                          <div className="flex gap-1">
+                            <button
+                              type="button"
+                              onClick={() => openEditModal(item)}
+                              aria-label="Editar moeda"
+                              className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                            >
+                              <Pencil className="size-4" aria-hidden />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDelete(item.id)}
+                              aria-label="Excluir moeda"
+                              className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+                            >
+                              <Trash2 className="size-4" aria-hidden />
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    </Card>
+                  ))}
                 </div>
-              </div>
-            </Card>
+              ) : (
+                <div className="flex flex-col gap-2.5">
+                  {group.items.map((item) => (
+                    <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
+                      <div className="relative size-14 shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-surface-hover to-surface">
+                        <CollectionItemThumbnail item={item} thumbUrls={thumbUrls} onOpenViewer={openImageViewer} />
+                      </div>
+
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate font-semibold text-text-primary">{item.denomination ?? 'Sem denominação'}</p>
+                        <p className="truncate text-sm text-text-secondary">
+                          {item.countryFlagEmoji ? `${item.countryFlagEmoji} ` : ''}
+                          {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
+                          {item.metalName ? ` · ${item.metalName}` : ''}
+                        </p>
+                      </div>
+
+                      <ListStatusCounts units={item.units} />
+
+                      <button
+                        type="button"
+                        onClick={() => openUnitsModal(item)}
+                        className="flex shrink-0 items-center gap-1 rounded text-xs font-medium text-accent transition-colors hover:text-accent-hover hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      >
+                        <Layers className="size-3.5" aria-hidden />
+                        {item.units.length} exemplar{item.units.length === 1 ? '' : 'es'}
+                      </button>
+
+                      <div className="shrink-0 text-right">
+                        <p className="text-xs text-text-secondary">Aquisição</p>
+                        <p className="font-semibold text-text-primary">
+                          {item.purchase ? `R$ ${item.purchase.totalPrice.toFixed(2)}` : '—'}
+                        </p>
+                      </div>
+
+                      <div className="flex shrink-0 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openEditModal(item)}
+                          aria-label="Editar moeda"
+                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                        >
+                          <Pencil className="size-4" aria-hidden />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDelete(item.id)}
+                          aria-label="Excluir moeda"
+                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+                        >
+                          <Trash2 className="size-4" aria-hidden />
+                        </button>
+                      </div>
+                    </Card>
+                  ))}
+                </div>
+              )}
+            </div>
           ))}
         </div>
       )}
@@ -1220,21 +1838,36 @@ export default function CollectionPage() {
           ) : (
             units.map((unit, index) => (
               <div key={unit.id} className="flex flex-col gap-3 rounded-lg border border-border bg-background p-4">
-                <div className="flex items-center justify-between">
-                  <p className="text-sm font-semibold text-text-primary">
+                <div className="flex items-center justify-between gap-2">
+                  <p className="flex items-center gap-1.5 text-sm font-semibold text-text-primary">
                     Exemplar #{index + 1}
-                    <span className="ml-2 font-mono text-xs font-normal text-text-secondary/50">
-                      {unit.id.slice(0, 8)}
-                    </span>
+                    <span className="font-mono text-xs font-normal text-text-secondary/50">{unit.id.slice(0, 8)}</span>
+                    {unit.isPrimary && (
+                      <Badge tone="accent" className="gap-1">
+                        <Star className="size-3 fill-accent text-accent" aria-hidden />
+                        Principal
+                      </Badge>
+                    )}
                   </p>
-                  <button
-                    type="button"
-                    onClick={() => handleUnitDelete(unit)}
-                    aria-label="Excluir exemplar"
-                    className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-                  >
-                    <Trash2 className="size-4" aria-hidden />
-                  </button>
+                  <div className="flex shrink-0 items-center gap-1">
+                    {!unit.isPrimary && (
+                      <button
+                        type="button"
+                        onClick={() => handleSetPrimaryUnit(unit)}
+                        className="rounded-lg px-2 py-1.5 text-xs font-medium text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      >
+                        Definir como principal
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleUnitDelete(unit)}
+                      aria-label="Excluir exemplar"
+                      className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+                    >
+                      <Trash2 className="size-4" aria-hidden />
+                    </button>
+                  </div>
                 </div>
 
                 <div className="flex flex-col gap-2">
@@ -1246,7 +1879,8 @@ export default function CollectionPage() {
                         collectionUnitId={unit.id}
                         kind={kind}
                         unitLabel={`Exemplar #${index + 1}`}
-                        onView={() => openImageViewer(unit.id, kind)}
+                        onView={() => openImageViewer(units, unit.id, kind)}
+                        onImageChange={(image) => handleUnitImageChange(unit.id, kind, image)}
                       />
                     ))}
                   </div>
@@ -1335,7 +1969,7 @@ export default function CollectionPage() {
       <CoinImageViewer
         key={viewerState?.key}
         isOpen={viewerState !== null}
-        units={units}
+        units={viewerUnits}
         initialUnitId={viewerState?.unitId ?? ''}
         initialKind={viewerState?.kind ?? 'front'}
         onClose={() => setViewerState(null)}

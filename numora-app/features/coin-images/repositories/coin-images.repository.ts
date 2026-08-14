@@ -44,6 +44,14 @@ export interface CoinImagesRepository {
   upload(collectionUnitId: string, input: CoinImageUpload): Promise<CoinImage>
   remove(image: CoinImage): Promise<void>
   getSignedUrl(storagePath: string, expiresInSeconds?: number): Promise<string>
+  /**
+   * Versão em lote de `getSignedUrl` — uma única chamada ao Storage para
+   * várias miniaturas (Etapa 10: cartões da coleção), em vez de uma
+   * request por card. Paths que falharem (arquivo inexistente, etc.)
+   * simplesmente não aparecem no mapa de retorno — quem chama decide como
+   * tratar a ausência (ex.: mostrar o estado "sem imagem").
+   */
+  getSignedUrls(storagePaths: string[], expiresInSeconds?: number): Promise<Record<string, string>>
 }
 
 interface CoinImageRow {
@@ -183,6 +191,24 @@ export function createSupabaseCoinImagesRepository(): CoinImagesRepository {
       }
 
       return data.signedUrl
+    },
+
+    async getSignedUrls(storagePaths, expiresInSeconds = DEFAULT_SIGNED_URL_TTL_SECONDS) {
+      if (storagePaths.length === 0) return {}
+
+      const { data, error } = await supabase.storage.from(BUCKET).createSignedUrls(storagePaths, expiresInSeconds)
+
+      if (error || !data) {
+        throw new Error(`[CoinImagesRepository] Falha ao gerar links das imagens: ${error?.message}`)
+      }
+
+      const result: Record<string, string> = {}
+      for (const entry of data) {
+        if (entry.path && !entry.error && entry.signedUrl) {
+          result[entry.path] = entry.signedUrl
+        }
+      }
+      return result
     },
   }
 }

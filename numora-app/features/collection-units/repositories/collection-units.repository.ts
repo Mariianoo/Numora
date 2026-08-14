@@ -36,22 +36,32 @@ export interface CollectionUnitsRepository {
   createMany(collectionItemId: string, count: number, gradeId: string | null): Promise<CollectionUnit[]>
   update(id: string, input: CollectionUnitInput): Promise<CollectionUnit>
   remove(id: string): Promise<void>
+  /**
+   * Define `unitId` como o exemplar principal do item, desmarcando
+   * atomicamente o principal anterior (Etapa 10) — via RPC
+   * `set_primary_collection_unit` no banco, nunca por dois `update()`
+   * separados daqui (evitaria a garantia de nunca existir 0 ou 2
+   * principais simultâneos). RLS/ownership são verificados dentro da RPC.
+   */
+  setPrimary(unitId: string): Promise<void>
 }
 
 const UNIT_SELECT = `*, grades ( label, scale )`
 
-interface CollectionUnitRow {
+/** Exportado para reuso por `CollectionRepository`, que embute exemplares na mesma query de `collection_items` (Etapa 10). */
+export interface CollectionUnitRow {
   id: string
   collection_item_id: string
   grade_id: string | null
   status: CollectionUnitStatus
   rating: number | null
+  is_primary: boolean
   created_at: string
   updated_at: string
   grades: { label: string; scale: string } | null
 }
 
-function toCollectionUnit(row: CollectionUnitRow): CollectionUnit {
+export function toCollectionUnit(row: CollectionUnitRow): CollectionUnit {
   return {
     id: row.id,
     collectionItemId: row.collection_item_id,
@@ -60,6 +70,7 @@ function toCollectionUnit(row: CollectionUnitRow): CollectionUnit {
     gradeScale: row.grades?.scale ?? null,
     status: row.status,
     rating: row.rating,
+    isPrimary: row.is_primary,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   }
@@ -75,7 +86,11 @@ export function createSupabaseCollectionUnitsRepository(): CollectionUnitsReposi
         .from('collection_units')
         .select(UNIT_SELECT)
         .eq('collection_item_id', collectionItemId)
+        // `id` como desempate: exemplares criados em lote (createMany) têm
+        // created_at IDÊNTICO (mesma transação) — sem um segundo critério,
+        // a ordem "#1/#2/#3" poderia mudar entre requisições.
         .order('created_at', { ascending: true })
+        .order('id', { ascending: true })
 
       if (error) {
         throw new Error(`[CollectionUnitsRepository] Falha ao listar exemplares: ${error.message}`)
@@ -98,7 +113,50 @@ export function createSupabaseCollectionUnitsRepository(): CollectionUnitsReposi
         throw new Error(`[CollectionUnitsRepository] Falha ao criar exemplares: ${error.message}`)
       }
 
-      return (data as unknown as CollectionUnitRow[]).map(toCollectionUnit)
+      let inserted = data as unknown as CollectionUnitRow[]
+
+      // Um item nunca deve ficar com exemplares e sem principal (Etapa 10).
+      // Isto só promove algo quando o item ainda não tem NENHUM principal —
+      // o caso comum é a criação da própria moeda agora; ao só aumentar a
+      // quantidade de um item já existente, ele sempre já tem um principal
+      // e este bloco não faz nada. Duas chamadas HTTP (insert + esta
+      // checagem/promoção), não uma transação só — ver nota de
+      // transparência no relatório da Etapa 10 sobre por que isso é
+      // aceitável aqui (o fallback defensivo "mais antigo" na UI cobre a
+      // rara janela de falha entre as duas).
+      const { data: existingPrimary, error: primaryCheckError } = await supabase
+        .from('collection_units')
+        .select('id')
+        .eq('collection_item_id', collectionItemId)
+        .eq('is_primary', true)
+        .maybeSingle()
+
+      if (primaryCheckError) {
+        throw new Error(`[CollectionUnitsRepository] Falha ao verificar exemplar principal: ${primaryCheckError.message}`)
+      }
+
+      if (!existingPrimary) {
+        // `id` como desempate: todo o lote foi inserido na MESMA transação,
+        // então `created_at` é idêntico entre eles — comparar só por
+        // created_at tornaria a escolha do principal não-determinística.
+        const oldest = [...inserted].sort(
+          (a, b) => a.created_at.localeCompare(b.created_at) || a.id.localeCompare(b.id),
+        )[0]
+        const { data: promoted, error: promoteError } = await supabase
+          .from('collection_units')
+          .update({ is_primary: true })
+          .eq('id', oldest.id)
+          .select(UNIT_SELECT)
+          .single()
+
+        if (promoteError) {
+          throw new Error(`[CollectionUnitsRepository] Falha ao definir exemplar principal: ${promoteError.message}`)
+        }
+
+        inserted = inserted.map((row) => (row.id === promoted.id ? (promoted as unknown as CollectionUnitRow) : row))
+      }
+
+      return inserted.map(toCollectionUnit)
     },
 
     async update(id, input) {
@@ -163,6 +221,14 @@ export function createSupabaseCollectionUnitsRepository(): CollectionUnitsReposi
           throw new Error(error.message)
         }
         throw new Error(`[CollectionUnitsRepository] Falha ao excluir exemplar: ${error.message}`)
+      }
+    },
+
+    async setPrimary(unitId) {
+      const { error } = await supabase.rpc('set_primary_collection_unit', { p_unit_id: unitId })
+
+      if (error) {
+        throw new Error(`[CollectionUnitsRepository] Falha ao definir exemplar principal: ${error.message}`)
       }
     },
   }
