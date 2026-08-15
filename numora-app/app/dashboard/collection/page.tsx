@@ -79,6 +79,7 @@ import { Textarea } from '@/components/ui/Textarea'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
+import { IconButton } from '@/components/ui/IconButton'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
 import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
@@ -459,15 +460,11 @@ function GridUnitSummary({
           <Badge tone="neutral" className="shrink-0 whitespace-nowrap">
             {COLLECTION_UNIT_STATUS_EMOJI[unit.status]} {COLLECTION_UNIT_STATUS_LABELS[unit.status]}
           </Badge>
-          <button
-            type="button"
+          <IconButton
+            icon={MoreVertical}
             onClick={() => onEditUnit(unit, index)}
             aria-label={`Editar Exemplar #${index + 1}`}
-            title={`Editar Exemplar #${index + 1}`}
-            className="flex size-11 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            <MoreVertical className="size-3.5" aria-hidden />
-          </button>
+          />
         </div>
       ))}
     </div>
@@ -523,15 +520,12 @@ function PurchaseValue({
           {!hasValue ? '—' : visible ? `R$ ${item.purchase?.totalPrice.toFixed(2)}` : '••••••'}
         </p>
         {hasValue && (
-          <button
-            type="button"
+          <IconButton
+            icon={visible ? Eye : EyeOff}
+            size="sm"
             onClick={onToggle}
             aria-label={visible ? 'Ocultar valor de aquisição' : 'Mostrar valor de aquisição'}
-            title={visible ? 'Ocultar valor de aquisição' : 'Mostrar valor de aquisição'}
-            className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            {visible ? <Eye className="size-3.5" aria-hidden /> : <EyeOff className="size-3.5" aria-hidden />}
-          </button>
+          />
         )}
       </div>
     </div>
@@ -1947,15 +1941,7 @@ export default function CollectionPage() {
                               {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
                             </p>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => openInfoModal(item)}
-                            aria-label="Informações da moeda"
-                            title="Informações da moeda"
-                            className="flex shrink-0 items-center justify-center rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                          >
-                            <Info className="size-4" aria-hidden />
-                          </button>
+                          <IconButton icon={Info} onClick={() => openInfoModal(item)} aria-label="Informações da moeda" />
                         </div>
 
                         {item.metalName && (
@@ -1990,23 +1976,14 @@ export default function CollectionPage() {
                             onToggle={() => togglePurchaseVisibility(item.id)}
                           />
                           <div className="flex gap-1">
-                            <button
-                              type="button"
-                              onClick={() => openEditModal(item)}
-                              aria-label="Editar moeda"
-                              className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                            >
-                              <Pencil className="size-4" aria-hidden />
-                            </button>
-                            <button
-                              type="button"
+                            <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
+                            <IconButton
+                              icon={Trash2}
+                              variant="danger"
                               onClick={() => handleDelete(item)}
                               aria-label="Mover moeda para a lixeira"
                               title="Mover para a lixeira"
-                              className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-                            >
-                              <Trash2 className="size-4" aria-hidden />
-                            </button>
+                            />
                           </div>
                         </div>
                       </div>
@@ -2055,32 +2032,15 @@ export default function CollectionPage() {
                       />
 
                       <div className="flex shrink-0 gap-1">
-                        <button
-                          type="button"
-                          onClick={() => openInfoModal(item)}
-                          aria-label="Informações da moeda"
-                          title="Informações da moeda"
-                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                        >
-                          <Info className="size-4" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => openEditModal(item)}
-                          aria-label="Editar moeda"
-                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                        >
-                          <Pencil className="size-4" aria-hidden />
-                        </button>
-                        <button
-                          type="button"
+                        <IconButton icon={Info} onClick={() => openInfoModal(item)} aria-label="Informações da moeda" />
+                        <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
+                        <IconButton
+                          icon={Trash2}
+                          variant="danger"
                           onClick={() => handleDelete(item)}
                           aria-label="Mover moeda para a lixeira"
                           title="Mover para a lixeira"
-                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-                        >
-                          <Trash2 className="size-4" aria-hidden />
-                        </button>
+                        />
                       </div>
                     </Card>
                   ))}
@@ -2228,14 +2188,12 @@ export default function CollectionPage() {
                     <label htmlFor="grade-select" className="text-sm font-medium text-text-secondary">
                       Conservação inicial
                     </label>
-                    <button
-                      type="button"
+                    <IconButton
+                      icon={HelpCircle}
+                      size="sm"
                       onClick={() => setIsGradeHelpOpen(true)}
                       aria-label="Ajuda sobre níveis de conservação"
-                      className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                    >
-                      <HelpCircle className="size-4" aria-hidden />
-                    </button>
+                    />
                   </div>
                   <Select id="grade-select" value={initialGradeId} onChange={(e) => setInitialGradeId(e.target.value)}>
                     <option value="">Selecione...</option>
@@ -2399,14 +2357,12 @@ export default function CollectionPage() {
                         Definir como principal
                       </button>
                     )}
-                    <button
-                      type="button"
+                    <IconButton
+                      icon={Trash2}
+                      variant="danger"
                       onClick={() => handleUnitDelete(unit)}
                       aria-label="Excluir exemplar"
-                      className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
-                    >
-                      <Trash2 className="size-4" aria-hidden />
-                    </button>
+                    />
                   </div>
                 </div>
 
@@ -2430,14 +2386,12 @@ export default function CollectionPage() {
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center gap-1.5">
                       <label className="text-sm font-medium text-text-secondary">Conservação</label>
-                      <button
-                        type="button"
+                      <IconButton
+                        icon={HelpCircle}
+                        size="sm"
                         onClick={() => setIsGradeHelpOpen(true)}
                         aria-label="Ajuda sobre níveis de conservação"
-                        className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                      >
-                        <HelpCircle className="size-4" aria-hidden />
-                      </button>
+                      />
                     </div>
                     <Select
                       value={unit.gradeId ?? ''}
@@ -2657,14 +2611,12 @@ export default function CollectionPage() {
                   <div className="flex flex-col gap-1.5">
                     <div className="flex items-center gap-1.5">
                       <label className="text-sm font-medium text-text-secondary">Conservação</label>
-                      <button
-                        type="button"
+                      <IconButton
+                        icon={HelpCircle}
+                        size="sm"
                         onClick={() => setIsGradeHelpOpen(true)}
                         aria-label="Ajuda sobre níveis de conservação"
-                        className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-                      >
-                        <HelpCircle className="size-4" aria-hidden />
-                      </button>
+                      />
                     </div>
                     <Select
                       value={editUnit.gradeId ?? ''}

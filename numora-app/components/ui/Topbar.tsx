@@ -11,6 +11,7 @@ import { usePathname } from 'next/navigation'
 import { Menu } from 'lucide-react'
 
 import { Avatar } from './Avatar'
+import { IconButton } from './IconButton'
 
 const PAGE_TITLES: Record<string, string> = {
   '/dashboard': 'Dashboard',
@@ -29,14 +30,7 @@ export function Topbar({ onMenuClick, userLabel }: TopbarProps) {
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4 sm:px-6">
-      <button
-        type="button"
-        onClick={onMenuClick}
-        aria-label="Abrir menu"
-        className="rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 md:hidden"
-      >
-        <Menu className="size-5" aria-hidden />
-      </button>
+      <IconButton icon={Menu} onClick={onMenuClick} aria-label="Abrir menu" className="md:hidden" />
 
       {/* Mobile: a marca fica visível aqui, já que a Sidebar (onde ela mora no desktop) está oculta */}
       <span className="text-base font-semibold tracking-wide text-text-primary md:hidden">

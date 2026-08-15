@@ -48,6 +48,8 @@ import { useEffect, useId, useRef } from 'react'
 import type { ReactNode, RefObject } from 'react'
 import { X } from 'lucide-react'
 
+import { IconButton } from './IconButton'
+
 const openModalStack: string[] = []
 
 const FOCUSABLE_SELECTOR =
@@ -155,15 +157,7 @@ export function Modal({ isOpen, onClose, title, description, children, footer, i
               </p>
             )}
           </div>
-          <button
-            ref={closeButtonRef}
-            type="button"
-            onClick={onClose}
-            aria-label="Fechar"
-            className="shrink-0 rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            <X className="size-5" aria-hidden />
-          </button>
+          <IconButton ref={closeButtonRef} icon={X} onClick={onClose} aria-label="Fechar" />
         </div>
 
         <div className="overflow-y-auto px-6 py-5">{children}</div>
