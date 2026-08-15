@@ -17,6 +17,7 @@
  */
 'use client'
 
+import Link from 'next/link'
 import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
 import {
@@ -78,6 +79,7 @@ import { Textarea } from '@/components/ui/Textarea'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Modal } from '@/components/ui/Modal'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
 import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -643,6 +645,8 @@ function CoinImageSlot({
   const [editingFile, setEditingFile] = useState<File | null>(null)
   /** Muda a cada novo arquivo escolhido — força o editor a remontar com estado limpo (zoom/pan/erro). */
   const [editorKey, setEditorKey] = useState(0)
+  /** Etapa Lixeira — confirmação de remoção de foto (não é mais window.confirm). */
+  const [isRemoveConfirmOpen, setIsRemoveConfirmOpen] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
@@ -715,10 +719,8 @@ function CoinImageSlot({
     }
   }
 
-  async function handleRemove() {
+  async function confirmRemove() {
     if (!image) return
-    const confirmed = window.confirm(`Remover esta foto? Esta ação removerá a imagem de ${COIN_IMAGE_KIND_LABELS[kind].toLowerCase()} deste exemplar.`)
-    if (!confirmed) return
 
     setError(null)
     try {
@@ -727,9 +729,12 @@ function CoinImageSlot({
       setPreviewUrl(null)
       setStatus('idle')
       onImageChange?.(null)
+      setIsRemoveConfirmOpen(false)
     } catch {
       // A remoção do Storage acontece antes da do registro (CoinImagesRepository.remove) —
-      // se algo falhar, nada muda visualmente além do erro: a foto continua lá.
+      // se algo falhar, nada muda visualmente além do erro: a foto continua lá. Fecha o
+      // diálogo para o erro ficar visível no slot por trás, mesmo padrão do unitPendingDelete.
+      setIsRemoveConfirmOpen(false)
       setError('Não foi possível remover a foto. Tente novamente.')
     }
   }
@@ -792,7 +797,7 @@ function CoinImageSlot({
               </button>
               <button
                 type="button"
-                onClick={handleRemove}
+                onClick={() => setIsRemoveConfirmOpen(true)}
                 disabled={isBusy}
                 className="rounded-md px-2.5 py-2 text-[11px] font-medium text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
               >
@@ -834,6 +839,17 @@ function CoinImageSlot({
         hint={hint}
         onCancel={() => setEditingFile(null)}
         onConfirm={handleEditorConfirm}
+      />
+
+      <ConfirmDialog
+        isOpen={isRemoveConfirmOpen}
+        onClose={() => setIsRemoveConfirmOpen(false)}
+        onConfirm={confirmRemove}
+        title="Remover esta foto?"
+        description={`Esta ação removerá a imagem de ${COIN_IMAGE_KIND_LABELS[kind].toLowerCase()} deste exemplar.`}
+        icon={Trash2}
+        isDestructive
+        confirmLabel="Remover foto"
       />
     </div>
   )
@@ -912,6 +928,18 @@ export default function CollectionPage() {
   const [unitsError, setUnitsError] = useState<string | null>(null)
   /** Exemplar aguardando confirmação explícita de exclusão (nunca excluído direto no clique). */
   const [unitPendingDelete, setUnitPendingDelete] = useState<CollectionUnit | null>(null)
+
+  /**
+   * Etapa Lixeira — item aguardando confirmação de "mover para a lixeira"
+   * (nunca movido direto no clique do ícone 🗑️). `trashSiblingCount` é
+   * quantos OUTROS itens compartilham a mesma purchase (buscado do
+   * repository ao abrir o diálogo, não do array `items` já carregado).
+   */
+  const [itemPendingTrash, setItemPendingTrash] = useState<CollectionItem | null>(null)
+  const [trashSiblingCount, setTrashSiblingCount] = useState<number | null>(null)
+  const [isTrashSiblingCountLoading, setIsTrashSiblingCountLoading] = useState(false)
+  const [isMovingToTrash, setIsMovingToTrash] = useState(false)
+  const [trashError, setTrashError] = useState<string | null>(null)
 
   /**
    * CoinImageViewer (Etapa 9.3) — um único viewer compartilhado por todos
@@ -1357,17 +1385,59 @@ export default function CollectionPage() {
     }
   }
 
-  async function handleDelete(id: string) {
-    const confirmed = window.confirm('Tem certeza que deseja excluir esta moeda? Todos os exemplares serão removidos.')
-    if (!confirmed) return
+  /**
+   * Abre o ConfirmDialog de "mover para a lixeira" (Etapa Lixeira) — nunca
+   * mais um DELETE direto a partir da coleção ativa. Busca a contagem de
+   * OUTROS itens que compartilham a mesma `purchase_id` via repository
+   * (não do array `items` já carregado, que só tem itens ativos e não
+   * refletiria compras compartilhadas com itens já na lixeira).
+   */
+  async function handleDelete(item: CollectionItem) {
+    setTrashError(null)
+    setItemPendingTrash(item)
+    setTrashSiblingCount(null)
 
-    setError(null)
+    if (item.purchaseId) {
+      setIsTrashSiblingCountLoading(true)
+      try {
+        const count = await collectionRepository.countOtherItemsForPurchase(item.purchaseId, item.id)
+        setTrashSiblingCount(count)
+      } catch {
+        // informação secundária do diálogo — não impede a ação principal
+        setTrashSiblingCount(0)
+      } finally {
+        setIsTrashSiblingCountLoading(false)
+      }
+    }
+  }
+
+  function closeTrashConfirm() {
+    setItemPendingTrash(null)
+    setTrashSiblingCount(null)
+    setTrashError(null)
+  }
+
+  /**
+   * A ação real: só `deleted_at = now()` em collection_items. Nenhum
+   * collection_unit, coin_image, arquivo do Storage ou purchase é tocado
+   * — por isso não há limpeza de Storage aqui, ao contrário do antigo
+   * `handleDelete`/`remove()` (que agora só roda a partir da Lixeira).
+   */
+  async function confirmMoveToTrash() {
+    const item = itemPendingTrash
+    if (!item) return
+
+    setIsMovingToTrash(true)
+    setTrashError(null)
 
     try {
-      await collectionRepository.remove(id)
-      setItems((current) => current.filter((item) => item.id !== id))
+      await collectionRepository.softDelete(item.id)
+      setItems((current) => current.filter((i) => i.id !== item.id))
+      closeTrashConfirm()
     } catch (err) {
-      setError((err as Error).message)
+      setTrashError((err as Error).message)
+    } finally {
+      setIsMovingToTrash(false)
     }
   }
 
@@ -1555,10 +1625,19 @@ export default function CollectionPage() {
         title="Minha Coleção"
         description="Organize e acompanhe suas moedas."
         actions={
-          <Button type="button" onClick={openAddModal}>
-            <Plus className="size-4" aria-hidden />
-            Adicionar moeda
-          </Button>
+          <>
+            <Link
+              href="/dashboard/collection/trash"
+              className="inline-flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-surface-hover px-4 text-sm font-medium text-text-primary transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+            >
+              <Trash2 className="size-4" aria-hidden />
+              Lixeira
+            </Link>
+            <Button type="button" onClick={openAddModal}>
+              <Plus className="size-4" aria-hidden />
+              Adicionar moeda
+            </Button>
+          </>
         }
       />
 
@@ -1824,8 +1903,9 @@ export default function CollectionPage() {
                             </button>
                             <button
                               type="button"
-                              onClick={() => handleDelete(item.id)}
-                              aria-label="Excluir moeda"
+                              onClick={() => handleDelete(item)}
+                              aria-label="Mover moeda para a lixeira"
+                              title="Mover para a lixeira"
                               className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
                             >
                               <Trash2 className="size-4" aria-hidden />
@@ -1897,8 +1977,9 @@ export default function CollectionPage() {
                         </button>
                         <button
                           type="button"
-                          onClick={() => handleDelete(item.id)}
-                          aria-label="Excluir moeda"
+                          onClick={() => handleDelete(item)}
+                          aria-label="Mover moeda para a lixeira"
+                          title="Mover para a lixeira"
                           className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
                         >
                           <Trash2 className="size-4" aria-hidden />
@@ -2309,24 +2390,68 @@ export default function CollectionPage() {
         </div>
       </Modal>
 
-      <Modal
+      <ConfirmDialog
         isOpen={unitPendingDelete !== null}
         onClose={() => setUnitPendingDelete(null)}
+        onConfirm={confirmUnitDelete}
         title="Excluir este exemplar?"
         description="Esta ação removerá apenas este exemplar da coleção — a moeda e os demais exemplares não são afetados."
-        footer={
-          <>
-            <Button type="button" variant="secondary" onClick={() => setUnitPendingDelete(null)}>
-              Cancelar
-            </Button>
-            <Button type="button" variant="danger" onClick={confirmUnitDelete}>
-              Excluir exemplar
-            </Button>
-          </>
-        }
+        icon={Trash2}
+        isDestructive
+        confirmLabel="Excluir exemplar"
+      />
+
+      {/*
+        Etapa Lixeira — "mover para a lixeira" substitui o antigo
+        window.confirm de exclusão de moeda. Reversível (não usa
+        isDestructive): só collection_items.deleted_at muda, nada é
+        apagado. `trashSiblingCount` vem do repository (não do array
+        `items`, que só tem itens ativos), então a informação de "compra
+        em lote" continua correta mesmo se outra moeda da mesma compra já
+        estiver na lixeira.
+      */}
+      <ConfirmDialog
+        isOpen={itemPendingTrash !== null}
+        onClose={closeTrashConfirm}
+        onConfirm={confirmMoveToTrash}
+        title="Mover moeda para a lixeira?"
+        description="Esta moeda será removida da sua coleção ativa, mas poderá ser restaurada posteriormente."
+        icon={Trash2}
+        confirmLabel="Mover para a lixeira"
+        isLoading={isMovingToTrash}
+        error={trashError}
       >
-        {null}
-      </Modal>
+        {itemPendingTrash && (
+          <div className="flex flex-col gap-1.5 rounded-lg border border-border bg-background p-3 text-sm">
+            <p className="font-medium text-text-primary">{itemPendingTrash.denomination ?? 'Sem denominação'}</p>
+            <p className="text-text-secondary">
+              {itemPendingTrash.countryFlagEmoji ? `${itemPendingTrash.countryFlagEmoji} ` : ''}
+              {itemPendingTrash.countryDisplayName ?? itemPendingTrash.countryCode ?? '—'}
+              {itemPendingTrash.year !== null ? ` · ${itemPendingTrash.year}` : ''}
+            </p>
+            <p className="text-text-secondary">
+              {itemPendingTrash.units.length} exemplar{itemPendingTrash.units.length === 1 ? '' : 'es'}
+            </p>
+            {itemPendingTrash.purchase && (
+              <p className="text-text-secondary">
+                Valor de aquisição: R$ {itemPendingTrash.purchase.totalPrice.toFixed(2)}
+              </p>
+            )}
+            {itemPendingTrash.purchaseId &&
+              (isTrashSiblingCountLoading ? (
+                <p className="text-xs text-text-secondary/70">Verificando compra vinculada...</p>
+              ) : (
+                trashSiblingCount !== null && (
+                  <p className="text-xs font-medium text-accent">
+                    {trashSiblingCount === 0
+                      ? 'Esta é a única moeda vinculada a esta compra.'
+                      : `Esta moeda faz parte de uma compra com outras ${trashSiblingCount} moeda${trashSiblingCount === 1 ? '' : 's'}. Somente esta moeda será movida para a lixeira.`}
+                  </p>
+                )
+              ))}
+          </div>
+        )}
+      </ConfirmDialog>
 
       <CoinImageViewer
         key={viewerState?.key}

@@ -161,8 +161,11 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     await requireUserId()
 
     const [itemsResult, purchasesResult] = await Promise.all([
-      supabase.from('collection_items').select('quantity, country_code, metal_code'),
-      supabase.from('purchases').select('total_price'),
+      supabase.from('collection_items').select('quantity, country_code, metal_code').is('deleted_at', null),
+      // Mesmo filtro do Dashboard (Etapa Lixeira): só conta purchase com
+      // ao menos 1 collection_item ATIVO vinculado — via embed `!inner`,
+      // sem N+1, sem duplicar a linha de purchases compartilhadas.
+      supabase.from('purchases').select('total_price, collection_items!inner(id)').is('collection_items.deleted_at', null),
     ])
 
     if (itemsResult.error) {

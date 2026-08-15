@@ -85,6 +85,13 @@ export interface CollectionItem {
   catalogReferences: CatalogReference[] | null
   createdAt: string
   updatedAt: string
+  /**
+   * Etapa Lixeira — `null` = coleção ativa, preenchido = na lixeira.
+   * Única fonte de verdade para ativo/lixeira (não existe em
+   * `collection_units`/`coin_images` de propósito — a visibilidade deles é
+   * inteiramente derivada deste campo no pai, nunca um estado próprio).
+   */
+  deletedAt: string | null
   /** Resolvidos via join — nomes de exibição, não colunas próprias. */
   countryDisplayName: string | null
   countryFlagEmoji: string | null

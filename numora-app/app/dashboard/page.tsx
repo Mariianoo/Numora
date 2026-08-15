@@ -60,11 +60,17 @@ export default async function DashboardPage() {
   }
 
   const [itemsResult, purchasesResult, lastPurchaseResult, profileResult] = await Promise.all([
-    supabase.from('collection_items').select('quantity, country_code, metal_code'),
-    supabase.from('purchases').select('total_price'),
+    supabase.from('collection_items').select('quantity, country_code, metal_code').is('deleted_at', null),
+    // `collection_items!inner(id)` + filtro no embed = EXISTS: só traz a
+    // purchase se houver ao menos 1 collection_item ATIVO vinculado (Etapa
+    // Lixeira). Uma purchase compartilhada por vários itens continua
+    // aparecendo aqui uma única vez (o embed vira array aninhado, não
+    // duplica a linha de purchases) — sem N+1, uma query só.
+    supabase.from('purchases').select('total_price, collection_items!inner(id)').is('collection_items.deleted_at', null),
     supabase
       .from('purchases')
-      .select('total_price, seller_name, purchase_date')
+      .select('total_price, seller_name, purchase_date, collection_items!inner(id)')
+      .is('collection_items.deleted_at', null)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
