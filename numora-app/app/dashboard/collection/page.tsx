@@ -38,6 +38,7 @@ import {
   LayoutGrid,
   List,
   Loader2,
+  MoreVertical,
   Pencil,
   PackageOpen,
   Plus,
@@ -423,8 +424,21 @@ function CollectionItemThumbnail({
  * Conservação, `Star` (via `MiniStars`) = SÓ avaliação pessoal, badge =
  * Status. Cada valor tem um glifo próprio, nenhum reaproveita o ícone de
  * outro.
+ *
+ * `onEditUnit` (Etapa "Editar Exemplar"): único affordance clicável da
+ * linha — abre o modal focado naquele exemplar. Só existe na Grid de
+ * propósito: a Lista mostra contagens agregadas (`ListStatusCounts`), não
+ * uma linha por exemplar, então não há aqui "o exemplar" para apontar o
+ * menu — nesse modo o caminho continua sendo "N exemplares" → "Gerenciar
+ * exemplares", inalterado.
  */
-function GridUnitSummary({ units }: { units: CollectionItemUnit[] }) {
+function GridUnitSummary({
+  units,
+  onEditUnit,
+}: {
+  units: CollectionItemUnit[]
+  onEditUnit: (unit: CollectionItemUnit, index: number) => void
+}) {
   return (
     <div className="flex max-h-32 flex-col gap-1 overflow-y-auto pr-0.5">
       {units.map((unit, index) => (
@@ -443,6 +457,15 @@ function GridUnitSummary({ units }: { units: CollectionItemUnit[] }) {
           <Badge tone="neutral" className="shrink-0 whitespace-nowrap">
             {COLLECTION_UNIT_STATUS_EMOJI[unit.status]} {COLLECTION_UNIT_STATUS_LABELS[unit.status]}
           </Badge>
+          <button
+            type="button"
+            onClick={() => onEditUnit(unit, index)}
+            aria-label={`Editar Exemplar #${index + 1}`}
+            title={`Editar Exemplar #${index + 1}`}
+            className="flex size-11 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            <MoreVertical className="size-3.5" aria-hidden />
+          </button>
         </div>
       ))}
     </div>
@@ -923,6 +946,33 @@ export default function CollectionPage() {
   function closePhotosModal() {
     setPhotosModalItem(null)
     setPhotosModalUnitId(null)
+  }
+
+  /**
+   * Modal "Editar Exemplar #N" (Etapa "Editar Exemplar") — fluxo focado,
+   * aberto direto do `⋮` no resumo de cada exemplar na Grid. Guarda só os
+   * IDs (item + exemplar), NUNCA um snapshot do item: `handleUnitFieldChange`
+   * reconstrói o payload de update a partir do objeto `unit` que recebe,
+   * então se o modal continuasse lendo de um `CollectionItem` congelado no
+   * momento da abertura, a 2ª alteração dentro do mesmo modal enviaria de
+   * volta o valor ANTIGO do 1º campo (perdendo a 1ª alteração) — bug real
+   * encontrado em teste manual nesta etapa. Resolver o item/exemplar a
+   * cada render a partir de `items` (a mesma fonte que `setItems` mantém
+   * atualizada em handleUnitFieldChange/handleSetPrimaryUnit/
+   * handleUnitDelete/handleUnitImageChange) garante que o modal sempre
+   * edita o estado mais recente, igual à Grid por trás dele.
+   */
+  const [editUnitModalItemId, setEditUnitModalItemId] = useState<string | null>(null)
+  const [editUnitModalUnitId, setEditUnitModalUnitId] = useState<string | null>(null)
+
+  function openEditUnitModal(item: CollectionItem, unit: CollectionItemUnit) {
+    setEditUnitModalItemId(item.id)
+    setEditUnitModalUnitId(unit.id)
+  }
+
+  function closeEditUnitModal() {
+    setEditUnitModalItemId(null)
+    setEditUnitModalUnitId(null)
   }
 
   /**
@@ -1467,6 +1517,10 @@ export default function CollectionPage() {
         ),
       )
       setUnitsModalItem((current) => (current ? { ...current, quantity: current.quantity - 1 } : current))
+      // Se o exemplar excluído era o que estava aberto em "Editar Exemplar",
+      // não sobra nada para esse modal mostrar — fecha em vez de deixá-lo
+      // "pendurado" apontando para um exemplar que não existe mais.
+      if (editUnitModalUnitId === unit.id) closeEditUnitModal()
       setUnitPendingDelete(null)
     } catch (err) {
       // Inclui a mensagem amigável de "último exemplar" vinda do banco (P0001).
@@ -1746,7 +1800,10 @@ export default function CollectionPage() {
                               <Layers className="size-3.5" aria-hidden />
                               {item.units.length} exemplar{item.units.length === 1 ? '' : 'es'}
                             </button>
-                            <GridUnitSummary units={item.units} />
+                            <GridUnitSummary
+                              units={item.units}
+                              onEditUnit={(unit) => openEditUnitModal(item, unit)}
+                            />
                           </div>
                         )}
 
@@ -2325,6 +2382,132 @@ export default function CollectionPage() {
                 >
                   Gerenciar exemplares
                 </button>
+              </div>
+            )}
+          </Modal>
+        )
+      })()}
+
+      {/*
+        Etapa "Editar Exemplar" — fluxo focado aberto pelo ⋮ no resumo de
+        cada exemplar na Grid (GridUnitSummary). Reaproveita os MESMOS
+        handlers já usados por "Gerenciar exemplares"
+        (handleUnitFieldChange/handleSetPrimaryUnit/handleUnitDelete/
+        handleUnitImageChange) — nenhuma lógica de escrita nova, só uma UI
+        focada em cima de escritas que já existiam. Trabalha
+        exclusivamente com o `collection_unit` selecionado; nunca escreve
+        em collection_items. "Gerenciar exemplares" continua existindo
+        sem alteração, para quem quer ver todos os exemplares de uma vez.
+      */}
+      {(() => {
+        const editUnitModalItem = items.find((i) => i.id === editUnitModalItemId) ?? null
+        const editUnit = editUnitModalItem?.units.find((u) => u.id === editUnitModalUnitId) ?? null
+        const editUnitIndex = editUnitModalItem && editUnit ? editUnitModalItem.units.indexOf(editUnit) : -1
+
+        return (
+          <Modal
+            isOpen={editUnitModalItem !== null && editUnit !== null}
+            onClose={closeEditUnitModal}
+            title={editUnitIndex !== -1 ? `Editar Exemplar #${editUnitIndex + 1}` : 'Editar exemplar'}
+            description="Gerencie fotos, conservação, avaliação e disponibilidade deste exemplar."
+          >
+            {editUnitModalItem && editUnit && (
+              <div className="flex flex-col gap-5">
+                {unitsError && <p className="text-sm text-danger">{unitsError}</p>}
+
+                <div className="flex flex-col gap-2">
+                  <span className="text-sm font-medium text-text-secondary">Fotos</span>
+                  <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-2.5">
+                    {COIN_IMAGE_KINDS.map((kind) => (
+                      <CoinImageSlot
+                        key={kind}
+                        collectionUnitId={editUnit.id}
+                        kind={kind}
+                        unitLabel={`Exemplar #${editUnitIndex + 1}`}
+                        onView={() => openImageViewer(editUnitModalItem.units, editUnit.id, kind)}
+                        onImageChange={(image) => handleUnitImageChange(editUnit.id, kind, image)}
+                      />
+                    ))}
+                  </div>
+                </div>
+
+                <FieldRow>
+                  <div className="flex flex-col gap-1.5">
+                    <div className="flex items-center gap-1.5">
+                      <label className="text-sm font-medium text-text-secondary">Conservação</label>
+                      <button
+                        type="button"
+                        onClick={() => setIsGradeHelpOpen(true)}
+                        aria-label="Ajuda sobre níveis de conservação"
+                        className="flex size-4 items-center justify-center rounded-full text-text-secondary transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                      >
+                        <HelpCircle className="size-4" aria-hidden />
+                      </button>
+                    </div>
+                    <Select
+                      value={editUnit.gradeId ?? ''}
+                      onChange={(e) => handleUnitFieldChange(editUnit, { gradeId: toNullableText(e.target.value) })}
+                    >
+                      <option value="">Não informada</option>
+                      {Object.entries(gradesByScale).map(([scale, scaleGrades]) => (
+                        <optgroup key={scale} label={GRADE_SCALE_LABELS[scale] ?? scale}>
+                          {scaleGrades.map((grade) => (
+                            <option key={grade.id} value={grade.id}>
+                              {grade.label}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ))}
+                    </Select>
+                  </div>
+
+                  <Select
+                    label="Status"
+                    value={editUnit.status}
+                    onChange={(e) =>
+                      handleUnitFieldChange(editUnit, { status: e.target.value as CollectionUnitStatus })
+                    }
+                  >
+                    {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
+                      <option key={status} value={status}>
+                        {COLLECTION_UNIT_STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
+                      </option>
+                    ))}
+                  </Select>
+                </FieldRow>
+
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium text-text-secondary">Minha avaliação</span>
+                  <p className="text-xs font-medium text-accent">
+                    Minha avaliação — não representa a conservação.
+                  </p>
+                  <StarRatingInput
+                    value={editUnit.rating}
+                    onChange={(rating) => handleUnitFieldChange(editUnit, { rating })}
+                  />
+                </div>
+
+                <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
+                  <span className="flex items-center gap-1.5 text-sm text-text-secondary">
+                    <Bookmark
+                      className={editUnit.isPrimary ? 'size-4 shrink-0 fill-accent text-accent' : 'size-4 shrink-0'}
+                      aria-hidden
+                    />
+                    {editUnit.isPrimary ? 'Este é o exemplar principal.' : 'Não é o exemplar principal.'}
+                  </span>
+                  {!editUnit.isPrimary && (
+                    <Button type="button" variant="secondary" size="sm" onClick={() => handleSetPrimaryUnit(editUnit)}>
+                      Definir como principal
+                    </Button>
+                  )}
+                </div>
+
+                <div className="flex justify-end border-t border-border pt-4">
+                  <Button type="button" variant="danger" size="sm" onClick={() => handleUnitDelete(editUnit)}>
+                    <Trash2 className="size-4" aria-hidden />
+                    Excluir exemplar
+                  </Button>
+                </div>
               </div>
             )}
           </Modal>
