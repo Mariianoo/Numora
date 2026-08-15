@@ -24,6 +24,19 @@ export interface CollectionItemUnit extends CollectionUnit {
   images: CollectionItemUnitImage[]
 }
 
+/**
+ * Uma entrada de catalogação (Etapa 11) — ex.: `{ catalog: 'KM', code:
+ * '649' }`. `jsonb` no banco (`collection_items.catalog_references`),
+ * array de objetos com este shape validado aqui em TypeScript; o banco só
+ * garante que é um array (`jsonb_typeof = 'array'`), não o shape interno.
+ */
+export interface CatalogReference {
+  /** Nome do sistema de catalogação — ex.: "KM", "Numista", "NGC", "PCGS". Texto livre, não é um enum fechado. */
+  catalog: string
+  /** Código dentro daquele catálogo — ex.: "649", "N#12345". */
+  code: string
+}
+
 export interface CollectionItem {
   id: string
   userId: string
@@ -42,12 +55,34 @@ export interface CollectionItem {
    * Espelho de `COUNT(collection_units)`, mantido pelo banco (trigger) —
    * nunca escrito diretamente pela aplicação. Fonte de verdade real é a
    * tabela `collection_units` (ver features/collection-units).
+   *
+   * NÃO confundir com `mintage` (quantidade cunhada historicamente pela
+   * casa da moeda) — são conceitos completamente diferentes: `quantity`
+   * é "quantos exemplares EU tenho", `mintage` é "quantos foram
+   * fabricados no total" (Etapa 11).
    */
   quantity: number
   unitCostOverride: number | null
   description: string | null
   location: string | null
   tags: string[] | null
+  /**
+   * Quantidade cunhada historicamente (Etapa 11) — `string`, NUNCA
+   * `number`: é um `bigint` no Postgres (mintagens reais chegam a
+   * bilhões) e o repository o lê via `mintage::text` no PostgREST
+   * especificamente para evitar que o JSON.parse do JavaScript corrompa
+   * valores acima de `Number.MAX_SAFE_INTEGER` (comprovado em teste real
+   * nesta etapa: 9007199254740993 virava 9007199254740992 sem o cast).
+   * Formatar para exibição sem passar por `Number()`; usar `BigInt(str)`
+   * se precisar agrupar milhares, nunca `parseInt`/`Number`.
+   */
+  mintage: string | null
+  /** História da emissão (Etapa 11) — texto livre, pertence à emissão, nunca duplicado por exemplar. */
+  history: string | null
+  /** Curiosidades sobre a emissão (Etapa 11) — texto livre (não lista) de propósito, ver decisão na auditoria: evita UI de itens repetíveis sem necessidade real ainda. */
+  trivia: string | null
+  /** Referências de catalogação (Etapa 11) — `null` ou array; nunca uma moeda de exemplo/fictícia. */
+  catalogReferences: CatalogReference[] | null
   createdAt: string
   updatedAt: string
   /** Resolvidos via join — nomes de exibição, não colunas próprias. */
@@ -111,6 +146,25 @@ export interface CollectionItemInput {
   quantity: number
   initialGradeId: string | null
   purchase: PurchaseInput | null
+}
+
+/**
+ * Dados do modal "Informações da moeda" (Etapa 11) — propositalmente um
+ * tipo SEPARADO de `CollectionItemInput`, nunca um subconjunto opcional
+ * dele. `CollectionRepository.updateEnrichment()` escreve exatamente (e
+ * somente) estes 5 campos — nunca `quantity`, `purchase`, `country_code`,
+ * `year`, `metal_code`, etc. Isso existe para que abrir esse modal e
+ * salvar NUNCA possa sobrescrever por acidente um dado que pertence ao
+ * formulário "Editar moeda" (que o usuário nem tinha aberto).
+ * `mintage` é `string | null` pelo mesmo motivo do campo em
+ * `CollectionItem`: é um `bigint`, nunca passa por `Number()`.
+ */
+export interface CollectionItemEnrichmentInput {
+  mint: string | null
+  mintage: string | null
+  history: string | null
+  trivia: string | null
+  catalogReferences: CatalogReference[] | null
 }
 
 export interface Country {

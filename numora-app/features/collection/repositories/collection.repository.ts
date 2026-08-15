@@ -29,13 +29,28 @@ import {
 } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CoinImageKind } from '@/features/coin-images/types'
-import type { CollectionItem, CollectionItemInput, CollectionItemUnit } from '@/features/collection/types'
+import type {
+  CatalogReference,
+  CollectionItem,
+  CollectionItemEnrichmentInput,
+  CollectionItemInput,
+  CollectionItemUnit,
+} from '@/features/collection/types'
 
 export interface CollectionRepository {
   list(): Promise<CollectionItem[]>
   get(id: string): Promise<CollectionItem | null>
   create(input: CollectionItemInput): Promise<CollectionItem>
   update(id: string, input: CollectionItemInput): Promise<CollectionItem>
+  /**
+   * Salva SOMENTE os campos do modal "Informações da moeda" (Etapa 11) —
+   * `mint`, `mintage`, `history`, `trivia`, `catalogReferences`. Nunca
+   * toca em `quantity`, `purchase`, país/ano/metal/peso/pureza/valor de
+   * face nem em `collection_units` — deliberadamente um método separado
+   * de `update()` para que este modal nunca possa sobrescrever por
+   * acidente um campo que pertence ao formulário "Editar moeda".
+   */
+  updateEnrichment(id: string, input: CollectionItemEnrichmentInput): Promise<CollectionItem>
   remove(id: string): Promise<void>
 }
 
@@ -55,9 +70,21 @@ export interface CollectionRepository {
  * `CollectionUnitsRepository.listByItem` individualmente. Só os campos
  * leves de `coin_images` (kind + storage_path) são trazidos — nenhum
  * byte de imagem, nenhuma signed URL é gerada aqui.
+ *
+ * Lista de colunas EXPLÍCITA (não `*`) desde a Etapa 11: `mintage` é
+ * `bigint` e precisa ser lido como `mintage::text` — comprovado em teste
+ * real que sem esse cast o PostgREST devolve um número JSON puro que o
+ * `JSON.parse` do JavaScript corrompe silenciosamente acima de
+ * `Number.MAX_SAFE_INTEGER` (9007199254740993 virava 9007199254740992).
+ * Combinar `*` com um cast explícito da mesma coluna geraria uma coluna
+ * `mintage` duplicada e ambígua na resposta — por isso a lista completa.
  */
 const ITEM_SELECT = `
-  *,
+  id, user_id, purchase_id, country_code, country_name, year, denomination, mint,
+  metal_code, secondary_metal_code, gross_weight_g, purity, face_value, quantity,
+  unit_cost_override, description, location, tags,
+  mintage::text, history, trivia, catalog_references,
+  created_at, updated_at,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
@@ -84,6 +111,12 @@ interface CollectionItemRow {
   description: string | null
   location: string | null
   tags: string[] | null
+  /** Vem como string — selecionado via `mintage::text` (ver comentário de `ITEM_SELECT`). */
+  mintage: string | null
+  history: string | null
+  trivia: string | null
+  /** `jsonb` já vem como array/objeto nativo do PostgREST — nunca uma string a re-parsear. */
+  catalog_references: CatalogReference[] | null
   created_at: string
   updated_at: string
   countries: { name: string; flag_emoji: string | null } | null
@@ -127,6 +160,10 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     description: row.description,
     location: row.location,
     tags: row.tags,
+    mintage: row.mintage,
+    history: row.history,
+    trivia: row.trivia,
+    catalogReferences: row.catalog_references,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     countryDisplayName: row.countries?.name ?? null,
@@ -297,6 +334,32 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       }
 
       return updated
+    },
+
+    async updateEnrichment(id, input) {
+      // `mintage` vai como STRING no payload — o PostgREST passa o valor
+      // ao Postgres como parâmetro de texto e é o próprio `bigint` do
+      // Postgres que faz o parse, nunca um `number` do JavaScript no
+      // caminho: a precisão do valor original nunca é arriscada aqui,
+      // simetricamente à leitura via `mintage::text` em `ITEM_SELECT`.
+      const { data, error } = await supabase
+        .from('collection_items')
+        .update({
+          mint: input.mint,
+          mintage: input.mintage,
+          history: input.history,
+          trivia: input.trivia,
+          catalog_references: input.catalogReferences,
+        })
+        .eq('id', id)
+        .select(ITEM_SELECT)
+        .single()
+
+      if (error) {
+        throw new Error(`[CollectionRepository] Falha ao salvar informações da moeda: ${error.message}`)
+      }
+
+      return toCollectionItem(data as unknown as CollectionItemRow)
     },
 
     async remove(id) {

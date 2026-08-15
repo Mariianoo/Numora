@@ -21,12 +21,18 @@ import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, ty
 import type { LucideIcon } from 'lucide-react'
 import {
   ArrowUpDown,
+  Award,
+  Bookmark,
+  Camera,
   Check,
   Circle,
   Coins,
   ClipboardList,
+  Eye,
+  EyeOff,
   FolderTree,
   HelpCircle,
+  Info,
   Landmark,
   Layers,
   LayoutGrid,
@@ -46,7 +52,15 @@ import { createSupabaseCollectionRepository } from '@/features/collection/reposi
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
-import type { CollectionItem, CollectionItemUnit, Country, Grade, Metal } from '@/features/collection/types'
+import type {
+  CatalogReference,
+  CollectionItem,
+  CollectionItemEnrichmentInput,
+  CollectionItemUnit,
+  Country,
+  Grade,
+  Metal,
+} from '@/features/collection/types'
 import {
   COLLECTION_UNIT_STATUS_EMOJI,
   COLLECTION_UNIT_STATUS_LABELS,
@@ -273,46 +287,109 @@ function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
 }
 
 /**
- * Miniatura do card — SEMPRE a foto de FRENTE do exemplar PRINCIPAL,
- * nunca "qualquer foto de qualquer exemplar" (Etapa 10). Se o principal
- * não tiver foto de frente, mostra o placeholder — não procura em outro
- * exemplar nem em outro tipo de foto (verso/borda) do mesmo exemplar.
+ * Miniatura do card (Etapa 11) — mostra UMA imagem do exemplar PRINCIPAL
+ * por vez (nunca Frente+Verso+Borda simultâneas — isso dava aparência de
+ * "slab"). Frente é a preferida por padrão; se o principal tiver mais de
+ * um tipo de foto, pills discretas por cima da imagem alternam entre
+ * elas sem nova request (as até 3 URLs já vêm no mesmo lote de
+ * `neededThumbPaths`). Sem foto nenhuma, a área inteira vira o CTA
+ * "+ Adicionar foto", que abre o fluxo focado do exemplar principal —
+ * sem o usuário precisar descobrir que "N exemplares" existe.
+ *
+ * `compact`: na visão Lista (miniatura de 56px) as pills de troca não
+ * caberiam de forma legível/tocável — nesse modo mostra só a imagem
+ * efetiva (ainda clicável) e o CTA vira só o ícone, sem texto.
  */
 function CollectionItemThumbnail({
   item,
   thumbUrls,
   onOpenViewer,
+  onAddPhoto,
+  compact = false,
 }: {
   item: CollectionItem
   thumbUrls: Record<string, string>
   onOpenViewer: (units: CollectionUnit[], unitId: string, kind: CoinImageKind) => void
+  onAddPhoto: (item: CollectionItem, primaryUnit: CollectionItemUnit) => void
+  compact?: boolean
 }) {
+  const [requestedKind, setRequestedKind] = useState<CoinImageKind>('front')
   const primaryUnit = getPrimaryUnit(item)
-  const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
-  const url = frontImage ? thumbUrls[frontImage.storagePath] : undefined
+  const images = primaryUnit?.images ?? []
 
-  if (primaryUnit && frontImage && url) {
+  if (!primaryUnit || images.length === 0) {
     return (
       <button
         type="button"
-        onClick={() => onOpenViewer(item.units, primaryUnit.id, 'front')}
-        className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-        aria-label={`Ver foto do exemplar principal — ${item.denomination ?? 'moeda sem denominação'}`}
+        onClick={() => primaryUnit && onAddPhoto(item, primaryUnit)}
+        disabled={!primaryUnit}
+        className="flex size-full flex-col items-center justify-center gap-1.5 text-text-secondary transition-colors hover:text-accent disabled:cursor-not-allowed disabled:opacity-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        aria-label={`Adicionar foto — ${item.denomination ?? 'moeda sem denominação'}`}
       >
-        {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
-        <img
-          src={url}
-          alt={`Frente do exemplar principal — ${item.denomination ?? 'moeda'}`}
-          className="size-full object-cover"
-        />
+        <Camera className={compact ? 'size-5 opacity-60' : 'size-7 opacity-60'} aria-hidden />
+        {!compact && <span className="text-xs font-medium text-accent">+ Adicionar foto</span>}
       </button>
     )
   }
 
+  // Se a última escolha do usuário não existir mais para este item (ex.:
+  // trocou de card, ou a foto foi removida), cai de volta para
+  // frente/primeira disponível — nunca guarda um kind "morto" no estado.
+  const effectiveKind: CoinImageKind = images.some((image) => image.kind === requestedKind)
+    ? requestedKind
+    : (images.find((image) => image.kind === 'front')?.kind ?? images[0].kind)
+
+  const currentImage = images.find((image) => image.kind === effectiveKind)
+  const url = currentImage ? thumbUrls[currentImage.storagePath] : undefined
+
   return (
-    <div className="flex size-full flex-col items-center justify-center gap-1 text-text-secondary">
-      <Coins className="size-9 opacity-30" aria-hidden />
-      <span className="text-[10px] font-medium tracking-wide text-text-secondary/70 uppercase">Sem imagem</span>
+    <div className="relative size-full">
+      <button
+        type="button"
+        onClick={() => onOpenViewer(item.units, primaryUnit.id, effectiveKind)}
+        className="block size-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda sem denominação'}`}
+      >
+        {url ? (
+          // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next
+          <img
+            src={url}
+            alt={`${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda'}`}
+            className="size-full object-cover"
+          />
+        ) : (
+          <div className="flex size-full items-center justify-center">
+            <Loader2 className="size-5 animate-spin text-text-secondary" aria-hidden />
+          </div>
+        )}
+      </button>
+
+      {!compact && images.length > 1 && (
+        <div
+          className="pointer-events-none absolute inset-x-0 bottom-0 flex items-center justify-center gap-1 bg-gradient-to-t from-black/55 to-transparent p-2"
+          role="group"
+          aria-label="Alternar foto exibida"
+        >
+          {COIN_IMAGE_KINDS.filter((kind) => images.some((image) => image.kind === kind)).map((kind) => (
+            <button
+              key={kind}
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation()
+                setRequestedKind(kind)
+              }}
+              aria-label={`Mostrar foto de ${COIN_IMAGE_KIND_LABELS[kind]}`}
+              aria-pressed={kind === effectiveKind}
+              className={cn(
+                'pointer-events-auto rounded-full px-2 py-1 text-[10px] font-semibold uppercase tracking-wide transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70',
+                kind === effectiveKind ? 'bg-white text-background' : 'bg-white/30 text-white hover:bg-white/50',
+              )}
+            >
+              {COIN_IMAGE_KIND_LABELS[kind].charAt(0)}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -321,6 +398,12 @@ function CollectionItemThumbnail({
  * Resumo por exemplar da visão GRID (Etapa 10, seção 7) — conservação,
  * status e avaliação de CADA exemplar, sem misturar dados entre eles.
  * Rolável além de poucos itens para não estourar a altura do card.
+ *
+ * Diferenciação visual (Etapa 11 — corrige risco de o usuário ler as
+ * estrelas como conservação): `Bookmark` = Principal, `Award` =
+ * Conservação, `Star` (via `MiniStars`) = SÓ avaliação pessoal, badge =
+ * Status. Cada valor tem um glifo próprio, nenhum reaproveita o ícone de
+ * outro.
  */
 function GridUnitSummary({ units }: { units: CollectionItemUnit[] }) {
   return (
@@ -331,10 +414,13 @@ function GridUnitSummary({ units }: { units: CollectionItemUnit[] }) {
           className="flex items-center gap-2 rounded-md bg-surface-hover/60 px-2 py-1 text-xs"
         >
           <span className="flex shrink-0 items-center gap-1 font-medium text-text-secondary">
-            {unit.isPrimary && <Star className="size-3 fill-accent text-accent" aria-hidden />}#{index + 1}
+            {unit.isPrimary && <Bookmark className="size-3 fill-accent text-accent" aria-hidden />}#{index + 1}
+          </span>
+          <span className="flex min-w-0 flex-1 items-center gap-1 truncate text-text-secondary">
+            <Award className="size-3 shrink-0 text-text-secondary/60" aria-hidden />
+            <span className="truncate">{unit.gradeLabel ?? '—'}</span>
           </span>
           <MiniStars rating={unit.rating} />
-          <span className="min-w-0 flex-1 truncate text-text-secondary">{unit.gradeLabel ?? '—'}</span>
           <Badge tone="neutral" className="shrink-0 whitespace-nowrap">
             {COLLECTION_UNIT_STATUS_EMOJI[unit.status]} {COLLECTION_UNIT_STATUS_LABELS[unit.status]}
           </Badge>
@@ -362,6 +448,48 @@ function ListStatusCounts({ units }: { units: CollectionItemUnit[] }) {
           {COLLECTION_UNIT_STATUS_EMOJI[status]} {counts.get(status)}
         </Badge>
       ))}
+    </div>
+  )
+}
+
+/**
+ * Valor de aquisição com olho de privacidade (Etapa 11) — `visible` vive
+ * inteiramente no estado do componente pai (`visiblePurchaseIds`, só em
+ * memória React); recarregar a página sempre volta a ocultar. Não lê nem
+ * escreve nada além do que `item.purchase` já trazia — não é uma nova
+ * fonte de dado, só uma tela sobre um dado que já era privado do dono.
+ */
+function PurchaseValue({
+  item,
+  visible,
+  onToggle,
+  align = 'left',
+}: {
+  item: CollectionItem
+  visible: boolean
+  onToggle: () => void
+  align?: 'left' | 'right'
+}) {
+  const hasValue = item.purchase !== null
+  return (
+    <div className={cn('flex flex-col gap-0.5', align === 'right' && 'items-end')}>
+      <p className="text-xs text-text-secondary">Preço de aquisição</p>
+      <div className="flex items-center gap-1.5">
+        <p className="font-semibold text-text-primary">
+          {!hasValue ? '—' : visible ? `R$ ${item.purchase?.totalPrice.toFixed(2)}` : '••••••'}
+        </p>
+        {hasValue && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={visible ? 'Ocultar valor de aquisição' : 'Mostrar valor de aquisição'}
+            title={visible ? 'Ocultar valor de aquisição' : 'Mostrar valor de aquisição'}
+            className="flex size-6 shrink-0 items-center justify-center rounded-md text-text-secondary transition-colors hover:bg-surface-hover hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+          >
+            {visible ? <Eye className="size-3.5" aria-hidden /> : <EyeOff className="size-3.5" aria-hidden />}
+          </button>
+        )}
+      </div>
     </div>
   )
 }
@@ -758,6 +886,125 @@ export default function CollectionPage() {
     setViewerState((current) => ({ unitId, kind, key: (current?.key ?? 0) + 1 }))
   }
 
+  /**
+   * Modal "Fotos do Exemplar #N" (Etapa 11) — fluxo focado, aberto direto
+   * do CTA "+ Adicionar foto" do card, sem passar por "N exemplares".
+   * Guarda o item inteiro (não só o id) para poder calcular o índice/
+   * rótulo "Exemplar #N" e reabrir o modal completo de exemplares a
+   * partir do link "Gerenciar exemplares" sem uma query extra.
+   */
+  const [photosModalItem, setPhotosModalItem] = useState<CollectionItem | null>(null)
+  const [photosModalUnitId, setPhotosModalUnitId] = useState<string | null>(null)
+
+  function openPhotosModal(item: CollectionItem, unit: CollectionItemUnit) {
+    setPhotosModalItem(item)
+    setPhotosModalUnitId(unit.id)
+  }
+
+  function closePhotosModal() {
+    setPhotosModalItem(null)
+    setPhotosModalUnitId(null)
+  }
+
+  /**
+   * Modal "Informações da moeda" (Etapa 11) — dados da EMISSÃO
+   * (collection_item), nunca do exemplar: casa da moeda, quantidade
+   * cunhada, história, curiosidades, referências de catálogo. Estado de
+   * formulário próprio, inteiramente separado do form de
+   * Adicionar/Editar moeda — salva por `updateEnrichment`, que só
+   * escreve estes 5 campos (nunca país/ano/metal/quantidade/etc.).
+   */
+  const [infoModalItem, setInfoModalItem] = useState<CollectionItem | null>(null)
+  const [infoMint, setInfoMint] = useState('')
+  const [infoMintage, setInfoMintage] = useState('')
+  const [infoHistory, setInfoHistory] = useState('')
+  const [infoTrivia, setInfoTrivia] = useState('')
+  const [infoCatalogRefs, setInfoCatalogRefs] = useState<CatalogReference[]>([])
+  const [isInfoSaving, setIsInfoSaving] = useState(false)
+  const [infoError, setInfoError] = useState<string | null>(null)
+
+  function openInfoModal(item: CollectionItem) {
+    setInfoError(null)
+    setInfoModalItem(item)
+    setInfoMint(item.mint ?? '')
+    setInfoMintage(item.mintage ?? '')
+    setInfoHistory(item.history ?? '')
+    setInfoTrivia(item.trivia ?? '')
+    setInfoCatalogRefs(item.catalogReferences ?? [])
+  }
+
+  function closeInfoModal() {
+    setInfoModalItem(null)
+  }
+
+  async function handleSaveEnrichment(event: FormEvent) {
+    event.preventDefault()
+    if (!infoModalItem) return
+
+    // Mintagem é um bigint — nunca passa por Number()/parseInt aqui
+    // (perderia precisão acima de Number.MAX_SAFE_INTEGER). Só valida que
+    // é uma sequência de dígitos (ou vazio); o próprio Postgres faz o
+    // parse real do bigint a partir da string enviada.
+    const trimmedMintage = infoMintage.trim()
+    if (trimmedMintage !== '' && !/^\d+$/.test(trimmedMintage)) {
+      setInfoError('Quantidade cunhada deve ser um número inteiro positivo.')
+      return
+    }
+
+    setInfoError(null)
+    setIsInfoSaving(true)
+
+    const input: CollectionItemEnrichmentInput = {
+      mint: toNullableText(infoMint),
+      mintage: trimmedMintage === '' ? null : trimmedMintage,
+      history: toNullableText(infoHistory),
+      trivia: toNullableText(infoTrivia),
+      catalogReferences: infoCatalogRefs.length > 0 ? infoCatalogRefs : null,
+    }
+
+    try {
+      const updated = await collectionRepository.updateEnrichment(infoModalItem.id, input)
+      setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)))
+      closeInfoModal()
+    } catch (err) {
+      setInfoError((err as Error).message)
+    } finally {
+      setIsInfoSaving(false)
+    }
+  }
+
+  function addCatalogReference() {
+    setInfoCatalogRefs((current) => [...current, { catalog: '', code: '' }])
+  }
+
+  function updateCatalogReference(index: number, changes: Partial<CatalogReference>) {
+    setInfoCatalogRefs((current) => current.map((ref, i) => (i === index ? { ...ref, ...changes } : ref)))
+  }
+
+  function removeCatalogReference(index: number) {
+    setInfoCatalogRefs((current) => current.filter((_, i) => i !== index))
+  }
+
+  /**
+   * Olho de privacidade do valor de aquisição (Etapa 11) — SÓ estado em
+   * memória (React), nunca persistido: recarregar a página sempre volta
+   * a ocultar. Não é uma coluna nova, não é preferência salva, não afeta
+   * RLS/Passport — só controla o que este componente RENDERIZA a partir
+   * de um dado que já pertencia só ao dono (purchase já não é exposto ao
+   * Passport nem a outros usuários; isto é só uma tela-de-privacidade
+   * visual sobre um dado que já era privado).
+   */
+  const [visiblePurchaseIds, setVisiblePurchaseIds] = useState<Set<string>>(new Set())
+
+  function togglePurchaseVisibility(itemId: string) {
+    setVisiblePurchaseIds((current) => {
+      const next = new Set(current)
+      if (next.has(itemId)) next.delete(itemId)
+      else next.add(itemId)
+      return next
+    })
+  }
+
   useEffect(() => {
     Promise.all([
       collectionRepository.list(),
@@ -874,12 +1121,21 @@ export default function CollectionPage() {
   const countryCount = new Set(items.map((item) => item.countryCode).filter((code): code is string => code !== null)).size
   const metalCount = new Set(items.map((item) => item.metalCode).filter((code): code is string => code !== null)).size
 
+  /**
+   * Etapa 11: agora busca as até 3 fotos (frente/verso/borda) do exemplar
+   * PRINCIPAL — não só a de frente — para o card poder alternar entre
+   * elas sem nova request. Continua sendo UMA chamada em lote
+   * (`getSignedUrls`) por leva de paths novos, só mais paths na mesma
+   * chamada — nenhum N+1 novo.
+   */
   const neededThumbPaths = useMemo(() => {
     const paths: string[] = []
     for (const item of filteredItems) {
       const primaryUnit = getPrimaryUnit(item)
-      const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
-      if (frontImage) paths.push(frontImage.storagePath)
+      if (!primaryUnit) continue
+      for (const image of primaryUnit.images) {
+        paths.push(image.storagePath)
+      }
     }
     return paths
   }, [filteredItems])
@@ -1425,16 +1681,32 @@ export default function CollectionPage() {
                   {group.items.map((item) => (
                     <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col overflow-hidden">
                       <div className="relative aspect-[4/3] bg-gradient-to-br from-surface-hover to-surface">
-                        <CollectionItemThumbnail item={item} thumbUrls={thumbUrls} onOpenViewer={openImageViewer} />
+                        <CollectionItemThumbnail
+                          item={item}
+                          thumbUrls={thumbUrls}
+                          onOpenViewer={openImageViewer}
+                          onAddPhoto={openPhotosModal}
+                        />
                       </div>
 
                       <div className="flex flex-1 flex-col gap-3.5 p-4">
-                        <div>
-                          <p className="font-semibold text-text-primary">{item.denomination ?? 'Sem denominação'}</p>
-                          <p className="mt-0.5 text-sm text-text-secondary">
-                            {item.countryFlagEmoji ? `${item.countryFlagEmoji} ` : ''}
-                            {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
-                          </p>
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <p className="font-semibold text-text-primary">{item.denomination ?? 'Sem denominação'}</p>
+                            <p className="mt-0.5 text-sm text-text-secondary">
+                              {item.countryFlagEmoji ? `${item.countryFlagEmoji} ` : ''}
+                              {item.countryDisplayName ?? item.countryCode ?? '—'} · {item.year ?? '—'}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => openInfoModal(item)}
+                            aria-label="Informações da moeda"
+                            title="Informações da moeda"
+                            className="flex shrink-0 items-center justify-center rounded-lg p-1.5 text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                          >
+                            <Info className="size-4" aria-hidden />
+                          </button>
                         </div>
 
                         {item.metalName && (
@@ -1460,12 +1732,11 @@ export default function CollectionPage() {
                         )}
 
                         <div className="mt-auto flex items-center justify-between border-t border-border pt-3.5">
-                          <div>
-                            <p className="text-xs text-text-secondary">Preço de aquisição</p>
-                            <p className="font-semibold text-text-primary">
-                              {item.purchase ? `R$ ${item.purchase.totalPrice.toFixed(2)}` : '—'}
-                            </p>
-                          </div>
+                          <PurchaseValue
+                            item={item}
+                            visible={visiblePurchaseIds.has(item.id)}
+                            onToggle={() => togglePurchaseVisibility(item.id)}
+                          />
                           <div className="flex gap-1">
                             <button
                               type="button"
@@ -1494,7 +1765,13 @@ export default function CollectionPage() {
                   {group.items.map((item) => (
                     <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
                       <div className="relative size-14 shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-surface-hover to-surface">
-                        <CollectionItemThumbnail item={item} thumbUrls={thumbUrls} onOpenViewer={openImageViewer} />
+                        <CollectionItemThumbnail
+                          item={item}
+                          thumbUrls={thumbUrls}
+                          onOpenViewer={openImageViewer}
+                          onAddPhoto={openPhotosModal}
+                          compact
+                        />
                       </div>
 
                       <div className="min-w-0 flex-1">
@@ -1517,14 +1794,23 @@ export default function CollectionPage() {
                         {item.units.length} exemplar{item.units.length === 1 ? '' : 'es'}
                       </button>
 
-                      <div className="shrink-0 text-right">
-                        <p className="text-xs text-text-secondary">Aquisição</p>
-                        <p className="font-semibold text-text-primary">
-                          {item.purchase ? `R$ ${item.purchase.totalPrice.toFixed(2)}` : '—'}
-                        </p>
-                      </div>
+                      <PurchaseValue
+                        item={item}
+                        visible={visiblePurchaseIds.has(item.id)}
+                        onToggle={() => togglePurchaseVisibility(item.id)}
+                        align="right"
+                      />
 
                       <div className="flex shrink-0 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => openInfoModal(item)}
+                          aria-label="Informações da moeda"
+                          title="Informações da moeda"
+                          className="rounded-lg p-2 text-text-secondary transition-colors hover:bg-surface-hover hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+                        >
+                          <Info className="size-4" aria-hidden />
+                        </button>
                         <button
                           type="button"
                           onClick={() => openEditModal(item)}
@@ -1569,7 +1855,7 @@ export default function CollectionPage() {
       >
         <form id="coin-form" onSubmit={handleSubmit} className="flex flex-col gap-7">
           <div className="flex flex-col gap-4">
-            <SectionHeading icon={Landmark}>Informações da moeda</SectionHeading>
+            <SectionHeading icon={Landmark}>Dados da moeda</SectionHeading>
 
             <FieldRow>
               <Select label="País" value={countryCode} onChange={(e) => setCountryCode(e.target.value)} required>
@@ -1844,7 +2130,7 @@ export default function CollectionPage() {
                     <span className="font-mono text-xs font-normal text-text-secondary/50">{unit.id.slice(0, 8)}</span>
                     {unit.isPrimary && (
                       <Badge tone="accent" className="gap-1">
-                        <Star className="size-3 fill-accent text-accent" aria-hidden />
+                        <Bookmark className="size-3 fill-accent text-accent" aria-hidden />
                         Principal
                       </Badge>
                     )}
@@ -1931,15 +2217,15 @@ export default function CollectionPage() {
                   </Select>
                 </FieldRow>
 
-                <div className="flex flex-col gap-1">
-                  <span className="text-sm font-medium text-text-secondary">Avaliação pessoal</span>
+                <div className="flex flex-col gap-1.5">
+                  <span className="text-sm font-medium text-text-secondary">Minha avaliação</span>
+                  <p className="text-xs font-medium text-accent">
+                    Minha avaliação — não representa a conservação.
+                  </p>
                   <StarRatingInput
                     value={unit.rating}
                     onChange={(rating) => handleUnitFieldChange(unit, { rating })}
                   />
-                  <p className="text-xs text-text-secondary/70">
-                    Avaliação pessoal do exemplar. Não representa a conservação.
-                  </p>
                 </div>
               </div>
             ))
@@ -1974,6 +2260,171 @@ export default function CollectionPage() {
         initialKind={viewerState?.kind ?? 'front'}
         onClose={() => setViewerState(null)}
       />
+
+      {/*
+        Etapa 11 — fluxo focado de fotos, aberto direto do CTA "+ Adicionar
+        foto" do card. Reaproveita CoinImageSlot tal como é usado no modal
+        completo de exemplares — mesmo componente, mesma lógica de
+        upload/editor, só um container mais enxuto (sem grade/status/
+        avaliação/excluir). "Gerenciar exemplares" é a saída para quem
+        precisa de mais do que só fotos.
+      */}
+      {(() => {
+        const photosUnit = photosModalItem?.units.find((u) => u.id === photosModalUnitId) ?? null
+        const photosUnitIndex = photosModalItem && photosUnit ? photosModalItem.units.indexOf(photosUnit) : -1
+
+        return (
+          <Modal
+            isOpen={photosModalItem !== null && photosUnit !== null}
+            onClose={closePhotosModal}
+            title={photosUnitIndex !== -1 ? `Fotos do Exemplar #${photosUnitIndex + 1}` : 'Fotos do exemplar'}
+            description={photosModalItem?.denomination ?? undefined}
+          >
+            {photosModalItem && photosUnit && (
+              <div className="flex flex-col gap-4">
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-3 sm:gap-2.5">
+                  {COIN_IMAGE_KINDS.map((kind) => (
+                    <CoinImageSlot
+                      key={kind}
+                      collectionUnitId={photosUnit.id}
+                      kind={kind}
+                      unitLabel={`Exemplar #${photosUnitIndex + 1}`}
+                      onView={() => openImageViewer(photosModalItem.units, photosUnit.id, kind)}
+                      onImageChange={(image) => handleUnitImageChange(photosUnit.id, kind, image)}
+                    />
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    const item = photosModalItem
+                    closePhotosModal()
+                    openUnitsModal(item)
+                  }}
+                  className="self-start text-xs font-medium text-text-secondary underline decoration-dotted transition-colors hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50 rounded"
+                >
+                  Gerenciar exemplares
+                </button>
+              </div>
+            )}
+          </Modal>
+        )
+      })()}
+
+      {/*
+        Etapa 11 — "Informações da moeda": dados da EMISSÃO
+        (collection_item), nunca do exemplar — visualmente separado da
+        edição de exemplar/moeda. Salva por `updateEnrichment`, que só
+        escreve estes 5 campos.
+      */}
+      <Modal
+        isOpen={infoModalItem !== null}
+        onClose={closeInfoModal}
+        title="Informações da moeda"
+        description={infoModalItem?.denomination ?? undefined}
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={closeInfoModal} disabled={isInfoSaving}>
+              Cancelar
+            </Button>
+            <Button type="submit" form="coin-info-form" isLoading={isInfoSaving}>
+              {isInfoSaving ? 'Salvando...' : 'Salvar'}
+            </Button>
+          </>
+        }
+      >
+        <form id="coin-info-form" onSubmit={handleSaveEnrichment} className="flex flex-col gap-7">
+          {infoError && <p className="text-sm text-danger">{infoError}</p>}
+
+          <div className="flex flex-col gap-4">
+            <SectionHeading icon={Landmark}>Dados históricos</SectionHeading>
+
+            <Input
+              label="Casa da moeda"
+              value={infoMint}
+              onChange={(e) => setInfoMint(e.target.value)}
+              placeholder="Ex.: Casa da Moeda do Brasil"
+            />
+
+            <div className="flex flex-col gap-1.5">
+              <Input
+                label="Quantidade cunhada"
+                inputMode="numeric"
+                value={infoMintage}
+                onChange={(e) => setInfoMintage(e.target.value.replace(/[^\d]/g, ''))}
+                placeholder="Ex.: 5000000"
+              />
+              <p className="text-xs text-text-secondary/70">
+                Quantas peças foram cunhadas historicamente — diferente de quantos exemplares você possui.
+              </p>
+            </div>
+
+            {/*
+              História/curiosidades: texto livre por enquanto (Etapa 11).
+              "Gerar com IA" (fora de escopo agora) entraria aqui como uma
+              ação adicional ao lado do rótulo de cada campo — a estrutura
+              já separa história de curiosidades em campos próprios
+              exatamente para isso não exigir redesenhar o modal depois.
+            */}
+            <Textarea
+              label="História da emissão"
+              value={infoHistory}
+              onChange={(e) => setInfoHistory(e.target.value)}
+              rows={4}
+              placeholder="Contexto histórico desta emissão..."
+            />
+
+            <Textarea
+              label="Curiosidades"
+              value={infoTrivia}
+              onChange={(e) => setInfoTrivia(e.target.value)}
+              rows={3}
+              placeholder="Fatos interessantes sobre esta moeda..."
+            />
+          </div>
+
+          <div className="flex flex-col gap-3 border-t border-border pt-6">
+            <SectionHeading icon={ClipboardList}>Catalogação</SectionHeading>
+
+            {infoCatalogRefs.length > 0 && (
+              <div className="flex flex-col gap-3">
+                {infoCatalogRefs.map((ref, index) => (
+                  <div key={index} className="flex items-end gap-2">
+                    <Input
+                      label={index === 0 ? 'Catálogo' : undefined}
+                      value={ref.catalog}
+                      onChange={(e) => updateCatalogReference(index, { catalog: e.target.value })}
+                      placeholder="Ex.: KM"
+                      className="flex-1"
+                    />
+                    <Input
+                      label={index === 0 ? 'Código' : undefined}
+                      value={ref.code}
+                      onChange={(e) => updateCatalogReference(index, { code: e.target.value })}
+                      placeholder="Ex.: 649"
+                      className="flex-1"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => removeCatalogReference(index)}
+                      aria-label="Remover referência"
+                      className="flex size-11 shrink-0 items-center justify-center rounded-lg text-text-secondary transition-colors hover:bg-danger/10 hover:text-danger focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50"
+                    >
+                      <X className="size-4" aria-hidden />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            <Button type="button" variant="secondary" onClick={addCatalogReference} className="self-start">
+              <Plus className="size-4" aria-hidden />
+              Adicionar referência
+            </Button>
+          </div>
+        </form>
+      </Modal>
     </div>
   )
 }
