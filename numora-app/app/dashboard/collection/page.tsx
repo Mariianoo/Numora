@@ -554,6 +554,37 @@ function FieldRow({ children }: { children: ReactNode }) {
   return <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">{children}</div>
 }
 
+/** Campos rastreados por `unitFieldSaveStatus` no modal "Editar Exemplar" (Etapa 12.1). */
+type UnitFieldKey = 'gradeId' | 'status' | 'rating' | 'isPrimary'
+type UnitFieldSaveStatus = 'saving' | 'saved' | 'error'
+
+/**
+ * Indicador contextual "Salvando.../✓ Salvo" (Etapa 12.1) — mesma
+ * linguagem visual já usada por `SLOT_STATUS_LABEL`/"Foto salva" no
+ * `CoinImageSlot`, só que por campo em vez de por foto. Altura reservada
+ * mesmo quando `status` é `undefined` para o texto não empurrar o layout
+ * ao aparecer/desaparecer.
+ */
+function UnitFieldSaveIndicator({ status }: { status?: UnitFieldSaveStatus }) {
+  return (
+    <div className="min-h-[15px]">
+      {status === 'saving' && (
+        <p className="flex items-center gap-1 text-[11px] text-text-secondary/70">
+          <Loader2 className="size-3 animate-spin" aria-hidden />
+          Salvando...
+        </p>
+      )}
+      {status === 'saved' && (
+        <p className="flex items-center gap-1 text-[11px] font-medium text-success">
+          <Check className="size-3" aria-hidden />
+          Salvo
+        </p>
+      )}
+      {status === 'error' && <p className="text-[11px] text-danger">Não foi possível salvar</p>}
+    </div>
+  )
+}
+
 /**
  * Avaliação pessoal (1-5 estrelas), não a conservação numismática. `null`
  * = não avaliado, nenhuma estrela preenchida. Clicar na estrela já
@@ -1001,6 +1032,62 @@ export default function CollectionPage() {
   function closeEditUnitModal() {
     setEditUnitModalItemId(null)
     setEditUnitModalUnitId(null)
+  }
+
+  /**
+   * Feedback "Salvando.../✓ Salvo" por campo (Etapa 12.1) — chaveado por
+   * `unitId:campo`, não só pelo campo, para nunca misturar o status de um
+   * exemplar com o de outro caso handleUnitFieldChange/handleSetPrimaryUnit
+   * sejam chamados por "Gerenciar exemplares" (lista com vários exemplares
+   * visíveis ao mesmo tempo) — só o modal "Editar Exemplar" lê este estado,
+   * então a escrita extra ali é inofensiva. `saved` limpa sozinho depois de
+   * 1750ms; `error` fica até a próxima tentativa no mesmo campo (mesmo
+   * padrão já usado por `unitsError`), nunca escondido silenciosamente.
+   */
+  const [unitFieldSaveStatus, setUnitFieldSaveStatus] = useState<Record<string, UnitFieldSaveStatus>>({})
+  const unitFieldSaveTimeouts = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+
+  useEffect(() => {
+    const timeouts = unitFieldSaveTimeouts.current
+    return () => {
+      Object.values(timeouts).forEach(clearTimeout)
+    }
+  }, [])
+
+  function unitFieldStatusKey(unitId: string, field: UnitFieldKey) {
+    return `${unitId}:${field}`
+  }
+
+  function markUnitFieldStatus(unitId: string, field: UnitFieldKey, status: UnitFieldSaveStatus | null) {
+    const key = unitFieldStatusKey(unitId, field)
+
+    const pendingTimeout = unitFieldSaveTimeouts.current[key]
+    if (pendingTimeout) {
+      clearTimeout(pendingTimeout)
+      delete unitFieldSaveTimeouts.current[key]
+    }
+
+    setUnitFieldSaveStatus((current) => {
+      if (status === null) {
+        if (!(key in current)) return current
+        const next = { ...current }
+        delete next[key]
+        return next
+      }
+      return { ...current, [key]: status }
+    })
+
+    if (status === 'saved') {
+      unitFieldSaveTimeouts.current[key] = setTimeout(() => {
+        delete unitFieldSaveTimeouts.current[key]
+        setUnitFieldSaveStatus((current) => {
+          if (!(key in current)) return current
+          const next = { ...current }
+          delete next[key]
+          return next
+        })
+      }, 1750)
+    }
   }
 
   /**
@@ -1467,6 +1554,11 @@ export default function CollectionPage() {
     changes: Partial<{ gradeId: string | null; status: CollectionUnitStatus; rating: number | null }>,
   ) {
     setUnitsError(null)
+    // Cada chamador desta função só muda 1 campo por vez (ver os 3 call
+    // sites em "Gerenciar exemplares" e em "Editar Exemplar") — por isso é
+    // seguro derivar qual campo rastrear a partir da 1ª chave de `changes`.
+    const field = Object.keys(changes)[0] as UnitFieldKey | undefined
+    if (field) markUnitFieldStatus(unit.id, field, 'saving')
 
     try {
       const updated = await collectionUnitsRepository.update(unit.id, {
@@ -1487,8 +1579,10 @@ export default function CollectionPage() {
             : item,
         ),
       )
+      if (field) markUnitFieldStatus(unit.id, field, 'saved')
     } catch (err) {
       setUnitsError((err as Error).message)
+      if (field) markUnitFieldStatus(unit.id, field, 'error')
     }
   }
 
@@ -1526,6 +1620,7 @@ export default function CollectionPage() {
    */
   async function handleSetPrimaryUnit(unit: CollectionUnit) {
     setUnitsError(null)
+    markUnitFieldStatus(unit.id, 'isPrimary', 'saving')
 
     try {
       await collectionUnitsRepository.setPrimary(unit.id)
@@ -1537,8 +1632,10 @@ export default function CollectionPage() {
             : item,
         ),
       )
+      markUnitFieldStatus(unit.id, 'isPrimary', 'saved')
     } catch (err) {
       setUnitsError((err as Error).message)
+      markUnitFieldStatus(unit.id, 'isPrimary', 'error')
     }
   }
 
@@ -2584,21 +2681,25 @@ export default function CollectionPage() {
                         </optgroup>
                       ))}
                     </Select>
+                    <UnitFieldSaveIndicator status={unitFieldSaveStatus[unitFieldStatusKey(editUnit.id, 'gradeId')]} />
                   </div>
 
-                  <Select
-                    label="Status"
-                    value={editUnit.status}
-                    onChange={(e) =>
-                      handleUnitFieldChange(editUnit, { status: e.target.value as CollectionUnitStatus })
-                    }
-                  >
-                    {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
-                      <option key={status} value={status}>
-                        {COLLECTION_UNIT_STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
-                      </option>
-                    ))}
-                  </Select>
+                  <div className="flex flex-col gap-1.5">
+                    <Select
+                      label="Status"
+                      value={editUnit.status}
+                      onChange={(e) =>
+                        handleUnitFieldChange(editUnit, { status: e.target.value as CollectionUnitStatus })
+                      }
+                    >
+                      {COLLECTION_UNIT_STATUS_OPTIONS.map((status) => (
+                        <option key={status} value={status}>
+                          {COLLECTION_UNIT_STATUS_EMOJI[status]} {COLLECTION_UNIT_STATUS_LABELS[status]}
+                        </option>
+                      ))}
+                    </Select>
+                    <UnitFieldSaveIndicator status={unitFieldSaveStatus[unitFieldStatusKey(editUnit.id, 'status')]} />
+                  </div>
                 </FieldRow>
 
                 <div className="flex flex-col gap-1.5">
@@ -2610,6 +2711,7 @@ export default function CollectionPage() {
                     value={editUnit.rating}
                     onChange={(rating) => handleUnitFieldChange(editUnit, { rating })}
                   />
+                  <UnitFieldSaveIndicator status={unitFieldSaveStatus[unitFieldStatusKey(editUnit.id, 'rating')]} />
                 </div>
 
                 <div className="flex items-center justify-between gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
@@ -2620,11 +2722,14 @@ export default function CollectionPage() {
                     />
                     {editUnit.isPrimary ? 'Este é o exemplar principal.' : 'Não é o exemplar principal.'}
                   </span>
-                  {!editUnit.isPrimary && (
-                    <Button type="button" variant="secondary" size="sm" onClick={() => handleSetPrimaryUnit(editUnit)}>
-                      Definir como principal
-                    </Button>
-                  )}
+                  <div className="flex items-center gap-2">
+                    <UnitFieldSaveIndicator status={unitFieldSaveStatus[unitFieldStatusKey(editUnit.id, 'isPrimary')]} />
+                    {!editUnit.isPrimary && (
+                      <Button type="button" variant="secondary" size="sm" onClick={() => handleSetPrimaryUnit(editUnit)}>
+                        Definir como principal
+                      </Button>
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex justify-end border-t border-border pt-4">
