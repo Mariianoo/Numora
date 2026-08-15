@@ -351,12 +351,31 @@ function CollectionItemThumbnail({
         aria-label={`Ver foto de ${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda sem denominação'}`}
       >
         {url ? (
-          // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next
-          <img
-            src={url}
-            alt={`${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda'}`}
-            className="size-full object-cover"
-          />
+          effectiveKind === 'edge' ? (
+            // eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next
+            <img
+              src={url}
+              alt={`${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda'}`}
+              className="size-full object-cover"
+            />
+          ) : (
+            // Frente/Verso (Etapa 11.1): apresentação circular só na tela — o
+            // arquivo salvo continua quadrado (1200×1200, CoinImageEditor
+            // shape="circle"); o guia circular do editor já toca as 4 bordas
+            // desse quadrado, então uma máscara CSS pura no mesmo quadrado
+            // reproduz exatamente o recorte visto ao enquadrar a foto, sem
+            // reprocessar/gerar novo arquivo.
+            <div className="flex size-full items-center justify-center bg-black">
+              <div className="relative aspect-square h-full max-w-full overflow-hidden rounded-full">
+                {/* eslint-disable-next-line @next/next/no-img-element -- signed URL temporária, não é asset estático do Next */}
+                <img
+                  src={url}
+                  alt={`${COIN_IMAGE_KIND_LABELS[effectiveKind]} do exemplar principal — ${item.denomination ?? 'moeda'}`}
+                  className="size-full object-cover"
+                />
+              </div>
+            </div>
+          )
         ) : (
           <div className="flex size-full items-center justify-center">
             <Loader2 className="size-5 animate-spin text-text-secondary" aria-hidden />
