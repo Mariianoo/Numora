@@ -23,24 +23,52 @@
  * `quantity, country_code`) porque o helper compartilhado também
  * calcula metais representados, usado no Perfil; o Dashboard não exibe
  * esse número, então não há mudança visível aqui.
+ *
+ * Etapa 13.1 (Dashboard 2.0 — auditoria Etapa 13, só dados 🟢): a query de
+ * `collection_items` ganhou embeds (`countries`, `metals`,
+ * `collection_units.grades`) — mesmo padrão de embed já usado em
+ * `collection.repository.ts` (ITEM_SELECT), continua sendo 1 única query,
+ * sem N+1 e sem RPC nova. Nenhuma tabela de vendas/histórico é tocada
+ * (fora de escopo desta etapa, ver auditoria §14/§15).
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { Coins, Layers, Globe2, Wallet, ShoppingBag, PackageOpen } from 'lucide-react'
+import { Coins, Layers, Globe2, Wallet, ShoppingBag, PackageOpen, Receipt, Gem, Award, Tag } from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
-import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow } from '@/lib/stats/collection-stats'
+import {
+  computeCollectionStats,
+  computeAverageAcquisitionCost,
+  computeCountryDistribution,
+  computeMetalDistribution,
+  computeGradeDistribution,
+  computeStatusDistribution,
+  type CollectionItemStatsRow,
+  type PurchaseStatsRow,
+  type CollectionItemDistributionRow,
+  type CollectionUnitDistributionRow,
+} from '@/lib/stats/collection-stats'
 import { formatDateOnly } from '@/lib/format/date'
 import { DashboardErrorState } from './DashboardErrorState'
+import { DistributionCard } from './DistributionCard'
 
 interface LastPurchaseRow {
   total_price: number
   seller_name: string | null
   purchase_date: string | null
+}
+
+interface DashboardItemRow {
+  quantity: number
+  country_code: string | null
+  metal_code: string | null
+  countries: { name: string; flag_emoji: string | null } | null
+  metals: { name: string } | null
+  collection_units: { status: string; grade_id: string | null; grades: { label: string } | null }[]
 }
 
 function getGreeting(): string {
@@ -61,7 +89,15 @@ export default async function DashboardPage() {
   }
 
   const [itemsResult, purchasesResult, lastPurchaseResult, profileResult] = await Promise.all([
-    supabase.from('collection_items').select('quantity, country_code, metal_code').is('deleted_at', null),
+    // Etapa 13.1: embeds de `countries`/`metals`/`collection_units(grades)`
+    // adicionados para as distribuições — mesma query única de sempre,
+    // sem N+1 (PostgREST resolve os embeds no próprio Postgres).
+    supabase
+      .from('collection_items')
+      .select(
+        'quantity, country_code, metal_code, countries ( name, flag_emoji ), metals!metal_code ( name ), collection_units ( status, grade_id, grades ( label ) )',
+      )
+      .is('deleted_at', null),
     // `collection_items!inner(id)` + filtro no embed = EXISTS: só traz a
     // purchase se houver ao menos 1 collection_item ATIVO vinculado (Etapa
     // Lixeira). Uma purchase compartilhada por vários itens continua
@@ -86,7 +122,8 @@ export default async function DashboardPage() {
   const hasStatsError = Boolean(itemsResult.error || purchasesResult.error)
   const hasLastPurchaseError = Boolean(lastPurchaseResult.error)
 
-  const items = (itemsResult.data ?? []) as CollectionItemStatsRow[]
+  const dashboardItems = (itemsResult.data ?? []) as unknown as DashboardItemRow[]
+  const items = dashboardItems as CollectionItemStatsRow[]
   const purchases = (purchasesResult.data ?? []) as PurchaseStatsRow[]
   const lastPurchase = lastPurchaseResult.data as LastPurchaseRow | null
   const profileName = (profileResult.data as { name: string | null } | null)?.name
@@ -96,6 +133,31 @@ export default async function DashboardPage() {
   const { totalItems, totalUnits, countryCount, totalInvested } = hasStatsError
     ? { totalItems: 0, totalUnits: 0, countryCount: 0, totalInvested: 0 }
     : computeCollectionStats(items, purchases)
+
+  const averageAcquisitionCost = hasStatsError ? null : computeAverageAcquisitionCost(totalInvested, totalUnits)
+
+  // Etapa 13.1: país/metal são atributos da MOEDA (collection_item);
+  // conservação/status são atributos do EXEMPLAR (collection_unit) — a
+  // mesma separação já usada em toda a Coleção, nunca combinada aqui.
+  const countryDistributionRows: CollectionItemDistributionRow[] = dashboardItems.map((item) => ({
+    country_code: item.country_code,
+    country_name: item.countries?.name ?? null,
+    country_flag_emoji: item.countries?.flag_emoji ?? null,
+    metal_code: item.metal_code,
+    metal_name: item.metals?.name ?? null,
+  }))
+  const unitDistributionRows: CollectionUnitDistributionRow[] = dashboardItems.flatMap((item) =>
+    item.collection_units.map((unit) => ({
+      status: unit.status,
+      grade_id: unit.grade_id,
+      grade_label: unit.grades?.label ?? null,
+    })),
+  )
+
+  const countryDistribution = hasStatsError ? [] : computeCountryDistribution(countryDistributionRows)
+  const metalDistribution = hasStatsError ? [] : computeMetalDistribution(countryDistributionRows)
+  const gradeDistribution = hasStatsError ? [] : computeGradeDistribution(unitDistributionRows)
+  const statusDistribution = hasStatsError ? [] : computeStatusDistribution(unitDistributionRows)
 
   const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -113,7 +175,7 @@ export default async function DashboardPage() {
             description="Ocorreu um problema ao carregar os dados da sua coleção."
           />
         ) : (
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
             <StatCard icon={Coins} label="Moedas" value={String(totalItems)} description="Itens cadastrados" />
             <StatCard icon={Layers} label="Unidades" value={String(totalUnits)} description="Peças na coleção" />
             <StatCard
@@ -128,9 +190,49 @@ export default async function DashboardPage() {
               value={currencyFormatter.format(totalInvested)}
               description="Valor total de aquisição"
             />
+            <StatCard
+              icon={Receipt}
+              label="Valor médio"
+              value={averageAcquisitionCost === null ? '—' : currencyFormatter.format(averageAcquisitionCost)}
+              description="Por exemplar"
+            />
           </div>
         )}
       </section>
+
+      {!hasStatsError && totalItems > 0 && (
+        <section className="flex flex-col gap-4">
+          <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+            Distribuição da coleção
+          </p>
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+            <DistributionCard
+              title="Por país"
+              icon={Globe2}
+              entries={countryDistribution}
+              emptyMessage="Nenhum país informado ainda."
+            />
+            <DistributionCard
+              title="Por metal"
+              icon={Gem}
+              entries={metalDistribution}
+              emptyMessage="Nenhum metal informado ainda."
+            />
+            <DistributionCard
+              title="Por conservação"
+              icon={Award}
+              entries={gradeDistribution}
+              emptyMessage="Nenhuma conservação informada ainda."
+            />
+            <DistributionCard
+              title="Por status"
+              icon={Tag}
+              entries={statusDistribution}
+              emptyMessage="Nenhum exemplar cadastrado ainda."
+            />
+          </div>
+        </section>
+      )}
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
