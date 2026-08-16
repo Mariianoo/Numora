@@ -141,14 +141,19 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
-    // Etapa 13.2: SEM `.is('deleted_at', null)`/`!inner` — histórico de
-    // aquisições inclui compras cujo item foi para a lixeira depois
-    // (decisão explícita, ver comentário no topo do arquivo). Mesmo
-    // padrão de embed único, sem N+1: cada compra traz seus
-    // `collection_items` aninhados numa única viagem ao banco.
+    // Etapa 13.2/13.3: `!inner` SEM `.is('deleted_at', null)` — exige
+    // "existe pelo menos 1 collection_item" (ativo OU na lixeira), não
+    // "existe pelo menos 1 ativo". Histórico de aquisições continua
+    // incluindo compras cujo item só está na lixeira (recuperável), mas
+    // some quando TODOS os itens da compra foram excluídos
+    // definitivamente (linha apagada do banco — auditoria Etapa 13.3,
+    // Casos A/E). Mesmo padrão de embed único, sem N+1: cada compra traz
+    // seus `collection_items` aninhados numa única viagem ao banco.
     supabase
       .from('purchases')
-      .select('id, total_price, purchase_date, seller_name, created_at, collection_items(id, denomination, quantity, deleted_at)')
+      .select(
+        'id, total_price, purchase_date, seller_name, created_at, collection_items!inner(id, denomination, quantity, deleted_at)',
+      )
       .order('created_at', { ascending: false }),
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
   ])
