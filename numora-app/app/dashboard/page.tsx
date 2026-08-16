@@ -30,10 +30,33 @@
  * `collection.repository.ts` (ITEM_SELECT), continua sendo 1 única query,
  * sem N+1 e sem RPC nova. Nenhuma tabela de vendas/histórico é tocada
  * (fora de escopo desta etapa, ver auditoria §14/§15).
+ *
+ * Etapa 13.2 (auditoria "Aquisições"): nova seção "Aquisições" com 1
+ * query adicional (`purchases` + embed de `collection_items`, SEM o
+ * filtro `deleted_at is null` usado no resumo acima) — decisão explícita
+ * desta etapa de tratar compras como HISTÓRICO: uma compra não some
+ * daqui só porque o item foi para a lixeira depois. `totalInvested`/
+ * "Resumo da coleção" continuam com a semântica antiga (coleção atual),
+ * sem nenhuma alteração de comportamento.
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
-import { Coins, Layers, Globe2, Wallet, ShoppingBag, PackageOpen, Receipt, Gem, Award, Tag } from 'lucide-react'
+import {
+  Coins,
+  Layers,
+  Globe2,
+  Wallet,
+  ShoppingBag,
+  ShoppingCart,
+  Banknote,
+  CalendarRange,
+  PackageOpen,
+  PackagePlus,
+  Receipt,
+  Gem,
+  Award,
+  Tag,
+} from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { PageHeader } from '@/components/ui/PageHeader'
@@ -47,14 +70,21 @@ import {
   computeMetalDistribution,
   computeGradeDistribution,
   computeStatusDistribution,
+  computeTicketMedio,
+  selectRecentAcquisitions,
+  computeMonthlyAcquisitionValue,
+  computeMonthlyAcquisitionQuantity,
   type CollectionItemStatsRow,
   type PurchaseStatsRow,
   type CollectionItemDistributionRow,
   type CollectionUnitDistributionRow,
+  type AcquisitionPurchaseRow,
 } from '@/lib/stats/collection-stats'
 import { formatDateOnly } from '@/lib/format/date'
 import { DashboardErrorState } from './DashboardErrorState'
 import { DistributionCard } from './DistributionCard'
+import { AcquisitionsList } from './AcquisitionsList'
+import { MonthlySeriesChart } from './MonthlySeriesChart'
 
 interface LastPurchaseRow {
   total_price: number
@@ -88,7 +118,7 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
-  const [itemsResult, purchasesResult, lastPurchaseResult, profileResult] = await Promise.all([
+  const [itemsResult, purchasesResult, lastPurchaseResult, acquisitionsResult, profileResult] = await Promise.all([
     // Etapa 13.1: embeds de `countries`/`metals`/`collection_units(grades)`
     // adicionados para as distribuições — mesma query única de sempre,
     // sem N+1 (PostgREST resolve os embeds no próprio Postgres).
@@ -111,6 +141,15 @@ export default async function DashboardPage() {
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle(),
+    // Etapa 13.2: SEM `.is('deleted_at', null)`/`!inner` — histórico de
+    // aquisições inclui compras cujo item foi para a lixeira depois
+    // (decisão explícita, ver comentário no topo do arquivo). Mesmo
+    // padrão de embed único, sem N+1: cada compra traz seus
+    // `collection_items` aninhados numa única viagem ao banco.
+    supabase
+      .from('purchases')
+      .select('id, total_price, purchase_date, seller_name, created_at, collection_items(id, denomination, quantity, deleted_at)')
+      .order('created_at', { ascending: false }),
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
   ])
 
@@ -121,11 +160,13 @@ export default async function DashboardPage() {
   // independente, preservando os que carregaram com sucesso.
   const hasStatsError = Boolean(itemsResult.error || purchasesResult.error)
   const hasLastPurchaseError = Boolean(lastPurchaseResult.error)
+  const hasAcquisitionsError = Boolean(acquisitionsResult.error)
 
   const dashboardItems = (itemsResult.data ?? []) as unknown as DashboardItemRow[]
   const items = dashboardItems as CollectionItemStatsRow[]
   const purchases = (purchasesResult.data ?? []) as PurchaseStatsRow[]
   const lastPurchase = lastPurchaseResult.data as LastPurchaseRow | null
+  const acquisitionPurchases = (acquisitionsResult.data ?? []) as unknown as AcquisitionPurchaseRow[]
   const profileName = (profileResult.data as { name: string | null } | null)?.name
 
   const displayName = profileName?.trim() || user.email?.split('@')[0] || 'colecionador'
@@ -159,7 +200,23 @@ export default async function DashboardPage() {
   const gradeDistribution = hasStatsError ? [] : computeGradeDistribution(unitDistributionRows)
   const statusDistribution = hasStatsError ? [] : computeStatusDistribution(unitDistributionRows)
 
+  // Etapa 13.2: número de compras = número de OPERAÇÕES (uma linha em
+  // `purchases`), nunca a soma de exemplares — uma compra com vários
+  // itens continua contando 1.
+  const numeroCompras = hasAcquisitionsError ? 0 : acquisitionPurchases.length
+  const ticketMedio = hasAcquisitionsError ? null : computeTicketMedio(acquisitionPurchases)
+  const recentAcquisitions = hasAcquisitionsError ? [] : selectRecentAcquisitions(acquisitionPurchases, 5)
+  const monthlyAcquisitionValue = hasAcquisitionsError ? [] : computeMonthlyAcquisitionValue(acquisitionPurchases)
+  const monthlyAcquisitionQuantity = hasAcquisitionsError ? [] : computeMonthlyAcquisitionQuantity(acquisitionPurchases)
+
   const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
+  const compactCurrencyFormatter = new Intl.NumberFormat('pt-BR', {
+    style: 'currency',
+    currency: 'BRL',
+    notation: 'compact',
+    maximumFractionDigits: 1,
+  })
+  const quantityFormatter = new Intl.NumberFormat('pt-BR')
 
   return (
     <div className="flex flex-col gap-10">
@@ -175,7 +232,12 @@ export default async function DashboardPage() {
             description="Ocorreu um problema ao carregar os dados da sua coleção."
           />
         ) : (
-          <div className="grid grid-cols-2 gap-4 lg:grid-cols-5">
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-3 2xl:grid-cols-5">
+            {/* Etapa 13.2: 5 cards espremidos em 5 colunas a partir de
+                1024px estouravam valores monetários maiores (ex.:
+                "R$ 1.720,00"). Ajuste só de grid (não de fonte): 3 colunas
+                num intervalo intermediário, 5 só a partir de telas bem
+                largas (2xl), onde sobra espaço de verdade por card. */}
             <StatCard icon={Coins} label="Moedas" value={String(totalItems)} description="Itens cadastrados" />
             <StatCard icon={Layers} label="Unidades" value={String(totalUnits)} description="Peças na coleção" />
             <StatCard
@@ -186,15 +248,15 @@ export default async function DashboardPage() {
             />
             <StatCard
               icon={Wallet}
-              label="Investido"
+              label="Investido na coleção"
               value={currencyFormatter.format(totalInvested)}
-              description="Valor total de aquisição"
+              description="Considera apenas itens ativos da coleção."
             />
             <StatCard
               icon={Receipt}
               label="Valor médio"
               value={averageAcquisitionCost === null ? '—' : currencyFormatter.format(averageAcquisitionCost)}
-              description="Por exemplar"
+              description="Por exemplar ativo"
             />
           </div>
         )}
@@ -233,6 +295,63 @@ export default async function DashboardPage() {
           </div>
         </section>
       )}
+
+      <section className="flex flex-col gap-4">
+        <div className="flex flex-col gap-1">
+          <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+            Histórico de aquisições
+          </p>
+          {/* Etapa 13.2: legenda discreta — distingue esta seção (todas as
+              compras já feitas) do "Investido na coleção" acima (só itens
+              ativos). Sem alerta, sem cor de destaque, mesmo tom do resto
+              da UI. */}
+          <p className="text-xs text-text-secondary/80">
+            Inclui compras de itens que posteriormente foram para a lixeira.
+          </p>
+        </div>
+        {hasAcquisitionsError ? (
+          <DashboardErrorState
+            title="Não foi possível carregar suas aquisições"
+            description="Ocorreu um problema ao carregar o histórico de compras."
+          />
+        ) : (
+          <>
+            <div className="grid grid-cols-2 gap-4">
+              <StatCard
+                icon={ShoppingCart}
+                label="Número de compras"
+                value={String(numeroCompras)}
+                description="Operações de aquisição"
+              />
+              <StatCard
+                icon={Banknote}
+                label="Ticket médio"
+                value={ticketMedio === null ? '—' : currencyFormatter.format(ticketMedio)}
+                description="Por operação de compra"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <MonthlySeriesChart
+                title="Aquisições por mês"
+                icon={CalendarRange}
+                entries={monthlyAcquisitionValue}
+                emptyMessage="Nenhuma aquisição registrada ainda."
+                formatValue={(value) => compactCurrencyFormatter.format(value)}
+              />
+              <MonthlySeriesChart
+                title="Exemplares adquiridos por mês"
+                icon={PackagePlus}
+                entries={monthlyAcquisitionQuantity}
+                emptyMessage="Nenhum exemplar adquirido ainda."
+                formatValue={(value) => quantityFormatter.format(value)}
+              />
+            </div>
+
+            <AcquisitionsList acquisitions={recentAcquisitions} currencyFormatter={currencyFormatter} />
+          </>
+        )}
+      </section>
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">

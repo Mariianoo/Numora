@@ -22,7 +22,12 @@ export function StatCard({ icon: Icon, label, value, description }: StatCardProp
           <Icon className="size-[18px]" aria-hidden />
         </div>
       </div>
-      <p className="mt-3 text-3xl font-semibold tracking-tight text-text-primary">{value}</p>
+      {/* Etapa 13.2: valores monetários longos (ex.: "R$ 12.345,50") podem
+          ultrapassar a largura do card enquanto o grid do Dashboard ainda
+          está em 2 colunas (mobile e tablet) — só volta ao tamanho
+          original (text-3xl) a partir de `lg`, quando o grid já abriu
+          mais colunas e sobra espaço real por card. */}
+      <p className="mt-3 text-lg font-semibold tracking-tight text-text-primary sm:text-xl lg:text-3xl">{value}</p>
       {description && <p className="mt-1 text-xs text-text-secondary">{description}</p>}
     </Card>
   )

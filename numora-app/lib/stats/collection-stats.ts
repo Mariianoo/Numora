@@ -190,3 +190,139 @@ export function computeStatusDistribution(units: { status: string }[]): Distribu
     }))
     .sort((a, b) => b.count - a.count)
 }
+
+/**
+ * Etapa 13.2 (auditoria "Aquisições") — seção separada do resumo acima:
+ * ali `totalInvested` reflete a COLEÇÃO ATUAL (só compras com pelo menos
+ * um `collection_item` ativo, decisão preservada sem alteração). Aqui
+ * embaixo tratamos as compras como HISTÓRICO DE AQUISIÇÕES — uma compra
+ * não desaparece deste bloco só porque o item foi para a lixeira depois
+ * (decisão explícita da Etapa 13.2). Por isso as funções abaixo recebem
+ * a lista COMPLETA de purchases do usuário (sem filtro de `deleted_at`),
+ * vinda de uma query separada em app/dashboard/page.tsx.
+ */
+export interface AcquisitionCollectionItemRow {
+  id: string
+  denomination: string
+  quantity: number
+  deleted_at: string | null
+}
+
+export interface AcquisitionPurchaseRow {
+  id: string
+  total_price: number
+  purchase_date: string | null
+  seller_name: string | null
+  created_at: string
+  collection_items: AcquisitionCollectionItemRow[]
+}
+
+/**
+ * `purchase_date` é preenchido manualmente pelo colecionador e pode ficar
+ * em branco; `created_at` sempre existe. Regra explícita da Etapa 13.2:
+ * ordenar por `purchase_date` quando houver, e só usar `created_at` como
+ * fallback técnico (nunca inventar uma data) quando não houver.
+ */
+function getAcquisitionSortKey(purchase: AcquisitionPurchaseRow): string {
+  return purchase.purchase_date ?? purchase.created_at.slice(0, 10)
+}
+
+/** `null` quando não há nenhuma compra (nunca "R$ 0,00", que sugeriria ticket real zero). */
+export function computeTicketMedio(purchases: { total_price: number }[]): number | null {
+  if (purchases.length === 0) return null
+  const total = purchases.reduce((sum, purchase) => sum + Number(purchase.total_price), 0)
+  return total / purchases.length
+}
+
+export interface RecentAcquisition {
+  id: string
+  totalPrice: number
+  sellerName: string | null
+  /** `null` quando o colecionador não informou — a UI nunca deve fabricar uma data aqui. */
+  purchaseDate: string | null
+  /** Soma de `collection_items.quantity` vinculados a esta compra (1 operação, N exemplares possíveis). */
+  itemCount: number
+  coinLabels: string[]
+  /** `false` quando todos os itens vinculados a esta compra estão na lixeira — a UI deve sinalizar isso. */
+  hasActiveItems: boolean
+}
+
+/**
+ * Uma `purchase` = uma operação: mesmo que tenha vários `collection_items`
+ * vinculados, aparece uma única vez na lista (nunca duplicada por item).
+ */
+export function selectRecentAcquisitions(purchases: AcquisitionPurchaseRow[], limit: number): RecentAcquisition[] {
+  return [...purchases]
+    .sort((a, b) => getAcquisitionSortKey(b).localeCompare(getAcquisitionSortKey(a)))
+    .slice(0, limit)
+    .map((purchase) => ({
+      id: purchase.id,
+      totalPrice: Number(purchase.total_price),
+      sellerName: purchase.seller_name,
+      purchaseDate: purchase.purchase_date,
+      itemCount: purchase.collection_items.reduce((sum, item) => sum + item.quantity, 0),
+      coinLabels: purchase.collection_items.map((item) => item.denomination),
+      hasActiveItems: purchase.collection_items.some((item) => item.deleted_at === null),
+    }))
+}
+
+export interface MonthlyAcquisitionEntry {
+  /** Chave "AAAA-MM", para ordenação estável. */
+  key: string
+  label: string
+  value: number
+}
+
+const MONTH_LABELS_PT_BR = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+
+function formatMonthKeyLabel(key: string): string {
+  const [year, month] = key.split('-')
+  return `${MONTH_LABELS_PT_BR[Number(month) - 1]}/${year.slice(2)}`
+}
+
+function shiftMonthKey(base: Date, offsetMonths: number): string {
+  const shifted = new Date(base.getFullYear(), base.getMonth() + offsetMonths, 1)
+  return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, '0')}`
+}
+
+/**
+ * Agrupa por mês dentro de uma janela de `monthsWindow` meses terminando
+ * no mês atual. Nunca preenche meses sem aquisição (§"Período do
+ * gráfico" da Etapa 13.2) — só entram chaves com pelo menos 1 compra.
+ */
+function groupAcquisitionsByMonth(
+  purchases: AcquisitionPurchaseRow[],
+  monthsWindow: number,
+  valueOf: (purchase: AcquisitionPurchaseRow) => number,
+): MonthlyAcquisitionEntry[] {
+  const windowStartKey = shiftMonthKey(new Date(), -(monthsWindow - 1))
+
+  const totals = new Map<string, number>()
+  for (const purchase of purchases) {
+    const monthKey = getAcquisitionSortKey(purchase).slice(0, 7)
+    if (monthKey < windowStartKey) continue
+    totals.set(monthKey, (totals.get(monthKey) ?? 0) + valueOf(purchase))
+  }
+
+  return Array.from(totals.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([key, value]) => ({ key, label: formatMonthKeyLabel(key), value }))
+}
+
+/** Eixo Y = valor total pago em aquisições no mês (nunca "valorização"/"lucro"/"ROI"). */
+export function computeMonthlyAcquisitionValue(
+  purchases: AcquisitionPurchaseRow[],
+  monthsWindow = 12,
+): MonthlyAcquisitionEntry[] {
+  return groupAcquisitionsByMonth(purchases, monthsWindow, (purchase) => Number(purchase.total_price))
+}
+
+/** Eixo Y = soma de `collection_items.quantity` das compras do mês (nunca conta `collection_units` direto). */
+export function computeMonthlyAcquisitionQuantity(
+  purchases: AcquisitionPurchaseRow[],
+  monthsWindow = 12,
+): MonthlyAcquisitionEntry[] {
+  return groupAcquisitionsByMonth(purchases, monthsWindow, (purchase) =>
+    purchase.collection_items.reduce((sum, item) => sum + item.quantity, 0),
+  )
+}
