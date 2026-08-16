@@ -51,6 +51,7 @@ import {
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
@@ -85,6 +86,7 @@ import { CoinImageEditor } from '@/components/ui/CoinImageEditor'
 import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { ErrorState } from '@/components/ui/ErrorState'
 import { cn } from '@/components/ui/utils'
 
 const collectionRepository = createSupabaseCollectionRepository()
@@ -887,6 +889,7 @@ export default function CollectionPage() {
   const [grades, setGrades] = useState<Grade[]>([])
 
   const [isLoading, setIsLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [successMessage, setSuccessMessage] = useState<string | null>(null)
@@ -953,6 +956,15 @@ export default function CollectionPage() {
   const [unitsError, setUnitsError] = useState<string | null>(null)
   /** Exemplar aguardando confirmação explícita de exclusão (nunca excluído direto no clique). */
   const [unitPendingDelete, setUnitPendingDelete] = useState<CollectionUnit | null>(null)
+  const [isDeletingUnit, setIsDeletingUnit] = useState(false)
+  /**
+   * Erro PRÓPRIO deste ConfirmDialog (Etapa 12.4) — antes, uma falha aqui
+   * fechava a confirmação e jogava o erro no `unitsError` do modal por
+   * trás; agora, mesmo padrão já usado por "mover para a lixeira"/"excluir
+   * permanentemente": o diálogo continua aberto, mostra o erro dentro de
+   * si mesmo, e permite nova tentativa manual sem reabrir nada.
+   */
+  const [unitDeleteError, setUnitDeleteError] = useState<string | null>(null)
 
   /**
    * Etapa Lixeira — item aguardando confirmação de "mover para a lixeira"
@@ -1145,7 +1157,7 @@ export default function CollectionPage() {
       setItems((current) => current.map((item) => (item.id === updated.id ? updated : item)))
       closeInfoModal()
     } catch (err) {
-      setInfoError((err as Error).message)
+      setInfoError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsInfoSaving(false)
     }
@@ -1183,8 +1195,27 @@ export default function CollectionPage() {
     })
   }
 
-  useEffect(() => {
-    Promise.all([
+  /**
+   * Carregamento inicial da tela (Etapa 12.4) — extraído para ser
+   * reutilizado tanto pelo `useEffect` de montagem quanto pelo botão
+   * "Tentar novamente" do `ErrorState`, sem duplicar a lógica de fetch.
+   * `loadError` é um estado PRÓPRIO, separado do `error` genérico (usado
+   * por formulários/modais): antes desta etapa os dois compartilhavam a
+   * mesma variável, e uma falha aqui virava silenciosamente "Sua coleção
+   * ainda está vazia" por trás de uma linha de erro discreta — a auditoria
+   * encontrou isso como o problema mais sério do app (ErrorState nunca
+   * coexiste com o EmptyState, ver render abaixo).
+   */
+  // `isLoading`/`loadError` NÃO são resetados aqui de propósito — fazer
+  // isso resetaria estado de forma síncrona dentro do efeito de montagem
+  // abaixo (react-hooks/set-state-in-effect). No mount, `isLoading` já
+  // nasce `true`; no retry, o próprio `ErrorState` já mostra seu spinner
+  // interno enquanto esta função está em voo. Encadeamento `.then()` (em
+  // vez de async/await) de propósito — o lint acima só reconhece que os
+  // `setState` dentro dos callbacks NÃO são síncronos quando eles estão
+  // léxicamente dentro de um `.then()`/`.catch()`/`.finally()` separado.
+  const loadCollectionData = useCallback(() => {
+    return Promise.all([
       collectionRepository.list(),
       referenceRepository.listCountries(),
       referenceRepository.listMetals(),
@@ -1195,10 +1226,15 @@ export default function CollectionPage() {
         setCountries(countriesResult)
         setMetals(metalsResult)
         setGrades(gradesResult)
+        setLoadError(null)
       })
-      .catch((err: Error) => setError(err.message))
+      .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
       .finally(() => setIsLoading(false))
   }, [])
+
+  useEffect(() => {
+    loadCollectionData()
+  }, [loadCollectionData])
 
   const gradesByScale = grades.reduce<Record<string, Grade[]>>((groups, grade) => {
     ;(groups[grade.scale] ??= []).push(grade)
@@ -1460,7 +1496,7 @@ export default function CollectionPage() {
 
       closeModal()
     } catch (err) {
-      setError((err as Error).message)
+      setError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsSaving(false)
     }
@@ -1516,7 +1552,7 @@ export default function CollectionPage() {
       setItems((current) => current.filter((i) => i.id !== item.id))
       closeTrashConfirm()
     } catch (err) {
-      setTrashError((err as Error).message)
+      setTrashError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsMovingToTrash(false)
     }
@@ -1531,7 +1567,7 @@ export default function CollectionPage() {
       const result = await collectionUnitsRepository.listByItem(item.id)
       setUnits(result)
     } catch (err) {
-      setUnitsError((err as Error).message)
+      setUnitsError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsUnitsLoading(false)
     }
@@ -1575,7 +1611,7 @@ export default function CollectionPage() {
       )
       if (field) markUnitFieldStatus(unit.id, field, 'saved')
     } catch (err) {
-      setUnitsError((err as Error).message)
+      setUnitsError(getUserFriendlyErrorMessage(err))
       if (field) markUnitFieldStatus(unit.id, field, 'error')
     }
   }
@@ -1628,14 +1664,20 @@ export default function CollectionPage() {
       )
       markUnitFieldStatus(unit.id, 'isPrimary', 'saved')
     } catch (err) {
-      setUnitsError((err as Error).message)
+      setUnitsError(getUserFriendlyErrorMessage(err))
       markUnitFieldStatus(unit.id, 'isPrimary', 'error')
     }
   }
 
   /** Abre a confirmação — a exclusão em si só acontece em `confirmUnitDelete`. */
   function handleUnitDelete(unit: CollectionUnit) {
+    setUnitDeleteError(null)
     setUnitPendingDelete(unit)
+  }
+
+  function closeUnitDeleteConfirm() {
+    setUnitPendingDelete(null)
+    setUnitDeleteError(null)
   }
 
   /**
@@ -1658,7 +1700,8 @@ export default function CollectionPage() {
     const unit = unitPendingDelete
     if (!unit) return
 
-    setUnitsError(null)
+    setIsDeletingUnit(true)
+    setUnitDeleteError(null)
 
     try {
       await collectionUnitsRepository.remove(unit.id)
@@ -1684,10 +1727,14 @@ export default function CollectionPage() {
       if (editUnitModalUnitId === unit.id) closeEditUnitModal()
       setUnitPendingDelete(null)
     } catch (err) {
-      // Inclui a mensagem amigável de "último exemplar" vinda do banco (P0001).
-      // Fecha a confirmação para o erro ficar visível no modal de exemplares por trás.
-      setUnitPendingDelete(null)
-      setUnitsError((err as Error).message)
+      // Etapa 12.4: o diálogo agora PERMANECE aberto em caso de erro (antes
+      // fechava e jogava o erro no modal por trás) — inclui a mensagem
+      // amigável de "último exemplar" vinda do banco (P0001), que passa
+      // por getUserFriendlyErrorMessage inalterada (não tem o prefixo
+      // interno `[XRepository]`).
+      setUnitDeleteError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setIsDeletingUnit(false)
     }
   }
 
@@ -1888,6 +1935,13 @@ export default function CollectionPage() {
 
       {isLoading ? (
         <p className="text-sm text-text-secondary">Carregando...</p>
+      ) : loadError ? (
+        <ErrorState
+          title="Não foi possível carregar sua coleção"
+          description={loadError}
+          actionLabel="Tentar novamente"
+          onAction={loadCollectionData}
+        />
       ) : items.length === 0 ? (
         <EmptyState
           icon={PackageOpen}
@@ -2443,13 +2497,15 @@ export default function CollectionPage() {
 
       <ConfirmDialog
         isOpen={unitPendingDelete !== null}
-        onClose={() => setUnitPendingDelete(null)}
+        onClose={closeUnitDeleteConfirm}
         onConfirm={confirmUnitDelete}
         title="Excluir este exemplar?"
         description="Esta ação removerá apenas este exemplar da coleção — a moeda e os demais exemplares não são afetados."
         icon={Trash2}
         isDestructive
         confirmLabel="Excluir exemplar"
+        isLoading={isDeletingUnit}
+        error={unitDeleteError}
       />
 
       {/*

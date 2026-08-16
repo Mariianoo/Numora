@@ -35,6 +35,7 @@ import { Card } from '@/components/ui/Card'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow } from '@/lib/stats/collection-stats'
 import { formatDateOnly } from '@/lib/format/date'
+import { DashboardErrorState } from './DashboardErrorState'
 
 interface LastPurchaseRow {
   total_price: number
@@ -77,6 +78,14 @@ export default async function DashboardPage() {
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
   ])
 
+  // Etapa 12.4: uma falha de query NUNCA deve virar silenciosamente "0
+  // moedas"/"coleção vazia" — a auditoria encontrou exatamente esse
+  // mascaramento aqui (nenhum dos 4 resultados tinha `.error` checado).
+  // Cada bloco (resumo/coleção vs. última aquisição) falha de forma
+  // independente, preservando os que carregaram com sucesso.
+  const hasStatsError = Boolean(itemsResult.error || purchasesResult.error)
+  const hasLastPurchaseError = Boolean(lastPurchaseResult.error)
+
   const items = (itemsResult.data ?? []) as CollectionItemStatsRow[]
   const purchases = (purchasesResult.data ?? []) as PurchaseStatsRow[]
   const lastPurchase = lastPurchaseResult.data as LastPurchaseRow | null
@@ -84,7 +93,9 @@ export default async function DashboardPage() {
 
   const displayName = profileName?.trim() || user.email?.split('@')[0] || 'colecionador'
 
-  const { totalItems, totalUnits, countryCount, totalInvested } = computeCollectionStats(items, purchases)
+  const { totalItems, totalUnits, countryCount, totalInvested } = hasStatsError
+    ? { totalItems: 0, totalUnits: 0, countryCount: 0, totalInvested: 0 }
+    : computeCollectionStats(items, purchases)
 
   const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
@@ -96,22 +107,29 @@ export default async function DashboardPage() {
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
           Resumo da coleção
         </p>
-        <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-          <StatCard icon={Coins} label="Moedas" value={String(totalItems)} description="Itens cadastrados" />
-          <StatCard icon={Layers} label="Unidades" value={String(totalUnits)} description="Peças na coleção" />
-          <StatCard
-            icon={Globe2}
-            label="Países"
-            value={String(countryCount)}
-            description="Países representados"
+        {hasStatsError ? (
+          <DashboardErrorState
+            title="Não foi possível carregar seu resumo"
+            description="Ocorreu um problema ao carregar os dados da sua coleção."
           />
-          <StatCard
-            icon={Wallet}
-            label="Investido"
-            value={currencyFormatter.format(totalInvested)}
-            description="Valor total de aquisição"
-          />
-        </div>
+        ) : (
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <StatCard icon={Coins} label="Moedas" value={String(totalItems)} description="Itens cadastrados" />
+            <StatCard icon={Layers} label="Unidades" value={String(totalUnits)} description="Peças na coleção" />
+            <StatCard
+              icon={Globe2}
+              label="Países"
+              value={String(countryCount)}
+              description="Países representados"
+            />
+            <StatCard
+              icon={Wallet}
+              label="Investido"
+              value={currencyFormatter.format(totalInvested)}
+              description="Valor total de aquisição"
+            />
+          </div>
+        )}
       </section>
 
       <section className="flex flex-col gap-4">
@@ -121,7 +139,9 @@ export default async function DashboardPage() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
           <Card className="p-6">
             <h2 className="text-base font-semibold text-text-primary">Minha coleção</h2>
-            {totalItems === 0 ? (
+            {hasStatsError ? (
+              <p className="mt-4 text-sm text-danger">Não foi possível carregar os dados da sua coleção.</p>
+            ) : totalItems === 0 ? (
               <div className="mt-4">
                 <EmptyState
                   icon={PackageOpen}
@@ -156,7 +176,9 @@ export default async function DashboardPage() {
 
           <Card className="p-6">
             <h2 className="text-base font-semibold text-text-primary">Última aquisição</h2>
-            {lastPurchase === null ? (
+            {hasLastPurchaseError ? (
+              <p className="mt-4 text-sm text-danger">Não foi possível carregar sua última aquisição.</p>
+            ) : lastPurchase === null ? (
               <div className="mt-4">
                 <EmptyState
                   icon={ShoppingBag}

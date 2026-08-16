@@ -13,6 +13,7 @@ import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { AuthSession, AuthUser, SignUpInput, SignUpResult } from '@/features/auth/types'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 
 export interface AuthRepository {
   getSession(): Promise<AuthSession | null>
@@ -70,7 +71,11 @@ function mapAuthErrorMessage(error: { code?: string; message: string }): string 
     case 'over_email_send_rate_limit':
       return 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.'
     default:
-      return error.message
+      // Código não mapeado (ex.: erro de rede antes de chegar ao Supabase,
+      // ou algum código novo do SDK) — nunca mostramos error.message bruto
+      // direto; o fallback preserva o texto original só quando ele já é
+      // seguro (ver getUserFriendlyErrorMessage).
+      return getUserFriendlyErrorMessage(new Error(error.message), error.message)
   }
 }
 

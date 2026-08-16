@@ -19,7 +19,7 @@
  */
 'use client'
 
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { ArrowLeft, Award, Bookmark, Layers, Loader2, PackageOpen, RotateCcw, Trash2 } from 'lucide-react'
 
@@ -29,10 +29,12 @@ import type { CollectionItem, CollectionItemUnit } from '@/features/collection/t
 import type { CollectionUnit } from '@/features/collection-units/types'
 import type { CoinImageKind } from '@/features/coin-images/types'
 import { formatTimestampDate } from '@/lib/format/date'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
 import { EmptyState } from '@/components/ui/EmptyState'
+import { ErrorState } from '@/components/ui/ErrorState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 
@@ -47,9 +49,11 @@ export default function TrashPage() {
   const [items, setItems] = useState<CollectionItem[]>([])
   const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({})
   const [isLoading, setIsLoading] = useState(true)
-  const [error, setError] = useState<string | null>(null)
+  const [loadError, setLoadError] = useState<string | null>(null)
 
   const [restoringId, setRestoringId] = useState<string | null>(null)
+  /** Erro de "Restaurar" — separado de `loadError` para uma falha aqui nunca esconder a lista já carregada atrás de um ErrorState. */
+  const [restoreError, setRestoreError] = useState<string | null>(null)
   const [itemPendingPermanentDelete, setItemPendingPermanentDelete] = useState<CollectionItem | null>(null)
   const [isDeletingPermanently, setIsDeletingPermanently] = useState(false)
   const [permanentDeleteError, setPermanentDeleteError] = useState<string | null>(null)
@@ -70,28 +74,31 @@ export default function TrashPage() {
     setViewerState((current) => ({ units, unitId, kind, key: (current?.key ?? 0) + 1 }))
   }
 
-  useEffect(() => {
-    let cancelled = false
-
-    async function load() {
-      setIsLoading(true)
-      setError(null)
-      try {
-        const trashed = await collectionRepository.listTrashed()
-        if (cancelled) return
+  // Extraído para reutilização pelo botão "Tentar novamente" do
+  // `ErrorState` (Etapa 12.4), sem duplicar a busca. `isLoading`/`loadError`
+  // não são resetados no início de propósito (evita setState síncrono
+  // dentro do efeito de montagem abaixo — react-hooks/set-state-in-effect);
+  // encadeamento `.then()` em vez de async/await pelo mesmo motivo — ver
+  // comentário em app/dashboard/collection/page.tsx. Sem guarda de
+  // desmontagem (mesmo padrão de collection/page.tsx, que nunca teve uma):
+  // um `useRef` como guarda não sobrevive corretamente ao
+  // mount→unmount→remount simulado do StrictMode em dev, então nunca voltar
+  // a `true` — sintoma real encontrado nesta etapa (spinner preso para
+  // sempre após a 1ª falha).
+  const loadTrash = useCallback(() => {
+    return collectionRepository
+      .listTrashed()
+      .then((trashed) => {
         setItems(trashed)
-      } catch (err) {
-        if (!cancelled) setError((err as Error).message)
-      } finally {
-        if (!cancelled) setIsLoading(false)
-      }
-    }
-
-    load()
-    return () => {
-      cancelled = true
-    }
+        setLoadError(null)
+      })
+      .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
+      .finally(() => setIsLoading(false))
   }, [])
+
+  useEffect(() => {
+    loadTrash()
+  }, [loadTrash])
 
   // Mesmo padrão da Grid ativa: um único lote de signed URLs para todas as
   // miniaturas visíveis (imagem de frente do exemplar principal de cada
@@ -119,12 +126,12 @@ export default function TrashPage() {
 
   async function handleRestore(item: CollectionItem) {
     setRestoringId(item.id)
-    setError(null)
+    setRestoreError(null)
     try {
       await collectionRepository.restore(item.id)
       setItems((current) => current.filter((i) => i.id !== item.id))
     } catch (err) {
-      setError((err as Error).message)
+      setRestoreError(getUserFriendlyErrorMessage(err))
     } finally {
       setRestoringId(null)
     }
@@ -146,7 +153,7 @@ export default function TrashPage() {
       setItems((current) => current.filter((i) => i.id !== item.id))
       closePermanentDeleteConfirm()
     } catch (err) {
-      setPermanentDeleteError((err as Error).message)
+      setPermanentDeleteError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsDeletingPermanently(false)
     }
@@ -168,12 +175,19 @@ export default function TrashPage() {
         }
       />
 
-      {error && <p className="text-sm text-danger">{error}</p>}
+      {restoreError && <p className="text-sm text-danger">{restoreError}</p>}
 
       {isLoading ? (
         <div className="flex flex-1 items-center justify-center py-16">
           <Loader2 className="size-6 animate-spin text-text-secondary" aria-hidden />
         </div>
+      ) : loadError ? (
+        <ErrorState
+          title="Não foi possível carregar sua lixeira"
+          description={loadError}
+          actionLabel="Tentar novamente"
+          onAction={loadTrash}
+        />
       ) : items.length === 0 ? (
         <EmptyState icon={PackageOpen} title="A lixeira está vazia" description="Moedas movidas para a lixeira aparecerão aqui." />
       ) : (

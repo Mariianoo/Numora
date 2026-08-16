@@ -18,7 +18,7 @@
  */
 'use client'
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy } from 'lucide-react'
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
@@ -27,6 +27,7 @@ import type { Profile } from '@/features/profile/types'
 import type { Country } from '@/features/collection/types'
 import type { CollectionStats } from '@/lib/stats/collection-stats'
 import { formatDateOnly, formatTimestampDate } from '@/lib/format/date'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
@@ -35,6 +36,7 @@ import { Button } from '@/components/ui/Button'
 import { Badge } from '@/components/ui/Badge'
 import { StatCard } from '@/components/ui/StatCard'
 import { Avatar } from '@/components/ui/Avatar'
+import { ErrorState } from '@/components/ui/ErrorState'
 import { cn } from '@/components/ui/utils'
 
 const profileRepository = createSupabaseProfileRepository()
@@ -61,8 +63,12 @@ export default function ProfilePage() {
   const [username, setUsername] = useState('')
   const [countryCode, setCountryCode] = useState('')
 
-  useEffect(() => {
-    Promise.all([profileRepository.getOwnProfile(), profileRepository.getOwnStats(), referenceRepository.listCountries()])
+  // `isLoading`/`loadError` não são resetados no início de propósito
+  // (evita setState síncrono dentro do efeito de montagem abaixo —
+  // react-hooks/set-state-in-effect); ver mesmo comentário em
+  // app/dashboard/collection/page.tsx.
+  const loadProfileData = useCallback(() => {
+    return Promise.all([profileRepository.getOwnProfile(), profileRepository.getOwnStats(), referenceRepository.listCountries()])
       .then(([profileResult, statsResult, countriesResult]) => {
         setProfile(profileResult)
         setStats(statsResult)
@@ -70,10 +76,15 @@ export default function ProfilePage() {
         setName(profileResult.name ?? '')
         setUsername(profileResult.username ?? '')
         setCountryCode(profileResult.countryCode ?? '')
+        setLoadError(null)
       })
-      .catch((err: Error) => setLoadError(err.message))
+      .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
       .finally(() => setIsLoading(false))
   }, [])
+
+  useEffect(() => {
+    loadProfileData()
+  }, [loadProfileData])
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -93,7 +104,7 @@ export default function ProfilePage() {
       setCountryCode(updated.countryCode ?? '')
       setSuccessMessage('Perfil atualizado com sucesso.')
     } catch (err) {
-      setError((err as Error).message)
+      setError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsSaving(false)
     }
@@ -118,7 +129,7 @@ export default function ProfilePage() {
       const updated = await profileRepository.setPassportPublic(nextValue)
       setProfile(updated)
     } catch (err) {
-      setPassportError((err as Error).message)
+      setPassportError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsTogglingPassport(false)
     }
@@ -142,7 +153,14 @@ export default function ProfilePage() {
   }
 
   if (loadError || !profile) {
-    return <p className="text-sm text-danger">{loadError ?? 'Não foi possível carregar seu perfil.'}</p>
+    return (
+      <ErrorState
+        title="Não foi possível carregar seu perfil"
+        description={loadError ?? undefined}
+        actionLabel="Tentar novamente"
+        onAction={loadProfileData}
+      />
+    )
   }
 
   const avatarLabel = profile.name?.trim() || profile.email?.split('@')[0] || '?'

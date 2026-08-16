@@ -11,7 +11,7 @@
  */
 'use client'
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { MailCheck } from 'lucide-react'
@@ -19,6 +19,7 @@ import { MailCheck } from 'lucide-react'
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import type { Country } from '@/features/collection/types'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -35,6 +36,7 @@ export default function SignupPage() {
 
   const [countries, setCountries] = useState<Country[]>([])
   const [isLoadingCountries, setIsLoadingCountries] = useState(true)
+  const [countriesError, setCountriesError] = useState<string | null>(null)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [needsEmailConfirmation, setNeedsEmailConfirmation] = useState(false)
@@ -45,13 +47,36 @@ export default function SignupPage() {
   const [confirmPassword, setConfirmPassword] = useState('')
   const [countryCode, setCountryCode] = useState('')
 
-  useEffect(() => {
-    referenceRepository
+  // `isLoadingCountries`/`countriesError` não são resetados no início de
+  // propósito (evita setState síncrono dentro do efeito de montagem
+  // abaixo — react-hooks/set-state-in-effect); ver mesmo comentário em
+  // app/dashboard/collection/page.tsx.
+  const loadCountries = useCallback(() => {
+    return referenceRepository
       .listCountries()
-      .then(setCountries)
-      .catch((err: Error) => setError(err.message))
+      .then((result) => {
+        setCountries(result)
+        setCountriesError(null)
+      })
+      .catch((err) => setCountriesError(getUserFriendlyErrorMessage(err)))
       .finally(() => setIsLoadingCountries(false))
   }, [])
+
+  useEffect(() => {
+    loadCountries()
+  }, [loadCountries])
+
+  /**
+   * Handler dedicado do clique em "Tentar novamente" — diferente de
+   * `loadCountries` (chamada pelo efeito de montagem), este só é chamado
+   * a partir de um onClick, então pode resetar o loading/erro de forma
+   * síncrona sem acionar react-hooks/set-state-in-effect.
+   */
+  function handleRetryCountries() {
+    setIsLoadingCountries(true)
+    setCountriesError(null)
+    loadCountries()
+  }
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
@@ -90,7 +115,7 @@ export default function SignupPage() {
 
       setNeedsEmailConfirmation(true)
     } catch (err) {
-      setError((err as Error).message)
+      setError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsSubmitting(false)
     }
@@ -148,20 +173,34 @@ export default function SignupPage() {
             onChange={(e) => setConfirmPassword(e.target.value)}
             required
           />
-          <Select
-            label="País"
-            value={countryCode}
-            onChange={(e) => setCountryCode(e.target.value)}
-            disabled={isLoadingCountries}
-          >
-            <option value="">Selecione...</option>
-            {countries.map((country) => (
-              <option key={country.code} value={country.code}>
-                {country.flagEmoji ? `${country.flagEmoji} ` : ''}
-                {country.name}
-              </option>
-            ))}
-          </Select>
+          <div className="flex flex-col gap-1.5">
+            <Select
+              label="País"
+              value={countryCode}
+              onChange={(e) => setCountryCode(e.target.value)}
+              disabled={isLoadingCountries || countriesError !== null}
+            >
+              <option value="">Selecione...</option>
+              {countries.map((country) => (
+                <option key={country.code} value={country.code}>
+                  {country.flagEmoji ? `${country.flagEmoji} ` : ''}
+                  {country.name}
+                </option>
+              ))}
+            </Select>
+            {countriesError && (
+              <p className="text-xs text-danger">
+                {countriesError}{' '}
+                <button
+                  type="button"
+                  onClick={handleRetryCountries}
+                  className="font-medium underline underline-offset-2 hover:text-danger/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/50 rounded"
+                >
+                  Tentar novamente
+                </button>
+              </p>
+            )}
+          </div>
 
           {error && <p className="text-sm text-danger">{error}</p>}
 

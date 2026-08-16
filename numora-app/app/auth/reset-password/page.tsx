@@ -16,6 +16,7 @@ import Link from 'next/link'
 import { CheckCircle2, Loader2, TriangleAlert } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
+import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
@@ -79,7 +80,7 @@ export default function ResetPasswordPage() {
         router.refresh()
       }, 2000)
     } catch (err) {
-      setError((err as Error).message)
+      setError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsSubmitting(false)
     }
