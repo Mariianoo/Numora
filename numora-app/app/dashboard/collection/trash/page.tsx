@@ -27,6 +27,7 @@ import { createSupabaseCollectionRepository } from '@/features/collection/reposi
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CollectionItem, CollectionItemUnit } from '@/features/collection/types'
 import type { CollectionUnit } from '@/features/collection-units/types'
+import { getItemAcquisitionSummary } from '@/features/collection/aggregate'
 import type { CoinImageKind } from '@/features/coin-images/types'
 import { formatTimestampDate } from '@/lib/format/date'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
@@ -233,12 +234,28 @@ export default function TrashPage() {
                       <Layers className="size-3.5 shrink-0" aria-hidden />
                       {item.units.length} exemplar{item.units.length === 1 ? '' : 'es'}
                     </span>
-                    {item.purchase && (
-                      <span className="flex items-center gap-1.5">
-                        <Bookmark className="size-3.5 shrink-0" aria-hidden />
-                        Valor de aquisição: R$ {item.purchase.totalPrice.toFixed(2)}
-                      </span>
-                    )}
+                    {(() => {
+                      // Etapa 15.4: soft-delete só marca collection_items.
+                      // deleted_at — nunca toca em collection_units — então
+                      // os exemplares de um item na lixeira são exatamente
+                      // os mesmos que ele tinha quando ativo. A mesma
+                      // agregação da Coleção (getItemAcquisitionSummary)
+                      // já representa corretamente "os exemplares deste
+                      // item", sem distinção entre "antes"/"depois" da
+                      // lixeira — não há ambiguidade real aqui.
+                      const summary = getItemAcquisitionSummary(item)
+                      const hasValue = !(summary.isUniform && summary.uniformCost === null)
+                      if (!hasValue) return null
+                      return (
+                        <span className="flex items-center gap-1.5">
+                          <Bookmark className="size-3.5 shrink-0" aria-hidden />
+                          Valor de aquisição:{' '}
+                          {summary.isUniform
+                            ? `R$ ${summary.uniformCost!.toFixed(2)}`
+                            : `R$ ${summary.totalInvested.toFixed(2)} (${summary.activeUnitCount} exemplares)`}
+                        </span>
+                      )
+                    })()}
                     {item.deletedAt && (
                       <span className="flex items-center gap-1.5">
                         <Award className="size-3.5 shrink-0" aria-hidden />

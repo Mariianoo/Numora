@@ -53,6 +53,11 @@ import {
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
+import {
+  getItemAcquisitionSummary,
+  getItemAcquisitionTotal,
+  getItemPurchaseIds,
+} from '@/features/collection/aggregate'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type {
@@ -249,7 +254,11 @@ const SORTERS: Record<SortOption, (a: CollectionItem, b: CollectionItem) => numb
   yearDesc: (a, b) => compareNullableNumber(a.year, b.year, -1),
   denomination: (a, b) => compareNullableString(a.denomination, b.denomination),
   country: (a, b) => compareNullableString(a.countryDisplayName ?? a.countryCode, b.countryDisplayName ?? b.countryCode),
-  value: (a, b) => compareNullableNumber(a.purchase?.totalPrice ?? null, b.purchase?.totalPrice ?? null, -1),
+  // Etapa 15.4: soma real de collection_units.unit_cost dos exemplares do
+  // item — nunca mais item.purchase?.totalPrice (legado, só a 1ª compra).
+  // Nunca `null` (getItemAcquisitionTotal soma 0 para exemplares sem
+  // custo conhecido), então nem precisa de compareNullableNumber aqui.
+  value: (a, b) => getItemAcquisitionTotal(b) - getItemAcquisitionTotal(a),
 }
 
 interface GroupEntry {
@@ -498,9 +507,19 @@ function ListStatusCounts({ units }: { units: CollectionItemUnit[] }) {
 /**
  * Valor de aquisição com olho de privacidade (Etapa 11) — `visible` vive
  * inteiramente no estado do componente pai (`visiblePurchaseIds`, só em
- * memória React); recarregar a página sempre volta a ocultar. Não lê nem
- * escreve nada além do que `item.purchase` já trazia — não é uma nova
- * fonte de dado, só uma tela sobre um dado que já era privado do dono.
+ * memória React); recarregar a página sempre volta a ocultar.
+ *
+ * Etapa 15.4: migrado de `item.purchase` (legado, só a 1ª compra do item)
+ * para `getItemAcquisitionSummary(item)` (soma real de
+ * `collection_units.unit_cost` dos exemplares) — dado já carregado junto
+ * com o item, nenhuma query nova. Dois formatos, aprovados na Etapa 15.4:
+ * exemplares com custo uniforme mostram um único valor (igual ao
+ * comportamento de sempre, que cobre o caso comum de 1 compra só); custos
+ * diferentes mostram "N exemplares · R$ total investidos" + "Custo médio"
+ * — nunca mais um único valor que na verdade só refletia a 1ª compra. O
+ * olho de privacidade continua ocultando só as cifras (nunca a contagem
+ * de exemplares, que não é dado financeiro e já é exibida abertamente em
+ * outros pontos do card).
  */
 function PurchaseValue({
   item,
@@ -513,14 +532,25 @@ function PurchaseValue({
   onToggle: () => void
   align?: 'left' | 'right'
 }) {
-  const hasValue = item.purchase !== null
+  const summary = getItemAcquisitionSummary(item)
+  const hasValue = !(summary.isUniform && summary.uniformCost === null)
+  const unitLabel = `${summary.activeUnitCount} exemplar${summary.activeUnitCount === 1 ? '' : 'es'}`
+
+  const primaryText = !hasValue
+    ? '—'
+    : !visible
+      ? summary.isUniform
+        ? '••••••'
+        : `${unitLabel} · ••••••`
+      : summary.isUniform
+        ? `R$ ${summary.uniformCost!.toFixed(2)}`
+        : `${unitLabel} · R$ ${summary.totalInvested.toFixed(2)} investidos`
+
   return (
     <div className={cn('flex flex-col gap-0.5', align === 'right' && 'items-end')}>
-      <p className="text-xs text-text-secondary">Preço de aquisição</p>
+      {summary.isUniform && <p className="text-xs text-text-secondary">Preço de aquisição</p>}
       <div className="flex items-center gap-1.5">
-        <p className="font-semibold text-text-primary">
-          {!hasValue ? '—' : visible ? `R$ ${item.purchase?.totalPrice.toFixed(2)}` : '••••••'}
-        </p>
+        <p className="font-semibold text-text-primary">{primaryText}</p>
         {hasValue && (
           <IconButton
             icon={visible ? Eye : EyeOff}
@@ -530,6 +560,9 @@ function PurchaseValue({
           />
         )}
       </div>
+      {hasValue && !summary.isUniform && visible && summary.averageCost !== null && (
+        <p className="text-xs text-text-secondary">Custo médio: R$ {summary.averageCost.toFixed(2)}/exemplar</p>
+      )}
     </div>
   )
 }
@@ -1430,6 +1463,15 @@ export default function CollectionPage() {
     setFaceValue(item.faceValue !== null ? String(item.faceValue) : '')
     setQuantity(String(item.quantity))
     setMinQuantity(item.quantity)
+    // Etapa 15.4 — decisão explícita: PREFILL NÃO ALTERADO. Este
+    // formulário edita a compra LEGADA/original do item
+    // (`item.purchase`/`item.purchaseId`, via `purchasesRepository.
+    // update()` em collection.repository.ts) — nunca as compras
+    // adicionais que só existem em collection_units. Preencher aqui com
+    // qualquer outra coisa que não `item.purchase` faria o Salvar
+    // sobrescrever a compra errada. Migrar este formulário para múltiplas
+    // compras por exemplar é um redesenho de escrita fora do escopo desta
+    // etapa (só leituras foram migradas).
     setPricePaid(item.purchase !== null ? String(item.purchase.totalPrice) : '')
     setPurchaseDate(item.purchase?.purchaseDate ?? '')
     setSellerName(item.purchase?.sellerName ?? '')
@@ -1505,19 +1547,29 @@ export default function CollectionPage() {
   /**
    * Abre o ConfirmDialog de "mover para a lixeira" (Etapa Lixeira) — nunca
    * mais um DELETE direto a partir da coleção ativa. Busca a contagem de
-   * OUTROS itens que compartilham a mesma `purchase_id` via repository
-   * (não do array `items` já carregado, que só tem itens ativos e não
-   * refletiria compras compartilhadas com itens já na lixeira).
+   * OUTROS itens que compartilham QUALQUER UMA das compras deste item via
+   * repository (não do array `items` já carregado, que só tem itens
+   * ativos e não refletiria compras compartilhadas com itens já na
+   * lixeira).
+   *
+   * Etapa 15.4: `item.purchaseId` (legado, só a 1ª compra do item) trocado
+   * por `getItemPurchaseIds(item)` — todas as compras distintas presentes
+   * nos exemplares reais do item. Corrige um falso negativo real: uma
+   * compra que financiou exemplares deste item mas não é a primeira dele
+   * (ex.: item aumentado de quantidade mais de uma vez) antes ficava
+   * invisível para esta checagem.
    */
   async function handleDelete(item: CollectionItem) {
     setTrashError(null)
     setItemPendingTrash(item)
     setTrashSiblingCount(null)
 
-    if (item.purchaseId) {
+    const purchaseIds = getItemPurchaseIds(item)
+
+    if (purchaseIds.length > 0) {
       setIsTrashSiblingCountLoading(true)
       try {
-        const count = await collectionRepository.countOtherItemsForPurchase(item.purchaseId, item.id)
+        const count = await collectionRepository.countOtherItemsForPurchases(purchaseIds, item.id)
         setTrashSiblingCount(count)
       } catch {
         // informação secundária do diálogo — não impede a ação principal
@@ -2539,12 +2591,25 @@ export default function CollectionPage() {
             <p className="text-text-secondary">
               {itemPendingTrash.units.length} exemplar{itemPendingTrash.units.length === 1 ? '' : 'es'}
             </p>
-            {itemPendingTrash.purchase && (
-              <p className="text-text-secondary">
-                Valor de aquisição: R$ {itemPendingTrash.purchase.totalPrice.toFixed(2)}
-              </p>
-            )}
-            {itemPendingTrash.purchaseId &&
+            {(() => {
+              // Etapa 15.4: substitui `itemPendingTrash.purchase.totalPrice`
+              // (legado, só a 1ª compra) por getItemAcquisitionSummary —
+              // mesma regra de "Preço de aquisição" usada no card, mas em
+              // texto simples (o ConfirmDialog não precisa do "custo
+              // médio" — só confirmar o valor antes de uma ação).
+              const summary = getItemAcquisitionSummary(itemPendingTrash)
+              const hasValue = !(summary.isUniform && summary.uniformCost === null)
+              if (!hasValue) return null
+              return (
+                <p className="text-text-secondary">
+                  Valor de aquisição:{' '}
+                  {summary.isUniform
+                    ? `R$ ${summary.uniformCost!.toFixed(2)}`
+                    : `R$ ${summary.totalInvested.toFixed(2)} (${summary.activeUnitCount} exemplares)`}
+                </p>
+              )
+            })()}
+            {getItemPurchaseIds(itemPendingTrash).length > 0 &&
               (isTrashSiblingCountLoading ? (
                 <p className="text-xs text-text-secondary/70">Verificando compra vinculada...</p>
               ) : (

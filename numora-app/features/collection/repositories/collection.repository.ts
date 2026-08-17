@@ -72,14 +72,19 @@ export interface CollectionRepository {
    */
   remove(id: string): Promise<void>
   /**
-   * Etapa Lixeira — quantos OUTROS `collection_items` (de qualquer status,
-   * ativos ou na lixeira) compartilham a mesma `purchase_id`, sem depender
-   * da lista já carregada no cliente (que só contém itens ativos) e sem
-   * N+1: uma única query de contagem (`head: true`, sem baixar linhas).
-   * Usada só ao abrir o ConfirmDialog de "mover para a lixeira", para
-   * avisar quando a compra é compartilhada.
+   * Etapa 15.4 — substitui `countOtherItemsForPurchase` (removido: contava
+   * `collection_items.purchase_id`, cego a qualquer compra além da 1ª do
+   * item). Recebe TODOS os `purchaseId`s distintos presentes em
+   * `item.units` (ver `getItemPurchaseIds`) e responde: quantos OUTROS
+   * `collection_items` (com pelo menos 1 exemplar ATIVO, ou seja,
+   * pertencente a um item não excluído) têm algum exemplar apontando para
+   * qualquer uma dessas compras. Uma única query (nunca 1 por
+   * `purchaseId`); a deduplicação por `collection_item_id` acontece aqui
+   * mesmo, em memória, então um item com exemplares de 2 compras do
+   * conjunto nunca é contado 2 vezes. Usada só ao abrir o ConfirmDialog de
+   * "mover para a lixeira", para avisar quando a compra é compartilhada.
    */
-  countOtherItemsForPurchase(purchaseId: string, excludeItemId: string): Promise<number>
+  countOtherItemsForPurchases(purchaseIds: string[], excludeItemId: string): Promise<number>
 }
 
 /**
@@ -496,18 +501,32 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       return (data as unknown as CollectionItemRow[]).map(toCollectionItem)
     },
 
-    async countOtherItemsForPurchase(purchaseId, excludeItemId) {
-      const { count, error } = await supabase
-        .from('collection_items')
-        .select('id', { count: 'exact', head: true })
-        .eq('purchase_id', purchaseId)
-        .neq('id', excludeItemId)
+    async countOtherItemsForPurchases(purchaseIds, excludeItemId) {
+      if (purchaseIds.length === 0) return 0
+
+      // `collection_units.purchase_id in (...)` + embed `collection_items`
+      // filtrado a `deleted_at is null` (`!inner` obrigatório para poder
+      // filtrar coluna do embed) — "exemplar ATIVO" = pertence a um item
+      // não excluído. Uma única query; a contagem de collection_items
+      // DISTINTOS (nunca de linhas de exemplar) é feita em memória via Set,
+      // porque PostgREST não tem "count distinct" nativo — o volume aqui é
+      // sempre pequeno (só exemplares das compras em questão), então isso
+      // não é um risco de performance.
+      const { data, error } = await supabase
+        .from('collection_units')
+        .select('collection_item_id, collection_items!inner ( deleted_at )')
+        .in('purchase_id', purchaseIds)
+        .is('collection_items.deleted_at', null)
 
       if (error) {
         throw new Error(`[CollectionRepository] Falha ao verificar compra compartilhada: ${error.message}`)
       }
 
-      return count ?? 0
+      const rows = (data ?? []) as unknown as { collection_item_id: string }[]
+      const distinctItemIds = new Set(rows.map((row) => row.collection_item_id))
+      distinctItemIds.delete(excludeItemId)
+
+      return distinctItemIds.size
     },
   }
 }
