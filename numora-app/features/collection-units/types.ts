@@ -42,6 +42,18 @@ export const COLLECTION_UNIT_STATUS_EMOJI: Record<CollectionUnitStatus, string> 
   traded: '🔁',
 }
 
+/** Etapa 14.3 — quem gerou `unitCost`: rateio determinístico ou valor digitado pelo usuário para este exemplar específico. */
+export type CostOrigin = 'auto' | 'manual'
+
+/**
+ * Etapa 14.3 — origem do exemplar. `'trade'` existe no banco desde já
+ * (Etapa 14.1-R2 §7) mas não tem nenhum caminho de escrita ainda — a
+ * entidade `trades` ainda não existe (Etapa 14 §10). `'unknown'` é o
+ * default de todo exemplar sem custo/origem informados — nunca confundir
+ * com `unitCost = 0` (Etapa 14.1-R2 §8).
+ */
+export type CostType = 'purchase' | 'trade' | 'gift' | 'unknown'
+
 export interface CollectionUnit {
   id: string
   collectionItemId: string
@@ -69,6 +81,21 @@ export interface CollectionUnit {
   isPrimary: boolean
   createdAt: string
   updatedAt: string
+  /**
+   * Etapa 14.3 — qual `purchase` originou ESTE exemplar físico. Fonte
+   * principal para dado novo (substitui, nesse papel, `purchaseId` de
+   * `CollectionItem`, que continua existindo só para compatibilidade com
+   * dado legado — ver comentário em `features/collection/types.ts`).
+   */
+  purchaseId: string | null
+  /**
+   * Custo histórico CONGELADO deste exemplar (Etapa 14.1-R2 §1) — nunca
+   * recalculado a partir da purchase depois de escrito. `null` = custo
+   * desconhecido; nunca interpretar como R$0 (ver `costType`).
+   */
+  unitCost: number | null
+  costOrigin: CostOrigin
+  costType: CostType
 }
 
 export interface CollectionUnitInput {

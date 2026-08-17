@@ -24,16 +24,41 @@
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
-import type { CollectionUnit, CollectionUnitInput, CollectionUnitStatus } from '@/features/collection-units/types'
+import type {
+  CollectionUnit,
+  CollectionUnitInput,
+  CollectionUnitStatus,
+  CostOrigin,
+  CostType,
+} from '@/features/collection-units/types'
 
 /** Código Postgres da exceção customizada em `check_collection_unit_not_last()`. */
 const LAST_UNIT_ERROR_CODE = 'P0001'
 /** Mesma mensagem do trigger — usada na checagem prévia feita aqui antes do Storage. */
 const LAST_UNIT_MESSAGE = 'Esta moeda possui apenas um exemplar. Para removê-la da coleção, use a opção Excluir moeda.'
 
+/**
+ * Etapa 14.3 — quando exemplares novos nascem de uma compra real (`create()`
+ * de uma moeda nova, ou aumento de `quantity` com uma nova aquisição
+ * vinculada), o repositório de `collection_items` passa o `purchaseId` e o
+ * `totalAmount` a ratear entre os `count` exemplares sendo criados AGORA
+ * (nunca o total da purchase inteira, se ela também cobrir exemplares já
+ * existentes — quem decide esse valor é o chamador). `null`/omitido = sem
+ * informação de custo (exemplares nascem com `costType: 'unknown'`).
+ */
+export interface UnitPurchaseAllocation {
+  purchaseId: string
+  totalAmount: number
+}
+
 export interface CollectionUnitsRepository {
   listByItem(collectionItemId: string): Promise<CollectionUnit[]>
-  createMany(collectionItemId: string, count: number, gradeId: string | null): Promise<CollectionUnit[]>
+  createMany(
+    collectionItemId: string,
+    count: number,
+    gradeId: string | null,
+    purchaseAllocation?: UnitPurchaseAllocation | null,
+  ): Promise<CollectionUnit[]>
   update(id: string, input: CollectionUnitInput): Promise<CollectionUnit>
   remove(id: string): Promise<void>
   /**
@@ -59,6 +84,10 @@ export interface CollectionUnitRow {
   created_at: string
   updated_at: string
   grades: { label: string; scale: string } | null
+  purchase_id: string | null
+  unit_cost: number | null
+  cost_origin: CostOrigin
+  cost_type: CostType
 }
 
 export function toCollectionUnit(row: CollectionUnitRow): CollectionUnit {
@@ -73,7 +102,28 @@ export function toCollectionUnit(row: CollectionUnitRow): CollectionUnit {
     isPrimary: row.is_primary,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    purchaseId: row.purchase_id,
+    unitCost: row.unit_cost,
+    costOrigin: row.cost_origin,
+    costType: row.cost_type,
   }
+}
+
+/**
+ * Rateio determinístico (Etapa 14.1-R2 §9): todo exemplar exceto o último
+ * (na ordem recebida) leva `TRUNC(total / N, 2)`; o último absorve o resto
+ * exato, garantindo `SUM(resultado) === totalAmount` sempre. Arredondamento
+ * feito em CENTAVOS INTEIROS (nunca em ponto flutuante decimal) para não
+ * arriscar divergência de 1 centavo por erro de precisão de `number`.
+ *
+ * Ex.: R$100,00 ÷ 3 → [33.33, 33.33, 33.34].
+ */
+function allocateAmountEqually(totalAmount: number, count: number): number[] {
+  const totalCents = Math.round(totalAmount * 100)
+  const baseCents = Math.trunc(totalCents / count)
+  const amounts = new Array<number>(count).fill(baseCents)
+  amounts[count - 1] = totalCents - baseCents * (count - 1)
+  return amounts.map((cents) => cents / 100)
 }
 
 export function createSupabaseCollectionUnitsRepository(): CollectionUnitsRepository {
@@ -99,12 +149,30 @@ export function createSupabaseCollectionUnitsRepository(): CollectionUnitsReposi
       return (data as unknown as CollectionUnitRow[]).map(toCollectionUnit)
     },
 
-    async createMany(collectionItemId, count, gradeId) {
-      const rows = Array.from({ length: count }, () => ({
+    async createMany(collectionItemId, count, gradeId, purchaseAllocation) {
+      // Etapa 14.3: os `id`s são gerados aqui (não pelo default do banco) e
+      // ORDENADOS antes do insert — é o que garante que o exemplar que recebe
+      // o resto do rateio (`allocateAmountEqually`, último da lista) seja
+      // exatamente o mesmo que a UI vai exibir por último (`created_at ASC,
+      // id ASC`, mesmo critério de desempate usado em toda a feature — como
+      // todo o lote nasce na mesma transação, `created_at` é idêntico entre
+      // eles, então só a ordenação prévia dos ids garante esse alinhamento;
+      // esperar o retorno do insert para descobrir os ids só depois seria
+      // tarde demais para decidir quem leva o resto).
+      const ids = Array.from({ length: count }, () => crypto.randomUUID()).sort((a, b) => a.localeCompare(b))
+
+      const costs = purchaseAllocation ? allocateAmountEqually(purchaseAllocation.totalAmount, count) : null
+
+      const rows = ids.map((id, index) => ({
+        id,
         collection_item_id: collectionItemId,
         grade_id: gradeId,
         status: 'in_collection' as const,
         rating: null,
+        purchase_id: purchaseAllocation?.purchaseId ?? null,
+        unit_cost: costs ? costs[index] : null,
+        cost_origin: 'auto' as const,
+        cost_type: purchaseAllocation ? ('purchase' as const) : ('unknown' as const),
       }))
 
       const { data, error } = await supabase.from('collection_units').insert(rows).select(UNIT_SELECT)

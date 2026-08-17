@@ -268,15 +268,23 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       }
 
       let purchaseId: string | null = null
+      let purchaseTotal: number | null = null
       if (input.purchase) {
         const purchase = await purchasesRepository.create(input.purchase)
         purchaseId = purchase.id
+        purchaseTotal = purchase.totalPrice
       }
 
       const { data, error } = await supabase
         .from('collection_items')
         .insert({
           user_id: user.id,
+          // Etapa 14.3: continua escrito para dado novo (dual-write) — o
+          // Dashboard/Histórico de aquisições (Etapa 13.2/13.3) ainda lê
+          // exclusivamente daqui; a migração dessas leituras para
+          // collection_units fica para uma etapa futura (ver relatório).
+          // A fonte de verdade do custo por exemplar, a partir de agora, é
+          // sempre collection_units — este campo é só compatibilidade.
           purchase_id: purchaseId,
           country_code: input.countryCode,
           year: input.year,
@@ -299,7 +307,15 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       // Todo item precisa de ao menos 1 exemplar físico — quantity (ainda no
       // valor padrão da coluna) só reflete a realidade depois que o trigger
       // de sincronização roda em resposta a este insert em collection_units.
-      await collectionUnitsRepository.createMany(created.id, Math.max(1, input.quantity), input.initialGradeId)
+      // Etapa 14.3: cada exemplar nasce já com purchase_id/unit_cost/
+      // cost_type próprios (rateio determinístico do total da purchase
+      // entre os `quantity` exemplares desta mesma criação).
+      await collectionUnitsRepository.createMany(
+        created.id,
+        Math.max(1, input.quantity),
+        input.initialGradeId,
+        purchaseId && purchaseTotal !== null ? { purchaseId, totalAmount: purchaseTotal } : null,
+      )
 
       const withUnits = await get(created.id)
       if (!withUnits) {
@@ -325,8 +341,34 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
         )
       }
 
+      const missingUnits = input.quantity - current.quantity
+
+      // Etapa 14.3 — corrige o achado da auditoria 14.1 (achado novo #4):
+      // aumentar `quantity` NUNCA MAIS reescreve uma purchase já existente.
+      // Exemplares novos + uma compra informada = uma NOVA aquisição, então
+      // sempre cria uma purchase nova só para eles. A purchase já vinculada
+      // ao item (se houver) fica intocada — só é atualizada no lugar quando
+      // NÃO há exemplares novos (edição pura de metadados da mesma compra).
       let purchaseId = current.purchaseId
-      if (input.purchase) {
+      let newPurchaseForNewUnits: { purchaseId: string; totalAmount: number } | null = null
+
+      if (missingUnits > 0 && input.purchase) {
+        const newPurchase = await purchasesRepository.create(input.purchase)
+        newPurchaseForNewUnits = { purchaseId: newPurchase.id, totalAmount: newPurchase.totalPrice }
+        if (purchaseId === null) {
+          // Item nunca teve nenhuma purchase vinculada — não há nada a
+          // preservar, então linkar a nova aqui é seguro e mantém o
+          // Dashboard legado (que hoje só enxerga collection_items.
+          // purchase_id) mostrando ao menos esta aquisição.
+          purchaseId = newPurchase.id
+        }
+        // Se já havia uma purchase vinculada, ela permanece EXATAMENTE como
+        // estava — não é sobrescrita nem apagada. O Dashboard legado não vai
+        // exibir esta segunda aquisição até as queries de Histórico
+        // migrarem de collection_items para collection_units (fora do
+        // escopo desta etapa, ver relatório) — o que importa aqui é que a
+        // purchase original nunca mais é corrompida, que era o bug real.
+      } else if (input.purchase) {
         if (purchaseId) {
           await purchasesRepository.update(purchaseId, input.purchase)
         } else {
@@ -358,11 +400,12 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
 
       const updated = toCollectionItem(data as unknown as CollectionItemRow)
 
-      const missingUnits = input.quantity - current.quantity
       if (missingUnits > 0) {
         // Exemplares novos nascem sem conservação própria (decisão aprovada
-        // — não herdar automaticamente de exemplares já existentes).
-        await collectionUnitsRepository.createMany(id, missingUnits, null)
+        // — não herdar automaticamente de exemplares já existentes). Etapa
+        // 14.3: recebem purchase_id/unit_cost da NOVA purchase (se houver) —
+        // nunca da purchase antiga do item.
+        await collectionUnitsRepository.createMany(id, missingUnits, null, newPurchaseForNewUnits)
         const withUnits = await get(id)
         if (!withUnits) {
           throw new Error('[CollectionRepository] Item atualizado, mas não foi possível recarregá-lo.')

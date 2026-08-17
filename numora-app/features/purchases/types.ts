@@ -3,6 +3,9 @@
  * Tipagens de domínio da feature de compras (transações de aquisição).
  */
 
+/** Etapa 14.3 — ver `check_purchase_confirmed_immutable` (banco): `confirmed` trava os campos financeiros contra edição. Nenhuma UI leva uma purchase a `confirmed`/`cancelled` ainda — todo dado hoje nasce e permanece `draft`. */
+export type PurchaseStatus = 'draft' | 'confirmed' | 'cancelled'
+
 export interface Purchase {
   id: string
   userId: string
@@ -14,6 +17,19 @@ export interface Purchase {
   notes: string | null
   createdAt: string
   updatedAt: string
+  status: PurchaseStatus
+  /**
+   * Etapa 14.1-R2 §11 — detalhamento OPCIONAL de `totalPrice`, nunca um
+   * substituto. `null` quando não detalhado (100% do dado hoje) — o
+   * rateio por exemplar trata `totalPrice` inteiro como `itemsAmount`
+   * nesse caso. Nenhuma UI escreve estes campos ainda (Etapa 14.3).
+   */
+  itemsAmount: number | null
+  shippingAmount: number | null
+  insuranceAmount: number | null
+  taxAmount: number | null
+  discountAmount: number | null
+  confirmedAt: string | null
 }
 
 /**

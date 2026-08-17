@@ -7,7 +7,7 @@
  * não escolhe o dono do registro.
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { Purchase, PurchaseInput } from '@/features/purchases/types'
+import type { Purchase, PurchaseInput, PurchaseStatus } from '@/features/purchases/types'
 
 export interface PurchasesRepository {
   list(): Promise<Purchase[]>
@@ -28,6 +28,13 @@ interface PurchaseRow {
   notes: string | null
   created_at: string
   updated_at: string
+  status: PurchaseStatus
+  items_amount: number | null
+  shipping_amount: number | null
+  insurance_amount: number | null
+  tax_amount: number | null
+  discount_amount: number | null
+  confirmed_at: string | null
 }
 
 function toPurchase(row: PurchaseRow): Purchase {
@@ -42,6 +49,13 @@ function toPurchase(row: PurchaseRow): Purchase {
     notes: row.notes,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    status: row.status,
+    itemsAmount: row.items_amount,
+    shippingAmount: row.shipping_amount,
+    insuranceAmount: row.insurance_amount,
+    taxAmount: row.tax_amount,
+    discountAmount: row.discount_amount,
+    confirmedAt: row.confirmed_at,
   }
 }
 
