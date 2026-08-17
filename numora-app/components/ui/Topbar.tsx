@@ -22,11 +22,13 @@ const PAGE_TITLES: Record<string, string> = {
 export interface TopbarProps {
   onMenuClick: () => void
   userLabel: string | null
+  /** Etapa 15.3: sobrepõe o lookup por `PAGE_TITLES` — usado pelo Admin Control Center, cujas rotas não existem nesse mapa. Omitido = comportamento de sempre. */
+  title?: string
 }
 
-export function Topbar({ onMenuClick, userLabel }: TopbarProps) {
+export function Topbar({ onMenuClick, userLabel, title }: TopbarProps) {
   const pathname = usePathname()
-  const pageTitle = PAGE_TITLES[pathname] ?? ''
+  const pageTitle = title ?? PAGE_TITLES[pathname] ?? ''
 
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4 sm:px-6">

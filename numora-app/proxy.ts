@@ -24,18 +24,27 @@
  * /dashboard). Esse comportamento já existe no client em
  * app/login/page.tsx, que valida a sessão de verdade via supabase-js
  * antes de redirecionar — sem risco de loop.
+ *
+ * Etapa 15.3 (Admin Control Center): `/admin` ganhou o mesmo atalho de UX
+ * — só a presença do cookie. A autorização real (role owner/admin) nunca
+ * poderia viver aqui (este arquivo não pode importar `@supabase/ssr`, ver
+ * acima) — ela é validada em `app/admin/layout.tsx`
+ * (`features/admin/access.ts`), no servidor, contra `profiles.role`.
  */
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
 const AUTH_COOKIE_PREFIX = 'sb-iebttmvrjgwtvibuauxr-auth-token'
+const PROTECTED_PREFIXES = ['/dashboard', '/admin']
 
 export function proxy(request: NextRequest) {
   const isLoggedIn = request.cookies
     .getAll()
     .some((cookie) => cookie.name.startsWith(AUTH_COOKIE_PREFIX))
 
-  if (!isLoggedIn && request.nextUrl.pathname.startsWith('/dashboard')) {
+  const isProtectedPath = PROTECTED_PREFIXES.some((prefix) => request.nextUrl.pathname.startsWith(prefix))
+
+  if (!isLoggedIn && isProtectedPath) {
     return NextResponse.redirect(new URL('/login', request.url))
   }
 
@@ -43,5 +52,5 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/dashboard/:path*'],
+  matcher: ['/dashboard/:path*', '/admin/:path*'],
 }
