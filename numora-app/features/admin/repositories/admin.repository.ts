@@ -18,11 +18,22 @@
  * `app/dashboard/page.tsx`. Este repositório existe só para a superfície
  * que precisa de estado no client: listagem paginada/filtrada de membros e
  * as mutações de cortesia.
+ *
+ * `getOwnRole()` (Etapa 15.5): diferente dos demais métodos, não exige
+ * nenhuma role administrativa — lê a PRÓPRIA `role` via a mesma policy
+ * `profiles_select_own` que já permite a qualquer usuário ler sua própria
+ * linha (usada por `requireAdmin()` no servidor). Existe para uma
+ * necessidade puramente de UX: `app/dashboard/layout.tsx` (compartilhado
+ * por TODO usuário autenticado, não só admins) precisa saber se mostra o
+ * item "Painel Administrativo" na Sidebar/badge na Topbar. Nunca é a
+ * barreira de segurança — `/admin/*` continua protegido só por
+ * `requireAdmin()` (servidor) e `is_platform_admin()` (banco).
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type {
   AdminMember,
   AdminMembersPage,
+  AdminRole,
   BenefitGrant,
   GrantCourtesyInput,
   ListMembersParams,
@@ -33,6 +44,8 @@ export interface AdminRepository {
   grantCourtesy(input: GrantCourtesyInput): Promise<BenefitGrant>
   /** Encontra e revoga a concessão ativa mais recente do usuário. Lança erro se não houver nenhuma. */
   revokeActiveCourtesy(userId: string): Promise<void>
+  /** `null` quando não há sessão ou a role não pôde ser lida — chamador deve tratar como "sem privilégio administrativo". */
+  getOwnRole(): Promise<AdminRole | null>
 }
 
 interface AdminListMembersRow {
@@ -185,6 +198,24 @@ export function createSupabaseAdminRepository(): AdminRepository {
       if (logError) {
         throw new Error(`[AdminRepository] Cortesia revogada, mas falha ao registrar auditoria: ${logError.message}`)
       }
+    },
+
+    async getOwnRole() {
+      const {
+        data: { user },
+      } = await supabase.auth.getUser()
+
+      if (!user) {
+        return null
+      }
+
+      const { data, error } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+
+      if (error || !data) {
+        return null
+      }
+
+      return data.role as AdminRole
     },
   }
 }

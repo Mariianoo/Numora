@@ -18,6 +18,7 @@ import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
+import { Button } from '@/components/ui/Button'
 import { ErrorState } from '@/components/ui/ErrorState'
 
 interface AdminMetricsRow {
@@ -81,17 +82,24 @@ export default async function AdminDashboardPage() {
 
           <section className="flex flex-col gap-4">
             <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">Receita</p>
-            <Card className="flex items-center gap-4 p-5">
-              <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
-                <TrendingUp className="size-[18px]" aria-hidden />
+            <Card className="flex flex-col gap-4 p-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="flex items-start gap-4">
+                <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-accent">
+                  <TrendingUp className="size-[18px]" aria-hidden />
+                </div>
+                <div>
+                  <p className="text-base font-semibold text-text-primary">Stripe ainda não configurado</p>
+                  <p className="mt-1 text-sm text-text-secondary">
+                    Configure o Stripe para começar a receber assinaturas e acompanhar receitas reais.
+                  </p>
+                  <p className="mt-1 text-xs text-text-secondary/70">
+                    Nenhum dado de receita é fabricado — este card só passa a mostrar números reais quando o Stripe Billing for integrado (fora do escopo desta etapa).
+                  </p>
+                </div>
               </div>
-              <div>
-                <p className="text-sm font-medium text-text-secondary">Receita</p>
-                <p className="mt-1 text-base font-semibold text-text-primary">Stripe não configurado</p>
-                <p className="mt-1 text-xs text-text-secondary">
-                  Nenhum dado de receita é fabricado — este card só passa a mostrar números reais quando o Stripe Billing for integrado (fora do escopo desta etapa).
-                </p>
-              </div>
+              <Button variant="secondary" size="sm" disabled className="shrink-0">
+                Configurar pagamentos
+              </Button>
             </Card>
           </section>
 
