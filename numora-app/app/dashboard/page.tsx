@@ -38,6 +38,26 @@
  * daqui só porque o item foi para a lixeira depois. `totalInvested`/
  * "Resumo da coleção" continuam com a semântica antiga (coleção atual),
  * sem nenhuma alteração de comportamento.
+ *
+ * Etapa 15.2 (migração das leituras financeiras — auditoria Etapa 15.1):
+ * as 4 queries antigas de `purchases`/`collection_items!inner` enxergavam
+ * só a PRIMEIRA compra de cada item (via `collection_items.purchase_id`,
+ * campo legado 1-para-1) — uma emissão com 2+ compras ficava com
+ * "Investido"/"Número de compras"/"Ticket médio"/"Aquisições" mostrando
+ * só a primeira. A fonte de verdade por exemplar (`collection_units.
+ * purchase_id`/`unit_cost`, Etapa 14.3) substitui essas queries por 2
+ * consultas a `collection_units` — uma para o escopo "Resumo" (só
+ * exemplares de itens ativos: Investido, Valor médio, Número de compras,
+ * Ticket médio, Última aquisição) e outra para o escopo "Histórico"
+ * (preserva a regra da Etapa 13.3: inclui exemplares de itens na lixeira,
+ * exclui só compras 100% órfãs). `AcquisitionPurchaseRow`/
+ * `selectRecentAcquisitions`/`computeMonthlyAcquisitionValue`/
+ * `computeMonthlyAcquisitionQuantity`/`computeTicketMedio` continuam
+ * exatamente como antes — a nova `groupUnitsByPurchase` (lib/stats)
+ * reconstrói o mesmo formato "uma linha por compra" a partir de
+ * exemplares, então essas funções não precisaram mudar. Distribuições
+ * (país/metal/conservação/status) inalteradas — seguem 100% de
+ * `collection_items`/`collection_units`, sem relação com `purchases`.
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
@@ -74,23 +94,17 @@ import {
   selectRecentAcquisitions,
   computeMonthlyAcquisitionValue,
   computeMonthlyAcquisitionQuantity,
+  groupUnitsByPurchase,
   type CollectionItemStatsRow,
-  type PurchaseStatsRow,
   type CollectionItemDistributionRow,
   type CollectionUnitDistributionRow,
-  type AcquisitionPurchaseRow,
+  type AcquisitionUnitRow,
 } from '@/lib/stats/collection-stats'
 import { formatDateOnly } from '@/lib/format/date'
 import { DashboardErrorState } from './DashboardErrorState'
 import { DistributionCard } from './DistributionCard'
 import { AcquisitionsList } from './AcquisitionsList'
 import { MonthlySeriesChart } from './MonthlySeriesChart'
-
-interface LastPurchaseRow {
-  total_price: number
-  seller_name: string | null
-  purchase_date: string | null
-}
 
 interface DashboardItemRow {
   quantity: number
@@ -99,6 +113,29 @@ interface DashboardItemRow {
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
   collection_units: { status: string; grade_id: string | null; grades: { label: string } | null }[]
+}
+
+/**
+ * Etapa 15.2 — 1 linha por exemplar ATIVO (item não excluído/lixeira),
+ * usada para Investido/Valor médio/Número de compras/Ticket médio/Última
+ * aquisição. `purchase_id`/`purchases` ficam `null` quando o exemplar não
+ * tem compra vinculada (cost_type unknown/gift/trade) — `unit_cost`
+ * também é sempre `null` nesse caso, então não altera a soma de
+ * investido; só é excluído do agrupamento por compra (`groupUnitsByPurchase`,
+ * que exige `purchase_id` não-nulo).
+ */
+interface DashboardActiveUnitRow {
+  unit_cost: number | null
+  purchase_id: string | null
+  collection_item_id: string
+  collection_items: { id: string; denomination: string; deleted_at: string | null }
+  purchases: {
+    id: string
+    total_price: number
+    purchase_date: string | null
+    seller_name: string | null
+    created_at: string
+  } | null
 }
 
 function getGreeting(): string {
@@ -118,7 +155,7 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
-  const [itemsResult, purchasesResult, lastPurchaseResult, acquisitionsResult, profileResult] = await Promise.all([
+  const [itemsResult, activeUnitsResult, historyUnitsResult, profileResult] = await Promise.all([
     // Etapa 13.1: embeds de `countries`/`metals`/`collection_units(grades)`
     // adicionados para as distribuições — mesma query única de sempre,
     // sem N+1 (PostgREST resolve os embeds no próprio Postgres).
@@ -128,33 +165,33 @@ export default async function DashboardPage() {
         'quantity, country_code, metal_code, countries ( name, flag_emoji ), metals!metal_code ( name ), collection_units ( status, grade_id, grades ( label ) )',
       )
       .is('deleted_at', null),
-    // `collection_items!inner(id)` + filtro no embed = EXISTS: só traz a
-    // purchase se houver ao menos 1 collection_item ATIVO vinculado (Etapa
-    // Lixeira). Uma purchase compartilhada por vários itens continua
-    // aparecendo aqui uma única vez (o embed vira array aninhado, não
-    // duplica a linha de purchases) — sem N+1, uma query só.
-    supabase.from('purchases').select('total_price, collection_items!inner(id)').is('collection_items.deleted_at', null),
+    // Etapa 15.2 — escopo "Resumo": só exemplares de itens ATIVOS
+    // (`collection_items!inner` + filtro = EXISTS, mesma regra de sempre
+    // do resumo). Serve Investido (soma de `unit_cost`), Valor médio,
+    // Número de compras/Ticket médio (compras distintas destes
+    // exemplares) e Última aquisição (a mais recente entre elas) — as 4
+    // métricas de uma vez só, sem N+1: cada exemplar já traz seu item e
+    // sua compra aninhados na mesma viagem ao banco.
     supabase
-      .from('purchases')
-      .select('total_price, seller_name, purchase_date, collection_items!inner(id)')
-      .is('collection_items.deleted_at', null)
-      .order('created_at', { ascending: false })
-      .limit(1)
-      .maybeSingle(),
-    // Etapa 13.2/13.3: `!inner` SEM `.is('deleted_at', null)` — exige
-    // "existe pelo menos 1 collection_item" (ativo OU na lixeira), não
-    // "existe pelo menos 1 ativo". Histórico de aquisições continua
-    // incluindo compras cujo item só está na lixeira (recuperável), mas
-    // some quando TODOS os itens da compra foram excluídos
-    // definitivamente (linha apagada do banco — auditoria Etapa 13.3,
-    // Casos A/E). Mesmo padrão de embed único, sem N+1: cada compra traz
-    // seus `collection_items` aninhados numa única viagem ao banco.
-    supabase
-      .from('purchases')
+      .from('collection_units')
       .select(
-        'id, total_price, purchase_date, seller_name, created_at, collection_items!inner(id, denomination, quantity, deleted_at)',
+        'unit_cost, purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases ( id, total_price, purchase_date, seller_name, created_at )',
       )
-      .order('created_at', { ascending: false }),
+      .is('collection_items.deleted_at', null),
+    // Etapa 15.2 — escopo "Histórico": preserva a regra da Etapa 13.3
+    // (`!inner` SEM filtro de `deleted_at` = "existe pelo menos 1 exemplar",
+    // ativo OU na lixeira), agora a nível de EXEMPLAR em vez de item. Uma
+    // compra sem nenhum `collection_unit` restante (todos os itens
+    // excluídos definitivamente) simplesmente não aparece aqui — sem
+    // precisar de lógica extra de exclusão (auditoria Etapa 13.3, Casos
+    // A/E). `.not('purchase_id', 'is', null)` exclui só exemplares sem
+    // compra vinculada (não representam uma aquisição a listar).
+    supabase
+      .from('collection_units')
+      .select(
+        'purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases!inner ( id, total_price, purchase_date, seller_name, created_at )',
+      )
+      .not('purchase_id', 'is', null),
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
   ])
 
@@ -163,23 +200,36 @@ export default async function DashboardPage() {
   // mascaramento aqui (nenhum dos 4 resultados tinha `.error` checado).
   // Cada bloco (resumo/coleção vs. última aquisição) falha de forma
   // independente, preservando os que carregaram com sucesso.
-  const hasStatsError = Boolean(itemsResult.error || purchasesResult.error)
-  const hasLastPurchaseError = Boolean(lastPurchaseResult.error)
-  const hasAcquisitionsError = Boolean(acquisitionsResult.error)
+  //
+  // Etapa 15.2: a seção "Histórico de aquisições" (StatCards + gráficos +
+  // lista) mostra um único estado de erro (nunca dado parcialmente
+  // incorreto) mesmo dependendo de 2 queries agora (`activeUnitsResult`
+  // para Número de compras/Ticket médio, `historyUnitsResult` para
+  // Aquisições recentes/gráficos mensais) — se qualquer uma falhar, a
+  // seção inteira mostra erro.
+  const hasStatsError = Boolean(itemsResult.error || activeUnitsResult.error)
+  const hasLastPurchaseError = Boolean(activeUnitsResult.error)
+  const hasAcquisitionsError = Boolean(activeUnitsResult.error || historyUnitsResult.error)
 
   const dashboardItems = (itemsResult.data ?? []) as unknown as DashboardItemRow[]
   const items = dashboardItems as CollectionItemStatsRow[]
-  const purchases = (purchasesResult.data ?? []) as PurchaseStatsRow[]
-  const lastPurchase = lastPurchaseResult.data as LastPurchaseRow | null
-  const acquisitionPurchases = (acquisitionsResult.data ?? []) as unknown as AcquisitionPurchaseRow[]
+  const activeUnits = (activeUnitsResult.data ?? []) as unknown as DashboardActiveUnitRow[]
+  const historyUnits = (historyUnitsResult.data ?? []) as unknown as AcquisitionUnitRow[]
   const profileName = (profileResult.data as { name: string | null } | null)?.name
 
   const displayName = profileName?.trim() || user.email?.split('@')[0] || 'colecionador'
 
-  const { totalItems, totalUnits, countryCount, totalInvested } = hasStatsError
-    ? { totalItems: 0, totalUnits: 0, countryCount: 0, totalInvested: 0 }
-    : computeCollectionStats(items, purchases)
+  // Etapa 15.2: `totalItems`/`totalUnits`/`countryCount` continuam vindo
+  // de `collection_items` (inalterado). `computeCollectionStats` também
+  // devolve `totalInvested` somando `purchases.total_price` — cálculo que
+  // o Perfil (`ProfileRepository.getOwnStats`) ainda usa sem alteração,
+  // mas que tem a mesma limitação que motivou esta etapa (só enxerga a
+  // 1ª compra de cada item). O Dashboard passa `[]` no lugar de
+  // `purchases` aqui — não precisa mais desse campo, porque calcula
+  // `totalInvested` abaixo a partir de `collection_units.unit_cost`.
+  const { totalItems, totalUnits, countryCount } = computeCollectionStats(items, [])
 
+  const totalInvested = hasStatsError ? 0 : activeUnits.reduce((sum, unit) => sum + (unit.unit_cost ?? 0), 0)
   const averageAcquisitionCost = hasStatsError ? null : computeAverageAcquisitionCost(totalInvested, totalUnits)
 
   // Etapa 13.1: país/metal são atributos da MOEDA (collection_item);
@@ -205,14 +255,30 @@ export default async function DashboardPage() {
   const gradeDistribution = hasStatsError ? [] : computeGradeDistribution(unitDistributionRows)
   const statusDistribution = hasStatsError ? [] : computeStatusDistribution(unitDistributionRows)
 
-  // Etapa 13.2: número de compras = número de OPERAÇÕES (uma linha em
-  // `purchases`), nunca a soma de exemplares — uma compra com vários
-  // itens continua contando 1.
-  const numeroCompras = hasAcquisitionsError ? 0 : acquisitionPurchases.length
-  const ticketMedio = hasAcquisitionsError ? null : computeTicketMedio(acquisitionPurchases)
-  const recentAcquisitions = hasAcquisitionsError ? [] : selectRecentAcquisitions(acquisitionPurchases, 5)
-  const monthlyAcquisitionValue = hasAcquisitionsError ? [] : computeMonthlyAcquisitionValue(acquisitionPurchases)
-  const monthlyAcquisitionQuantity = hasAcquisitionsError ? [] : computeMonthlyAcquisitionQuantity(acquisitionPurchases)
+  // Etapa 15.2: exemplares ativos COM compra vinculada, agrupados de volta
+  // em "uma linha por compra" — fonte de Número de compras/Ticket
+  // médio/Última aquisição (escopo "Resumo", só itens ativos).
+  const activeAcquisitionRows = activeUnits.filter(
+    (unit) => unit.purchase_id !== null && unit.purchases !== null,
+  ) as unknown as AcquisitionUnitRow[]
+  const activePurchases = groupUnitsByPurchase(activeAcquisitionRows)
+
+  // Etapa 13.2/15.2: número de compras = número de OPERAÇÕES distintas
+  // (nunca a soma de exemplares) — uma compra com vários exemplares
+  // continua contando 1. Fonte agora é `collection_units.purchase_id`
+  // (não mais `collection_items.purchase_id`), então uma emissão com 2+
+  // compras conta as 2, não só a primeira.
+  const numeroCompras = hasAcquisitionsError ? 0 : activePurchases.length
+  const ticketMedio = hasAcquisitionsError ? null : computeTicketMedio(activePurchases)
+  const lastAcquisition = hasLastPurchaseError ? null : (selectRecentAcquisitions(activePurchases, 1)[0] ?? null)
+
+  // Etapa 15.2: escopo "Histórico" — inclui exemplares de itens na
+  // lixeira (regra da Etapa 13.3, preservada), fonte separada da do
+  // "Resumo" acima.
+  const historyPurchases = groupUnitsByPurchase(historyUnits)
+  const recentAcquisitions = hasAcquisitionsError ? [] : selectRecentAcquisitions(historyPurchases, 5)
+  const monthlyAcquisitionValue = hasAcquisitionsError ? [] : computeMonthlyAcquisitionValue(historyPurchases)
+  const monthlyAcquisitionQuantity = hasAcquisitionsError ? [] : computeMonthlyAcquisitionQuantity(historyPurchases)
 
   const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
   const compactCurrencyFormatter = new Intl.NumberFormat('pt-BR', {
@@ -404,7 +470,7 @@ export default async function DashboardPage() {
             <h2 className="text-base font-semibold text-text-primary">Última aquisição</h2>
             {hasLastPurchaseError ? (
               <p className="mt-4 text-sm text-danger">Não foi possível carregar sua última aquisição.</p>
-            ) : lastPurchase === null ? (
+            ) : lastAcquisition === null ? (
               <div className="mt-4">
                 <EmptyState
                   icon={ShoppingBag}
@@ -416,14 +482,14 @@ export default async function DashboardPage() {
               <div className="mt-4 flex items-center justify-between rounded-lg border border-border bg-background px-4 py-3.5">
                 <div>
                   <p className="font-semibold text-text-primary">
-                    {currencyFormatter.format(Number(lastPurchase.total_price))}
+                    {currencyFormatter.format(lastAcquisition.totalPrice)}
                   </p>
                   <p className="text-sm text-text-secondary">
-                    {lastPurchase.seller_name ?? 'Vendedor não informado'}
+                    {lastAcquisition.sellerName ?? 'Vendedor não informado'}
                   </p>
                 </div>
-                {lastPurchase.purchase_date && (
-                  <p className="text-sm text-text-secondary">{formatDateOnly(lastPurchase.purchase_date)}</p>
+                {lastAcquisition.purchaseDate && (
+                  <p className="text-sm text-text-secondary">{formatDateOnly(lastAcquisition.purchaseDate)}</p>
                 )}
               </div>
             )}

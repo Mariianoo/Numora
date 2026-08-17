@@ -18,6 +18,17 @@
  * (`ProfileRepository.getOwnStats`) continua chamando exatamente a mesma
  * função com a mesma query enxuta de sempre. As novas funções vivem no
  * mesmo arquivo (mesma camada), nunca um pipeline de stats paralelo.
+ *
+ * Etapa 15.2 (migração das leituras financeiras do Dashboard para o modelo
+ * de custo por exemplar — Etapa 14.3): `computeCollectionStats` NÃO foi
+ * alterada — `totalInvested` continua somando `purchases.total_price`
+ * porque o Perfil ainda depende exatamente desse cálculo (fora do escopo
+ * desta etapa). O Dashboard parou de usar esse campo: ele soma
+ * `collection_units.unit_cost` diretamente (fonte de verdade por
+ * exemplar) e usa a nova `groupUnitsByPurchase` — abaixo — para
+ * reconstruir "uma linha por compra" a partir de exemplares individuais,
+ * em vez de a partir de `collection_items.purchase_id` (que só enxerga a
+ * primeira compra de cada item).
  */
 import { COLLECTION_UNIT_STATUS_EMOJI, COLLECTION_UNIT_STATUS_LABELS } from '@/features/collection-units/types'
 import type { CollectionUnitStatus } from '@/features/collection-units/types'
@@ -215,6 +226,71 @@ export interface AcquisitionPurchaseRow {
   seller_name: string | null
   created_at: string
   collection_items: AcquisitionCollectionItemRow[]
+}
+
+/**
+ * Etapa 15.2 — 1 linha por `collection_unit` (exemplar real), a fonte de
+ * verdade da Etapa 14.3. `purchase_id` aqui nunca é `null` — quem monta
+ * este array já filtrou os exemplares sem compra vinculada (cost_type
+ * unknown/gift/trade), que não representam uma "aquisição" a agrupar.
+ */
+export interface AcquisitionUnitRow {
+  purchase_id: string
+  collection_item_id: string
+  collection_items: { id: string; denomination: string; deleted_at: string | null }
+  purchases: {
+    id: string
+    total_price: number
+    purchase_date: string | null
+    seller_name: string | null
+    created_at: string
+  }
+}
+
+/**
+ * Reconstrói "uma linha por compra" a partir de exemplares individuais —
+ * substitui, para fins do Dashboard, o antigo caminho
+ * `collection_items.purchase_id` (que só enxergava a PRIMEIRA compra de
+ * cada item). O `quantity` de cada entrada em `collection_items` aqui
+ * representa quantos EXEMPLARES DESTA COMPRA especificamente vieram
+ * daquele item — não `collection_items.quantity` (total atual do item,
+ * que pode incluir exemplares de outras compras). Resultado tem o mesmo
+ * formato de `AcquisitionPurchaseRow` de sempre, então
+ * `selectRecentAcquisitions`/`computeMonthlyAcquisitionValue`/
+ * `computeMonthlyAcquisitionQuantity`/`computeTicketMedio` continuam
+ * funcionando sem nenhuma alteração.
+ */
+export function groupUnitsByPurchase(units: AcquisitionUnitRow[]): AcquisitionPurchaseRow[] {
+  const purchases = new Map<string, AcquisitionPurchaseRow>()
+
+  for (const unit of units) {
+    let purchase = purchases.get(unit.purchase_id)
+    if (!purchase) {
+      purchase = {
+        id: unit.purchases.id,
+        total_price: Number(unit.purchases.total_price),
+        purchase_date: unit.purchases.purchase_date,
+        seller_name: unit.purchases.seller_name,
+        created_at: unit.purchases.created_at,
+        collection_items: [],
+      }
+      purchases.set(unit.purchase_id, purchase)
+    }
+
+    const existingItem = purchase.collection_items.find((item) => item.id === unit.collection_item_id)
+    if (existingItem) {
+      existingItem.quantity += 1
+    } else {
+      purchase.collection_items.push({
+        id: unit.collection_item_id,
+        denomination: unit.collection_items.denomination,
+        quantity: 1,
+        deleted_at: unit.collection_items.deleted_at,
+      })
+    }
+  }
+
+  return Array.from(purchases.values())
 }
 
 /**
