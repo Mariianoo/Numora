@@ -29,6 +29,7 @@ import {
 } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
 import type { CoinImageKind } from '@/features/coin-images/types'
+import { trackItemAdded, trackFirstItemAdded } from '@/lib/analytics/events/product-events'
 import type {
   CatalogReference,
   CollectionItem,
@@ -325,6 +326,40 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       const withUnits = await get(created.id)
       if (!withUnits) {
         throw new Error('[CollectionRepository] Item criado, mas não foi possível recarregá-lo.')
+      }
+
+      // Etapa 15.10.4 — analytics é best-effort e roda só DEPOIS que o item
+      // já está criado com sucesso (nunca antes, nunca bloqueia a operação
+      // de negócio). "Primeiro item" = verdade do banco, não contador
+      // client-side: uma única query COUNT (head:true, sem trazer linhas)
+      // depois do insert — se o total de collection_items deste usuário é
+      // exatamente 1, este é o primeiro item que ele já criou (mesmo padrão
+      // de `collection-units.repository.ts` para "último exemplar"). Conta
+      // TODOS os itens do usuário, sem filtro de `deleted_at` — um item
+      // criado e depois excluído/restaurado não faz o usuário "ativar" de
+      // novo. Falha aqui (rede, etc.) nunca deve impedir a criação do item
+      // já concluída — por isso todo este bloco está isolado em try/catch,
+      // mesmo padrão de `features/auth/repositories/auth.repository.ts`.
+      //
+      // Race condition conhecida e aceita (não mitigada nesta etapa): duas
+      // criações concorrentes do PRIMEIRO item do mesmo usuário (ex.: duas
+      // abas) podem ambas ler count=2 e nenhuma disparar `first_item_added`,
+      // ou em casos raríssimos de timing ambas lerem count=1. Como é só
+      // analytics (nunca fonte de verdade de negócio), esse desvio é
+      // aceitável — a ativação REAL do usuário já aconteceu no banco de
+      // qualquer forma, independente deste evento.
+      try {
+        const { count } = await supabase
+          .from('collection_items')
+          .select('id', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+
+        trackItemAdded()
+        if (count === 1) {
+          trackFirstItemAdded()
+        }
+      } catch {
+        // Nunca bloqueia a criação do item — analytics é best-effort.
       }
 
       return withUnits

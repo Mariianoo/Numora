@@ -101,6 +101,7 @@ import {
   type AcquisitionUnitRow,
 } from '@/lib/stats/collection-stats'
 import { formatDateOnly } from '@/lib/format/date'
+import { DashboardViewTracker } from '@/components/analytics/DashboardViewTracker'
 import { DashboardErrorState } from './DashboardErrorState'
 import { DistributionCard } from './DistributionCard'
 import { AcquisitionsList } from './AcquisitionsList'
@@ -291,6 +292,7 @@ export default async function DashboardPage() {
 
   return (
     <div className="flex flex-col gap-10">
+      <DashboardViewTracker />
       <PageHeader title={`${getGreeting()}, ${displayName}`} description="Veja como está sua coleção." />
 
       <section className="flex flex-col gap-4">

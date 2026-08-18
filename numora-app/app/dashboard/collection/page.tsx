@@ -51,6 +51,7 @@ import {
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
+import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import {
@@ -945,6 +946,18 @@ export default function CollectionPage() {
   const [sortBy, setSortBy] = useState<SortOption>('recent')
   const [groupBy, setGroupBy] = useState<GroupOption>('none')
   const [viewMode, setViewMode] = useState<ViewMode>('grid')
+
+  // Etapa 15.10.4 — dispara uma vez por montagem da página (não por
+  // busca/filtro/troca de modo de visualização, que só alteram estado
+  // local, nunca remontam este componente). `collectionViewedFiredRef`
+  // evita duplicação sob React StrictMode (dev) — ver comentário
+  // equivalente em components/analytics/LandingViewTracker.tsx.
+  const collectionViewedFiredRef = useRef(false)
+  useEffect(() => {
+    if (collectionViewedFiredRef.current) return
+    collectionViewedFiredRef.current = true
+    trackCollectionViewed()
+  }, [])
 
   /**
    * Signed URLs das miniaturas dos cards — só do exemplar PRINCIPAL de
