@@ -11,7 +11,13 @@
 
 export type AdminRole = 'user' | 'seller' | 'admin' | 'owner' | 'support' | 'finance'
 
-export type PlanTier = 'free' | 'premium'
+/**
+ * Etapa 15.9.1-R3: substitui o antigo `PlanTier` ('free'|'premium', preso
+ * ao binário de `profiles.plan_tier`). Agora reflete o slug real de
+ * `plans` (free/pro/premium) — o mesmo valor que `effective_plans()`
+ * (Etapa 15.9.1-R2) resolve, nunca inventado aqui.
+ */
+export type PlanSlug = 'free' | 'pro' | 'premium'
 
 /**
  * Métricas agregadas de `admin_dashboard_metrics()` — todas reais,
@@ -39,7 +45,8 @@ export interface AdminMember {
   email: string | null
   name: string | null
   username: string | null
-  planTier: PlanTier
+  /** Plano EFETIVO (Etapa 15.9.1-R3) — vem de `effective_plans()` via `admin_list_members()`, nunca de `profiles.plan_tier`. */
+  planSlug: PlanSlug
   role: AdminRole
   passportPublic: boolean
   createdAt: string
@@ -56,7 +63,7 @@ export interface AdminMembersPage {
 export interface ListMembersParams {
   limit?: number
   offset?: number
-  planFilter?: PlanTier | null
+  planFilter?: PlanSlug | null
   search?: string | null
 }
 

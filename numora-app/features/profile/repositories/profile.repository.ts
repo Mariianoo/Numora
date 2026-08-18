@@ -41,9 +41,16 @@
  * deste repositório. A leitura pública do Passport (`/passport/[username]`)
  * não passa por aqui — é a RPC `get_public_passport`, chamada
  * diretamente pela página (Server Component), sem repositório.
+ *
+ * `getOwnEffectivePlan()` (Etapa 15.9.1-R3): `PROFILE_SELECT` não inclui
+ * mais `plan_tier` (legado, nunca sincronizado por subscription/courtesy —
+ * achado da Etapa 15.9.1-R1) — o plano exibido no Perfil vem desta função,
+ * que só chama `get_effective_plan(auth.uid())` (RPC, Etapa 15.9.1-R2,
+ * fonte única courtesy > subscription > free) e mapeia o retorno. Nenhuma
+ * regra de prioridade é reimplementada aqui.
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { Profile, ProfileUpdateInput } from '@/features/profile/types'
+import type { Profile, ProfileUpdateInput, EffectivePlan } from '@/features/profile/types'
 import { normalizeUsername, validateUsernameFormat } from '@/features/profile/username'
 import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow, type CollectionStats } from '@/lib/stats/collection-stats'
 
@@ -52,12 +59,13 @@ export interface ProfileRepository {
   updateOwnProfile(input: ProfileUpdateInput): Promise<Profile>
   getOwnStats(): Promise<CollectionStats>
   setPassportPublic(value: boolean): Promise<Profile>
+  getOwnEffectivePlan(): Promise<EffectivePlan>
 }
 
 const PASSPORT_REQUIRES_USERNAME_MESSAGE = 'Defina um nome de usuário antes de ativar seu Passport público.'
 
 const PROFILE_SELECT =
-  'id, numora_id, email, name, username, avatar_url, country_code, plan_tier, passport_public, collector_since, created_at'
+  'id, numora_id, email, name, username, avatar_url, country_code, passport_public, collector_since, created_at'
 
 interface ProfileRow {
   id: string
@@ -67,7 +75,6 @@ interface ProfileRow {
   username: string | null
   avatar_url: string | null
   country_code: string | null
-  plan_tier: 'free' | 'premium'
   passport_public: boolean
   collector_since: string
   created_at: string
@@ -82,10 +89,27 @@ function toProfile(row: ProfileRow): Profile {
     username: row.username,
     avatarUrl: row.avatar_url,
     countryCode: row.country_code,
-    planTier: row.plan_tier,
     passportPublic: row.passport_public,
     collectorSince: row.collector_since,
     createdAt: row.created_at,
+  }
+}
+
+interface EffectivePlanRow {
+  plan_slug: string
+  source: 'default' | 'subscription' | 'courtesy'
+  subscription_status: string | null
+  courtesy_type: string | null
+  courtesy_expires_at: string | null
+}
+
+function toEffectivePlan(row: EffectivePlanRow): EffectivePlan {
+  return {
+    planSlug: row.plan_slug,
+    source: row.source,
+    subscriptionStatus: row.subscription_status,
+    courtesyType: row.courtesy_type,
+    courtesyExpiresAt: row.courtesy_expires_at,
   }
 }
 
@@ -209,5 +233,17 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     return toProfile(data as ProfileRow)
   }
 
-  return { getOwnProfile, updateOwnProfile, getOwnStats, setPassportPublic }
+  async function getOwnEffectivePlan(): Promise<EffectivePlan> {
+    const userId = await requireUserId()
+
+    const { data, error } = await supabase.rpc('get_effective_plan', { p_user_id: userId }).single()
+
+    if (error) {
+      throw new Error(`[ProfileRepository] Falha ao buscar plano efetivo: ${error.message}`)
+    }
+
+    return toEffectivePlan(data as EffectivePlanRow)
+  }
+
+  return { getOwnProfile, updateOwnProfile, getOwnStats, setPassportPublic, getOwnEffectivePlan }
 }

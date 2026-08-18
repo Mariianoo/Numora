@@ -15,6 +15,16 @@
  * ativar é reforçado em 3 camadas: aqui (UX imediata), no repositório
  * (`setPassportPublic`), e no banco (`CHECK
  * chk_profiles_passport_requires_username`, a garantia real).
+ *
+ * Etapa 15.9.1-R3: o card "Plano" não lê mais `profile.planTier`
+ * (`profiles.plan_tier`, removido de `Profile` — legado, nunca
+ * sincronizado). Busca `effectivePlan` via
+ * `profileRepository.getOwnEffectivePlan()` (RPC `get_effective_plan()`,
+ * Etapa 15.9.1-R2, fonte única courtesy > subscription > free) em paralelo
+ * com o resto do carregamento. Mostra o plano (Free/Pro/Premium) sempre
+ * pela fonte efetiva e, quando a origem não é o default, um rótulo
+ * discreto ("Cortesia"/"Assinatura") — nunca reimplementa a prioridade
+ * aqui, só formata (`lib/plans/plan-display.ts`).
  */
 'use client'
 
@@ -23,11 +33,12 @@ import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy } from 'lucide
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
-import type { Profile } from '@/features/profile/types'
+import type { Profile, EffectivePlan } from '@/features/profile/types'
 import type { Country } from '@/features/collection/types'
 import type { CollectionStats } from '@/lib/stats/collection-stats'
 import { formatDateOnly, formatTimestampDate } from '@/lib/format/date'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { planLabel, planBadgeTone, planSourceLabel } from '@/lib/plans/plan-display'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
@@ -46,6 +57,7 @@ const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', cu
 
 export default function ProfilePage() {
   const [profile, setProfile] = useState<Profile | null>(null)
+  const [effectivePlan, setEffectivePlan] = useState<EffectivePlan | null>(null)
   const [stats, setStats] = useState<CollectionStats | null>(null)
   const [countries, setCountries] = useState<Country[]>([])
 
@@ -68,9 +80,15 @@ export default function ProfilePage() {
   // react-hooks/set-state-in-effect); ver mesmo comentário em
   // app/dashboard/collection/page.tsx.
   const loadProfileData = useCallback(() => {
-    return Promise.all([profileRepository.getOwnProfile(), profileRepository.getOwnStats(), referenceRepository.listCountries()])
-      .then(([profileResult, statsResult, countriesResult]) => {
+    return Promise.all([
+      profileRepository.getOwnProfile(),
+      profileRepository.getOwnEffectivePlan(),
+      profileRepository.getOwnStats(),
+      referenceRepository.listCountries(),
+    ])
+      .then(([profileResult, effectivePlanResult, statsResult, countriesResult]) => {
         setProfile(profileResult)
+        setEffectivePlan(effectivePlanResult)
         setStats(statsResult)
         setCountries(countriesResult)
         setName(profileResult.name ?? '')
@@ -234,9 +252,14 @@ export default function ProfilePage() {
               <div className="mt-4 flex flex-col gap-3">
                 <div className="flex items-center justify-between">
                   <p className="text-sm text-text-secondary">Plano</p>
-                  <Badge tone={profile.planTier === 'premium' ? 'accent' : 'neutral'}>
-                    {profile.planTier === 'premium' ? 'Premium' : 'Free'}
-                  </Badge>
+                  <div className="flex items-center gap-1.5">
+                    {effectivePlan && planSourceLabel(effectivePlan.source) && (
+                      <Badge tone="neutral">{planSourceLabel(effectivePlan.source)}</Badge>
+                    )}
+                    <Badge tone={effectivePlan ? planBadgeTone(effectivePlan.planSlug) : 'neutral'}>
+                      {effectivePlan ? planLabel(effectivePlan.planSlug) : '—'}
+                    </Badge>
+                  </div>
                 </div>
                 <div className="flex items-center justify-between">
                   <p className="text-sm text-text-secondary">Membro desde</p>

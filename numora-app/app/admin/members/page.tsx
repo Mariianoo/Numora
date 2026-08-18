@@ -5,11 +5,18 @@
  * Toda leitura passa por `admin_list_members()` (RPC paginada no banco,
  * nunca "select * de todos os usuários" — Etapa 15.3 §21/§22).
  *
- * Filtros mostrados: só os que têm campo real por trás (`plan_tier`,
- * cortesia ativa derivada de `benefit_grants`). "Trial"/"Parceiro"/
- * "Cancelado"/"Bloqueado" foram deliberadamente OMITIDOS — não existe hoje
- * nenhuma coluna de status que os sustente, e a etapa pede explicitamente
- * para nunca inventar um filtro sem campo real por trás (ver relatório).
+ * Filtros mostrados: só os que têm campo real por trás (plano efetivo,
+ * cortesia ativa). "Trial"/"Parceiro"/"Cancelado"/"Bloqueado" foram
+ * deliberadamente OMITIDOS — não existe hoje nenhuma coluna de status que
+ * os sustente, e a etapa pede explicitamente para nunca inventar um filtro
+ * sem campo real por trás (ver relatório).
+ *
+ * Etapa 15.9.1-R3: a coluna "Plano" não vem mais de `profiles.plan_tier`
+ * (binário free/premium) — `admin_list_members()` agora resolve o plano
+ * EFETIVO de cada membro via `effective_plans()` (Etapa 15.9.1-R2, fonte
+ * única courtesy > subscription > free, set-based — 1 query para a página
+ * inteira, nunca 1 chamada por membro). O filtro "Plano" ganhou a opção
+ * "Pro", antes impossível de representar.
  */
 'use client'
 
@@ -27,7 +34,8 @@ import { ErrorState } from '@/components/ui/ErrorState'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
-import type { AdminMember, AdminRole, BenefitType, PlanTier } from '@/features/admin/types'
+import type { AdminMember, AdminRole, BenefitType, PlanSlug } from '@/features/admin/types'
+import { planLabel, planBadgeTone } from '@/lib/plans/plan-display'
 import { GrantCourtesyModal } from './GrantCourtesyModal'
 
 const adminRepository = createSupabaseAdminRepository()
@@ -50,7 +58,7 @@ export default function AdminMembersPage() {
   const [totalCount, setTotalCount] = useState(0)
   const [page, setPage] = useState(0)
   const [search, setSearch] = useState('')
-  const [planFilter, setPlanFilter] = useState<'all' | PlanTier>('all')
+  const [planFilter, setPlanFilter] = useState<'all' | PlanSlug>('all')
   const [courtesyOnly, setCourtesyOnly] = useState(false)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -159,11 +167,12 @@ export default function AdminMembersPage() {
             value={planFilter}
             onChange={(event) => {
               setPage(0)
-              setPlanFilter(event.target.value as 'all' | PlanTier)
+              setPlanFilter(event.target.value as 'all' | PlanSlug)
             }}
           >
             <option value="all">Todos</option>
             <option value="free">Free</option>
+            <option value="pro">Pro</option>
             <option value="premium">Premium</option>
           </Select>
         </div>
@@ -206,9 +215,7 @@ export default function AdminMembersPage() {
                     <td className="px-4 py-3 text-text-secondary">{member.email ?? '—'}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center gap-1.5">
-                        <Badge tone={member.planTier === 'premium' ? 'accent' : 'neutral'}>
-                          {member.planTier === 'premium' ? 'Premium' : 'Free'}
-                        </Badge>
+                        <Badge tone={planBadgeTone(member.planSlug)}>{planLabel(member.planSlug)}</Badge>
                         {member.courtesyActive && <Badge tone="success">Cortesia</Badge>}
                       </div>
                     </td>

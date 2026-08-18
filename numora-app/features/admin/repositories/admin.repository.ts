@@ -54,7 +54,8 @@ interface AdminListMembersRow {
   email: string | null
   name: string | null
   username: string | null
-  plan_tier: 'free' | 'premium'
+  /** Etapa 15.9.1-R3: vem de effective_plans() dentro da RPC, não mais de profiles.plan_tier. */
+  plan_slug: AdminMember['planSlug']
   role: AdminMember['role']
   passport_public: boolean
   created_at: string
@@ -70,7 +71,7 @@ function toAdminMember(row: AdminListMembersRow): AdminMember {
     email: row.email,
     name: row.name,
     username: row.username,
-    planTier: row.plan_tier,
+    planSlug: row.plan_slug,
     role: row.role,
     passportPublic: row.passport_public,
     createdAt: row.created_at,
