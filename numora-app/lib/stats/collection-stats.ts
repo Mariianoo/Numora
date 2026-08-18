@@ -349,14 +349,17 @@ export interface MonthlyAcquisitionEntry {
   value: number
 }
 
-const MONTH_LABELS_PT_BR = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
+// Exportados (Etapa 15.9.1): mesmo bucketing "AAAA-MM" reutilizado por
+// lib/stats/owner-center-stats.ts (crescimento de membros) — evita duplicar
+// o formato de chave/rótulo de mês em dois arquivos.
+export const MONTH_LABELS_PT_BR = ['Jan', 'Fev', 'Mar', 'Abr', 'Mai', 'Jun', 'Jul', 'Ago', 'Set', 'Out', 'Nov', 'Dez']
 
-function formatMonthKeyLabel(key: string): string {
+export function formatMonthKeyLabel(key: string): string {
   const [year, month] = key.split('-')
   return `${MONTH_LABELS_PT_BR[Number(month) - 1]}/${year.slice(2)}`
 }
 
-function shiftMonthKey(base: Date, offsetMonths: number): string {
+export function shiftMonthKey(base: Date, offsetMonths: number): string {
   const shifted = new Date(base.getFullYear(), base.getMonth() + offsetMonths, 1)
   return `${shifted.getFullYear()}-${String(shifted.getMonth() + 1).padStart(2, '0')}`
 }

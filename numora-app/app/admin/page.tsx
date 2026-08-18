@@ -9,17 +9,45 @@
  * dado de receita/pagamento é fabricado: Stripe não está configurado nesta
  * etapa, e os cards "Pagantes"/"Receita" mostram esse estado explicitamente
  * em vez de um número inventado.
+ *
+ * Etapa 15.9.1 (OWNER CENTER — Visão Geral): tudo acima desta linha
+ * continua idêntico para ADMIN e OWNER (zero regressão). Uma seção nova,
+ * `<OwnerCommercialSection>`, só é buscada/renderizada quando
+ * `requireAdmin().role === 'owner'` — comparação direta com a mesma coluna
+ * que `is_platform_owner()` (banco) verifica; não é uma segunda definição
+ * de OWNER, é o mesmo dado (`profiles.role`) já em mãos por já termos
+ * chamado `requireAdmin()` aqui (deduplicado via `cache()` com a chamada
+ * que `app/admin/layout.tsx` já faz — ver features/admin/access.ts). ADMIN
+ * nunca dispara as 4 queries comerciais novas: elas só rodam dentro do
+ * `if (role === 'owner')`.
+ *
+ * Etapa 15.9.1-R2 (Fonte Única de Plano Efetivo): a distribuição Free/Pro/
+ * Premium não é mais calculada aqui a partir de `benefit_grants`/
+ * `subscriptions` brutos — vem pronta de `admin_plan_distribution()` (RPC
+ * OWNER-only, banco), a única fonte da prioridade courtesy > subscription >
+ * free. `subscriptions` continua sendo buscada (agora só a coluna
+ * `status`) exclusivamente para o card "Assinaturas por status", que nunca
+ * dependeu dessa prioridade.
  */
 import { Users, UserCheck, CreditCard, Wallet, Gift, TrendingUp, Coins, Layers, ShoppingCart, IdCard, Image as ImageIcon } from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { clientEnv } from '@/lib/env.server'
+import { requireAdmin } from '@/features/admin/access'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
 import { Button } from '@/components/ui/Button'
 import { ErrorState } from '@/components/ui/ErrorState'
+import { OwnerCommercialSection } from './OwnerCommercialSection'
+import {
+  mapPlanDistribution,
+  computeSubscriptionStatusDistribution,
+  computeMemberGrowth,
+  type OwnerCenterPlanRow,
+  type OwnerCenterPlanDistributionRow,
+} from '@/lib/stats/owner-center-stats'
 
 interface AdminMetricsRow {
   total_members: number
@@ -43,10 +71,43 @@ function projectRefFromUrl(url: string): string {
 }
 
 export default async function AdminDashboardPage() {
+  const actor = await requireAdmin()
   const supabase = await getSupabaseServerClient()
   const { data, error } = await supabase.rpc('admin_dashboard_metrics').single()
   const metrics = data as AdminMetricsRow | null
   const loadedAt = new Date()
+
+  const isOwner = actor.role === 'owner'
+
+  let ownerCommercialProps: {
+    planDistribution: ReturnType<typeof mapPlanDistribution>
+    subscriptionStatusDistribution: ReturnType<typeof computeSubscriptionStatusDistribution>
+    subscriptionsTotal: number
+    activePlansCount: number
+    memberGrowth: ReturnType<typeof computeMemberGrowth>
+  } | null = null
+
+  if (isOwner && metrics) {
+    const [plansResult, distributionResult, subscriptionsResult, profilesResult] = await Promise.all([
+      supabase.from('plans').select('id, slug, name, active'),
+      supabase.rpc('admin_plan_distribution'),
+      supabase.from('subscriptions').select('status'),
+      supabase.from('profiles').select('created_at'),
+    ])
+
+    const plans = (plansResult.data ?? []) as OwnerCenterPlanRow[]
+    const planDistributionRows = (distributionResult.data ?? []) as OwnerCenterPlanDistributionRow[]
+    const subscriptions = (subscriptionsResult.data ?? []) as { status: string }[]
+    const profileCreatedAtValues = (profilesResult.data ?? []).map((p) => p.created_at as string)
+
+    ownerCommercialProps = {
+      planDistribution: mapPlanDistribution(plans, planDistributionRows),
+      subscriptionStatusDistribution: computeSubscriptionStatusDistribution(subscriptions),
+      subscriptionsTotal: subscriptions.length,
+      activePlansCount: plans.filter((p) => p.active).length,
+      memberGrowth: computeMemberGrowth(profileCreatedAtValues),
+    }
+  }
 
   return (
     <div className="flex flex-col gap-10">
@@ -137,6 +198,8 @@ export default async function AdminDashboardPage() {
               Métricas de custo/uso do projeto Supabase (storage, database, egress) não estão disponíveis aqui — exigiriam a API de billing/management do Supabase, que nunca deve ser chamada com credenciais expostas ao browser. Ver relatório desta etapa para a avaliação completa.
             </p>
           </section>
+
+          {ownerCommercialProps && <OwnerCommercialSection {...ownerCommercialProps} />}
         </>
       )}
     </div>

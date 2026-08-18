@@ -18,7 +18,18 @@
  * `proxy.ts` continua sendo só o atalho de UX (redireciona para /login se
  * não há cookie de sessão) — o matcher foi estendido para incluir
  * `/admin/:path*`, mas ele não sabe nada sobre roles.
+ *
+ * `getSessionAndRole` (Etapa 15.9.1): a busca em si (auth.getUser() +
+ * profiles.role) é envolvida em `cache()` do React — dedupe por request,
+ * não um cache entre requests. `app/admin/layout.tsx` já chama
+ * `requireAdmin()` para todo `/admin/*`; quando uma página também precisa
+ * saber a role (ex.: `app/admin/page.tsx` decidindo se mostra a seção
+ * comercial exclusiva do OWNER), chamar `requireAdmin()` de novo reaproveita
+ * o mesmo resultado desta função dentro do mesmo request — sem 2ª consulta
+ * ao Supabase. `requireAdmin()` continua com a mesma assinatura/
+ * comportamento público (redirects), só a busca interna foi extraída.
  */
+import { cache } from 'react'
 import { redirect } from 'next/navigation'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
@@ -32,6 +43,19 @@ export interface AdminActor {
   role: AdminRole
 }
 
+const getSessionAndRole = cache(async (): Promise<{ userId: string; email: string | null; role: AdminRole | undefined } | null> => {
+  const supabase = await getSupabaseServerClient()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
+
+  if (!user) return null
+
+  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
+
+  return { userId: user.id, email: user.email ?? null, role: profile?.role as AdminRole | undefined }
+})
+
 /**
  * Redireciona para /login (sem sessão) ou /dashboard (logado, mas sem role
  * administrativa — redirect seguro, não revela a existência de níveis de
@@ -39,22 +63,15 @@ export interface AdminActor {
  * owner/admin de verdade.
  */
 export async function requireAdmin(): Promise<AdminActor> {
-  const supabase = await getSupabaseServerClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  const session = await getSessionAndRole()
 
-  if (!user) {
+  if (!session) {
     redirect('/login')
   }
 
-  const { data: profile } = await supabase.from('profiles').select('role').eq('id', user.id).maybeSingle()
-
-  const role = profile?.role as AdminRole | undefined
-
-  if (!role || !ADMIN_ACCESS_ROLES.includes(role)) {
+  if (!session.role || !ADMIN_ACCESS_ROLES.includes(session.role)) {
     redirect('/dashboard')
   }
 
-  return { id: user.id, email: user.email ?? null, role }
+  return { id: session.userId, email: session.email, role: session.role }
 }
