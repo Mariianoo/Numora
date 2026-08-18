@@ -27,7 +27,7 @@ import { ErrorState } from '@/components/ui/ErrorState'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
-import type { AdminMember, BenefitType, PlanTier } from '@/features/admin/types'
+import type { AdminMember, AdminRole, BenefitType, PlanTier } from '@/features/admin/types'
 import { GrantCourtesyModal } from './GrantCourtesyModal'
 
 const adminRepository = createSupabaseAdminRepository()
@@ -55,9 +55,23 @@ export default function AdminMembersPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
+  // Etapa 15.8-R4: só OWNER concede/revoga cortesia (RLS de `benefit_grants`
+  // restrita a is_platform_owner() desde a R3) — `role == null` (ainda
+  // carregando) é tratado como "sem privilégio", mesmo padrão de
+  // components/ui/Sidebar.tsx, para nunca piscar o botão para ADMIN.
+  const [role, setRole] = useState<AdminRole | null>(null)
+  const isOwner = role === 'owner'
+
   const [grantTarget, setGrantTarget] = useState<AdminMember | null>(null)
   const [revokeTarget, setRevokeTarget] = useState<AdminMember | null>(null)
   const [isRevoking, setIsRevoking] = useState(false)
+
+  useEffect(() => {
+    adminRepository
+      .getOwnRole()
+      .then(setRole)
+      .catch(() => setRole(null))
+  }, [])
 
   // Encadeamento `.then()` (não async/await) de propósito — mesmo padrão já
   // usado em app/dashboard/collection/page.tsx (ver comentário lá,
@@ -204,7 +218,9 @@ export default function AdminMembersPage() {
                       {member.lastSignInAt ? dateTimeFormatter.format(new Date(member.lastSignInAt)) : 'Nunca'}
                     </td>
                     <td className="px-4 py-3">
-                      {member.courtesyActive ? (
+                      {!isOwner ? (
+                        <span className="text-text-secondary">—</span>
+                      ) : member.courtesyActive ? (
                         <IconButton
                           icon={Ban}
                           aria-label="Revogar cortesia"
