@@ -19,10 +19,37 @@
  * nunca país). Nota: este UPDATE roda em toda passagem por aqui, não só
  * na primeira — se um dia existir tela de editar país, este trecho
  * precisa parar de sobrescrever incondicionalmente.
+ *
+ * Etapa 15.10.2: este é o ponto real (não o client) onde a maioria dos
+ * cadastros persiste a atribuição de first-touch — "Confirm email"
+ * habilitado significa que `signUp()` (client) quase nunca tem sessão
+ * imediata, então o cookie `numora_attribution` (se existir — só existe
+ * quando o visitante concedeu `consent.marketing` antes do cadastro)
+ * chega até aqui, gravado pelo próprio navegador na requisição GET (não é
+ * httpOnly, mas isso não importa aqui: lemos via `cookies()` do lado do
+ * servidor de qualquer forma). `upsert(..., ignoreDuplicates: true)`
+ * nunca sobrescreve — mesma garantia usada em
+ * features/auth/repositories/auth.repository.ts. Falha aqui nunca
+ * bloqueia o login (try/catch silencioso) — atribuição é enriquecimento,
+ * não caminho crítico de autenticação.
  */
 import { NextResponse } from 'next/server'
+import { cookies } from 'next/headers'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
+
+const ATTRIBUTION_COOKIE = 'numora_attribution'
+
+interface StoredAttribution {
+  source: string | null
+  medium: string | null
+  campaign: string | null
+  term: string | null
+  content: string | null
+  landingPath: string
+  referrer: string | null
+  capturedAt: string
+}
 
 export async function GET(request: Request) {
   const { searchParams, origin } = new URL(request.url)
@@ -45,7 +72,40 @@ export async function GET(request: Request) {
         })
         .eq('id', user.id)
 
-      return NextResponse.redirect(`${origin}/dashboard`)
+      const cookieStore = await cookies()
+      const attributionCookie = cookieStore.get(ATTRIBUTION_COOKIE)?.value
+      let attributionPersisted = false
+
+      if (attributionCookie) {
+        try {
+          const attribution = JSON.parse(decodeURIComponent(attributionCookie)) as StoredAttribution
+
+          const { error: attributionError } = await supabase.from('user_acquisition').upsert(
+            {
+              user_id: user.id,
+              first_source: attribution.source ?? null,
+              first_medium: attribution.medium ?? null,
+              first_campaign: attribution.campaign ?? null,
+              first_term: attribution.term ?? null,
+              first_content: attribution.content ?? null,
+              landing_path: attribution.landingPath ?? null,
+              referrer: attribution.referrer ?? null,
+              captured_at: attribution.capturedAt ?? new Date().toISOString(),
+            },
+            { onConflict: 'user_id', ignoreDuplicates: true },
+          )
+
+          attributionPersisted = !attributionError
+        } catch {
+          // JSON inválido/cookie corrompido — nunca bloqueia o login.
+        }
+      }
+
+      const response = NextResponse.redirect(`${origin}/dashboard`)
+      if (attributionPersisted) {
+        response.cookies.delete(ATTRIBUTION_COOKIE)
+      }
+      return response
     }
   }
 

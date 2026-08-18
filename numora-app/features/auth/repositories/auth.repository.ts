@@ -8,12 +8,23 @@
  * `signInWithGoogle` é mantido no código, sem uso na UI — Google Cloud e
  * o provider no Supabase continuam configurados; reativar no futuro é só
  * voltar a chamar este método a partir da UI, sem mudança de arquitetura.
+ *
+ * Etapa 15.10.2: `signUp()` persiste a atribuição de first-touch (se o
+ * cookie existir — nunca cria dado quando o visitante não consentiu
+ * marketing antes do cadastro) só no ramo `hasSession` (mesmo raciocínio
+ * já usado para `country_code`: se "Confirm email" estiver desabilitado,
+ * a sessão já existe aqui e o usuário nunca passa por
+ * app/auth/callback/route.ts, que é quem cobre o caso normal — e-mail
+ * pendente de confirmação). `upsert(..., { onConflict: 'user_id',
+ * ignoreDuplicates: true })` nunca sobrescreve uma linha já existente —
+ * a mesma garantia de first-touch usada nos dois caminhos possíveis.
  */
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { AuthSession, AuthUser, SignUpInput, SignUpResult } from '@/features/auth/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { getStoredAttribution, clearStoredAttribution } from '@/lib/analytics/attribution'
 
 export interface AuthRepository {
   getSession(): Promise<AuthSession | null>
@@ -159,6 +170,39 @@ export function createSupabaseAuthRepository(): AuthRepository {
       // profile em si, que continua exclusivamente a cargo do trigger.
       if (hasSession && input.countryCode && data.user) {
         await supabase.from('profiles').update({ country_code: input.countryCode }).eq('id', data.user.id)
+      }
+
+      if (hasSession && data.user) {
+        const attribution = getStoredAttribution()
+        if (attribution) {
+          // Falha aqui nunca deve impedir o cadastro — atribuição é
+          // enriquecimento, não caminho crítico. try/catch (não só o
+          // `error` de retorno) porque uma exceção de rede/timeout no
+          // upsert não pode propagar e derrubar um signUp() que já teve
+          // sucesso no GoTrue — mesmo padrão de app/auth/callback/route.ts.
+          try {
+            const { error: attributionError } = await supabase.from('user_acquisition').upsert(
+              {
+                user_id: data.user.id,
+                first_source: attribution.source,
+                first_medium: attribution.medium,
+                first_campaign: attribution.campaign,
+                first_term: attribution.term,
+                first_content: attribution.content,
+                landing_path: attribution.landingPath,
+                referrer: attribution.referrer,
+                captured_at: attribution.capturedAt,
+              },
+              { onConflict: 'user_id', ignoreDuplicates: true },
+            )
+
+            if (!attributionError) {
+              clearStoredAttribution()
+            }
+          } catch {
+            // Exceção de rede/timeout — nunca bloqueia o cadastro.
+          }
+        }
       }
 
       return { hasSession }
