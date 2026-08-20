@@ -49,6 +49,7 @@ import { StatCard } from '@/components/ui/StatCard'
 import { Avatar } from '@/components/ui/Avatar'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { cn } from '@/components/ui/utils'
+import { ConsentPreferencesModal } from '@/components/analytics/ConsentPreferencesModal'
 
 const profileRepository = createSupabaseProfileRepository()
 const referenceRepository = createSupabaseReferenceRepository()
@@ -70,6 +71,8 @@ export default function ProfilePage() {
   const [isTogglingPassport, setIsTogglingPassport] = useState(false)
   const [passportError, setPassportError] = useState<string | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
+
+  const [isPreferencesOpen, setIsPreferencesOpen] = useState(false)
 
   const [name, setName] = useState('')
   const [username, setUsername] = useState('')
@@ -321,9 +324,27 @@ export default function ProfilePage() {
                 </div>
               )}
             </Card>
+
+            <Card className="p-6">
+              <h2 className="text-base font-semibold text-text-primary">Privacidade</h2>
+              <p className="mt-2 text-sm text-text-secondary">
+                Controle o que o Numora pode usar para analytics e para identificar a origem de cadastros.
+              </p>
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className="mt-4"
+                onClick={() => setIsPreferencesOpen(true)}
+              >
+                Gerenciar preferências de cookies
+              </Button>
+            </Card>
           </div>
         </div>
       </section>
+
+      <ConsentPreferencesModal isOpen={isPreferencesOpen} onClose={() => setIsPreferencesOpen(false)} />
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">Estatísticas</p>
