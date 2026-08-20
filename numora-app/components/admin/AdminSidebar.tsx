@@ -12,9 +12,18 @@
  * Rotas com `disabled: true` existem de verdade (arquivo/rota real, gated
  * pela mesma `requireAdmin()`), mas mostram conteúdo "Em breve" — não são
  * links falsos, só ainda sem funcionalidade completa (Etapa 15.3 §4/§16).
+ *
+ * "Numora Health" (Etapa 15.10.7): único item de `ADMIN_NAV` marcado
+ * `ownerOnly` — a barreira REAL continua sendo `app/admin/health/page.tsx`
+ * (`requireAdmin()` + `role !== 'owner'` → redirect) e `is_platform_owner()`
+ * dentro de `admin_health_snapshot()` (banco); esconder o link para ADMIN
+ * aqui é só UX (evita levar a um redirect), reaproveitando `getOwnRole()`
+ * — já existente, já usado por `app/dashboard/layout.tsx` para decidir se
+ * mostra "Painel Administrativo" — nenhum mecanismo de autorização novo.
  */
 'use client'
 
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import {
@@ -27,21 +36,28 @@ import {
   Bell,
   ScrollText,
   Settings,
+  Activity,
 } from 'lucide-react'
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
+import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
 import { Badge } from '@/components/ui/Badge'
 import { cn } from '@/components/ui/utils'
+
+const adminRepository = createSupabaseAdminRepository()
 
 interface AdminNavItem {
   href: string
   label: string
   icon: typeof LayoutDashboard
+  /** Só renderizado quando `getOwnRole() === 'owner'` — ver comentário do arquivo. */
+  ownerOnly?: boolean
 }
 
 export const ADMIN_NAV: AdminNavItem[] = [
   { href: '/admin', label: 'Visão geral', icon: LayoutDashboard },
   { href: '/admin/members', label: 'Membros', icon: Users },
+  { href: '/admin/health', label: 'Numora Health', icon: Activity, ownerOnly: true },
   { href: '/admin/subscriptions', label: 'Assinaturas', icon: CreditCard },
   { href: '/admin/transactions', label: 'Transações', icon: Receipt },
   { href: '/admin/revenue', label: 'Receita', icon: TrendingUp },
@@ -79,6 +95,15 @@ export interface AdminSidebarProps {
 
 export function AdminSidebar({ isMobileOpen, onClose }: AdminSidebarProps) {
   const pathname = usePathname()
+  const [isOwner, setIsOwner] = useState(false)
+
+  useEffect(() => {
+    adminRepository.getOwnRole().then((role) => {
+      setIsOwner(role === 'owner')
+    })
+  }, [])
+
+  const visibleNav = ADMIN_NAV.filter((item) => !item.ownerOnly || isOwner)
 
   const content = (
     <div className="flex h-full flex-col gap-6 p-4">
@@ -96,7 +121,7 @@ export function AdminSidebar({ isMobileOpen, onClose }: AdminSidebarProps) {
           Administração
         </p>
         <nav className="flex flex-col gap-1">
-          {ADMIN_NAV.map((item) => (
+          {visibleNav.map((item) => (
             <AdminNavLink key={item.href} item={item} pathname={pathname} />
           ))}
         </nav>
