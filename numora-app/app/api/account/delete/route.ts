@@ -1,0 +1,170 @@
+/**
+ * app/api/account/delete/route.ts
+ * Etapa 15.10.17B — orquestração server-side da exclusão voluntária da
+ * própria conta. Único Route Handler do projeto que usa a `service_role`
+ * (via lib/supabase/admin.ts) — todo o resto da aplicação usa `anon key`.
+ *
+ * Ordem (auditada e aprovada na etapa de planejamento):
+ *   1. Sessão real (cookie) → identifica o usuário, nunca aceita user_id do body.
+ *   2. Bloqueia `owner` usando is_platform_owner() na sessão real (auth.uid()
+ *      resolve corretamente aqui — client de sessão normal, não admin).
+ *   3. Bane a conta (auth.admin.updateUserById, ban_duration ~100 anos) —
+ *      bloqueio de login imediato, antes de qualquer dado ser tocado.
+ *   4. Lista e remove TODOS os objetos do usuário no bucket coin-images.
+ *      Storage.list() não é recursivo (confirmado na documentação oficial:
+ *      "pastas" são só prefixos, sem API de listagem em árvore) — como o
+ *      path é {user_id}/{collection_unit_id}/{kind}.webp (2 níveis), listamos
+ *      o primeiro nível e, para cada entrada sem `metadata` (= pasta, não
+ *      arquivo — mesmo critério usado no script oficial de migração de
+ *      Storage do Supabase), listamos o nível seguinte.
+ *   5. Chama delete_own_account_data(userId) — RPC SECURITY DEFINER,
+ *      EXECUTE só para service_role, bloqueia owner internamente também
+ *      (defesa em profundidade, Etapa 15.10.17B migration 3).
+ *   6. auth.admin.deleteUser(userId) — documentação oficial confirma que
+ *      isso FALHA se sobrar qualquer objeto de Storage do usuário; por isso
+ *      o passo 4 é obrigatório antes deste. "Não encontrado" é tratado como
+ *      sucesso (idempotência — 2ª chamada nunca falha).
+ *
+ * Cada etapa aborta e retorna erro se a anterior não teve certeza de
+ * sucesso — nunca prossegue "torcendo para dar certo". Nenhuma etapa
+ * reverte as anteriores (não há rollback cross-sistema possível entre
+ * GoTrue/Storage/Postgres) — a ordem escolhida minimiza o risco residual
+ * em vez de prometer atomicidade impossível (ver relatório da etapa).
+ */
+import { NextResponse } from 'next/server'
+
+import { getSupabaseServerClient } from '@/lib/supabase/server'
+import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+
+const COIN_IMAGES_BUCKET = 'coin-images'
+const BAN_DURATION = '876000h' // ~100 anos — bloqueio de login efetivamente permanente
+const LIST_PAGE_LIMIT = 1000
+
+interface StorageListEntry {
+  name: string
+  metadata: Record<string, unknown> | null
+}
+
+/**
+ * Lista todos os arquivos de um usuário no bucket, resolvendo o 2º nível
+ * (collection_unit_id) manualmente — ver comentário do arquivo sobre por
+ * que list() não é recursivo.
+ */
+async function listAllUserFiles(
+  adminClient: ReturnType<typeof getSupabaseAdminClient>,
+  userId: string,
+): Promise<string[]> {
+  const { data: firstLevel, error: firstLevelError } = await adminClient.storage
+    .from(COIN_IMAGES_BUCKET)
+    .list(userId, { limit: LIST_PAGE_LIMIT })
+
+  if (firstLevelError) {
+    throw new Error(`Falha ao listar arquivos do usuário: ${firstLevelError.message}`)
+  }
+
+  const paths: string[] = []
+
+  for (const entry of (firstLevel ?? []) as StorageListEntry[]) {
+    if (entry.metadata === null) {
+      // Entrada sem metadata = "pasta" (prefixo), não arquivo — precisa de
+      // mais um nível de list() para chegar aos arquivos de verdade.
+      const subPath = `${userId}/${entry.name}`
+      const { data: secondLevel, error: secondLevelError } = await adminClient.storage
+        .from(COIN_IMAGES_BUCKET)
+        .list(subPath, { limit: LIST_PAGE_LIMIT })
+
+      if (secondLevelError) {
+        throw new Error(`Falha ao listar arquivos em ${subPath}: ${secondLevelError.message}`)
+      }
+
+      for (const file of (secondLevel ?? []) as StorageListEntry[]) {
+        paths.push(`${subPath}/${file.name}`)
+      }
+    } else {
+      paths.push(`${userId}/${entry.name}`)
+    }
+  }
+
+  return paths
+}
+
+export async function POST() {
+  const sessionClient = await getSupabaseServerClient()
+
+  const {
+    data: { user },
+    error: userError,
+  } = await sessionClient.auth.getUser()
+
+  if (userError || !user) {
+    return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 })
+  }
+
+  const { data: isOwner, error: ownerCheckError } = await sessionClient.rpc('is_platform_owner')
+
+  if (ownerCheckError) {
+    return NextResponse.json({ error: 'Falha ao verificar permissões.' }, { status: 500 })
+  }
+
+  if (isOwner) {
+    return NextResponse.json(
+      { error: 'A conta do proprietário da plataforma não pode ser excluída por este fluxo.' },
+      { status: 403 },
+    )
+  }
+
+  const userId = user.id
+  const adminClient = getSupabaseAdminClient()
+
+  const { error: banError } = await adminClient.auth.admin.updateUserById(userId, {
+    ban_duration: BAN_DURATION,
+  })
+
+  if (banError) {
+    return NextResponse.json({ error: 'Falha ao iniciar a exclusão da conta.' }, { status: 500 })
+  }
+
+  let filePaths: string[]
+  try {
+    filePaths = await listAllUserFiles(adminClient, userId)
+  } catch {
+    return NextResponse.json(
+      { error: 'Falha ao localizar arquivos do usuário. A exclusão foi interrompida com segurança.' },
+      { status: 500 },
+    )
+  }
+
+  if (filePaths.length > 0) {
+    const { error: removeError } = await adminClient.storage.from(COIN_IMAGES_BUCKET).remove(filePaths)
+
+    if (removeError) {
+      return NextResponse.json(
+        { error: 'Falha ao remover arquivos do usuário. A exclusão foi interrompida com segurança.' },
+        { status: 500 },
+      )
+    }
+  }
+
+  const { error: rpcError } = await adminClient.rpc('delete_own_account_data', { p_user_id: userId })
+
+  if (rpcError) {
+    return NextResponse.json(
+      { error: 'Falha ao remover os dados da conta. A exclusão foi interrompida com segurança.' },
+      { status: 500 },
+    )
+  }
+
+  const { error: deleteUserError } = await adminClient.auth.admin.deleteUser(userId)
+
+  // "Usuário não encontrado" = já foi removido numa tentativa anterior —
+  // idempotente, não é falha. Qualquer outro erro continua sendo reportado
+  // (nunca mascarar um erro estrutural real como sucesso).
+  if (deleteUserError && deleteUserError.status !== 404) {
+    return NextResponse.json(
+      { error: 'Conta e dados removidos, mas houve falha ao finalizar no Auth. Contate o suporte.' },
+      { status: 500 },
+    )
+  }
+
+  return NextResponse.json({ success: true })
+}
