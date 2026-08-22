@@ -295,11 +295,34 @@ export default async function DashboardPage() {
       <DashboardViewTracker />
       <PageHeader title={`${getGreeting()}, ${displayName}`} description="Veja como está sua coleção." />
 
-      <section className="flex flex-col gap-4">
-        <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
-          Resumo da coleção
-        </p>
-        {hasStatsError ? (
+      {!hasStatsError && totalItems === 0 ? (
+        // Etapa 15.10.13: usuário sem coleção — prioriza ativação (uma
+        // única ação visível, sem scroll) em vez de métricas/gráficos/
+        // histórico zerados. `!hasStatsError` preserva a proteção da
+        // Etapa 12.4: uma falha de query nunca deve parecer "coleção
+        // vazia".
+        <Card className="p-8">
+          <EmptyState
+            icon={PackageOpen}
+            title="Comece a organizar sua coleção"
+            description="Adicione sua primeira moeda para começar a acompanhar sua coleção."
+            action={
+              <Link
+                href="/dashboard/collection"
+                className="inline-flex h-9 items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium text-background transition-colors hover:bg-accent-hover"
+              >
+                Adicionar minha primeira moeda
+              </Link>
+            }
+          />
+        </Card>
+      ) : (
+        <>
+          <section className="flex flex-col gap-4">
+            <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
+              Resumo da coleção
+            </p>
+            {hasStatsError ? (
           <DashboardErrorState
             title="Não foi possível carregar seu resumo"
             description="Ocorreu um problema ao carregar os dados da sua coleção."
@@ -498,6 +521,8 @@ export default async function DashboardPage() {
           </Card>
         </div>
       </section>
+        </>
+      )}
     </div>
   )
 }
