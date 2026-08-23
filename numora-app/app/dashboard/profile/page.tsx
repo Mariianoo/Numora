@@ -29,12 +29,16 @@
 'use client'
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
-import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy } from 'lucide-react'
+import { useRouter } from 'next/navigation'
+import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy, TriangleAlert } from 'lucide-react'
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
+import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
+import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
 import type { Profile, EffectivePlan } from '@/features/profile/types'
 import type { Country } from '@/features/collection/types'
+import type { AdminRole } from '@/features/admin/types'
 import type { CollectionStats } from '@/lib/stats/collection-stats'
 import { formatDateOnly, formatTimestampDate } from '@/lib/format/date'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
@@ -48,19 +52,28 @@ import { Badge } from '@/components/ui/Badge'
 import { StatCard } from '@/components/ui/StatCard'
 import { Avatar } from '@/components/ui/Avatar'
 import { ErrorState } from '@/components/ui/ErrorState'
+import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/components/ui/utils'
 import { ConsentPreferencesModal } from '@/components/analytics/ConsentPreferencesModal'
 
 const profileRepository = createSupabaseProfileRepository()
 const referenceRepository = createSupabaseReferenceRepository()
+const authRepository = createSupabaseAuthRepository()
+const adminRepository = createSupabaseAdminRepository()
+
+const DELETE_CONFIRMATION_WORD = 'EXCLUIR'
 
 const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
 export default function ProfilePage() {
+  const router = useRouter()
+
   const [profile, setProfile] = useState<Profile | null>(null)
   const [effectivePlan, setEffectivePlan] = useState<EffectivePlan | null>(null)
   const [stats, setStats] = useState<CollectionStats | null>(null)
   const [countries, setCountries] = useState<Country[]>([])
+  /** Etapa 15.10.18 — mesma fonte de verdade já usada pela Sidebar (`adminRepository.getOwnRole()`), nunca uma segunda definição de owner. Só decide o que a UI mostra; a proteção real continua no servidor (route.ts + RPC). */
+  const [ownRole, setOwnRole] = useState<AdminRole | null>(null)
 
   const [isLoading, setIsLoading] = useState(true)
   const [isSaving, setIsSaving] = useState(false)
@@ -78,6 +91,17 @@ export default function ProfilePage() {
   const [username, setUsername] = useState('')
   const [countryCode, setCountryCode] = useState('')
 
+  /**
+   * Etapa 15.10.18 — Zona de perigo (exclusão de conta). `isDeleteDialogOpen`
+   * só existe depois que `ownRole` já está resolvido (mesmo gate de
+   * `isLoading` da página inteira) — nunca há uma janela em que o botão
+   * aparece habilitado antes de saber se o usuário é owner.
+   */
+  const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false)
+  const [deleteConfirmationText, setDeleteConfirmationText] = useState('')
+  const [isDeleting, setIsDeleting] = useState(false)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+
   // `isLoading`/`loadError` não são resetados no início de propósito
   // (evita setState síncrono dentro do efeito de montagem abaixo —
   // react-hooks/set-state-in-effect); ver mesmo comentário em
@@ -88,12 +112,14 @@ export default function ProfilePage() {
       profileRepository.getOwnEffectivePlan(),
       profileRepository.getOwnStats(),
       referenceRepository.listCountries(),
+      adminRepository.getOwnRole(),
     ])
-      .then(([profileResult, effectivePlanResult, statsResult, countriesResult]) => {
+      .then(([profileResult, effectivePlanResult, statsResult, countriesResult, roleResult]) => {
         setProfile(profileResult)
         setEffectivePlan(effectivePlanResult)
         setStats(statsResult)
         setCountries(countriesResult)
+        setOwnRole(roleResult)
         setName(profileResult.name ?? '')
         setUsername(profileResult.username ?? '')
         setCountryCode(profileResult.countryCode ?? '')
@@ -163,6 +189,66 @@ export default function ProfilePage() {
     navigator.clipboard.writeText(url)
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
+  }
+
+  /**
+   * Etapa 15.10.18 — nunca fecha durante `isDeleting`: a única forma de
+   * fechar o Modal compartilhado é via `onClose` (Escape, clique no
+   * overlay, botão "Fechar", ou o botão "Cancelar" do footer aqui montado)
+   * — todos passam por esta função, então bloquear aqui bloqueia todos,
+   * sem precisar alterar `components/ui/Modal.tsx`.
+   */
+  function closeDeleteDialog() {
+    if (isDeleting) return
+    setIsDeleteDialogOpen(false)
+    setDeleteConfirmationText('')
+    setDeleteError(null)
+  }
+
+  /**
+   * Etapa 15.10.18 — chama exclusivamente POST /api/account/delete, sem
+   * body e sem `user_id` (o endpoint identifica o usuário só pela sessão).
+   * Depois de um 200 confirmado, a exclusão já aconteceu no servidor —
+   * uma falha de `signOut()` local NUNCA é tratada como falha da exclusão
+   * (o `catch` é intencionalmente silencioso) e o redirect acontece de
+   * qualquer forma, sem espera artificial.
+   */
+  async function handleDeleteAccount() {
+    setDeleteError(null)
+    setIsDeleting(true)
+
+    let response: Response
+    try {
+      response = await fetch('/api/account/delete', { method: 'POST' })
+    } catch {
+      setDeleteError('Não foi possível excluir sua conta agora. Tente novamente.')
+      setIsDeleting(false)
+      return
+    }
+
+    const body: { success?: boolean; error?: string } | null = await response.json().catch(() => null)
+
+    if (!response.ok || !body?.success) {
+      if (response.status === 401) {
+        setIsDeleteDialogOpen(false)
+        router.replace('/login')
+        router.refresh()
+        return
+      }
+
+      setDeleteError(body?.error ?? 'Não foi possível excluir sua conta agora. Tente novamente.')
+      setIsDeleting(false)
+      return
+    }
+
+    try {
+      await authRepository.signOut()
+    } catch {
+      // Nunca tratado como falha da exclusão — a conta já foi removida no servidor.
+    }
+
+    router.replace('/')
+    router.refresh()
   }
 
   if (isLoading) {
@@ -360,6 +446,93 @@ export default function ProfilePage() {
           />
         </div>
       </section>
+
+      <section className="flex flex-col gap-4">
+        <p className="text-[11px] font-semibold tracking-wider text-danger/70 uppercase">Zona de perigo</p>
+        <Card className="border-danger/30 p-6">
+          <div className="flex items-start gap-3">
+            <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-danger/10 text-danger">
+              <TriangleAlert className="size-[18px]" aria-hidden />
+            </div>
+            <div className="flex-1">
+              <h2 className="text-base font-semibold text-text-primary">Excluir minha conta</h2>
+              <p className="mt-2 text-sm text-text-secondary">
+                Remove permanentemente seu perfil, suas moedas e exemplares, as imagens da sua coleção,
+                seu Passport público e os demais dados vinculados à conta (compras, vendas e atribuição).
+                Esta ação é permanente e não pode ser desfeita.
+              </p>
+
+              {ownRole === 'owner' && (
+                <p className="mt-4 text-sm text-text-secondary">
+                  Contas com papel de proprietário da plataforma não podem ser excluídas por este fluxo.
+                </p>
+              )}
+
+              <Button
+                type="button"
+                variant="danger"
+                className="mt-4"
+                disabled={ownRole === 'owner'}
+                onClick={() => setIsDeleteDialogOpen(true)}
+              >
+                Excluir minha conta
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </section>
+
+      {/*
+        Etapa 15.10.18 — `Modal` usado diretamente (não `ConfirmDialog`):
+        `ConfirmDialog` não expõe uma forma de desabilitar o botão de
+        confirmação além de `isLoading` (ver components/ui/ConfirmDialog.tsx)
+        — esta confirmação precisa ficar desabilitada até o texto digitado
+        bater exatamente com "EXCLUIR", uma condição extra que o wrapper
+        não suporta. Adicionar isso ao ConfirmDialog estaria fora do escopo
+        autorizado desta etapa, então o footer é montado aqui, sobre o
+        mesmo `Modal` compartilhado (foco/Escape/Tab-trap idênticos), sem
+        alterar nenhum arquivo fora de app/dashboard/profile/page.tsx.
+      */}
+      <Modal
+        isOpen={isDeleteDialogOpen}
+        onClose={closeDeleteDialog}
+        title="Excluir minha conta"
+        description="Esta ação é permanente e não pode ser desfeita."
+        footer={
+          <>
+            <Button type="button" variant="secondary" onClick={closeDeleteDialog} disabled={isDeleting}>
+              Cancelar
+            </Button>
+            <Button
+              type="button"
+              variant="danger"
+              onClick={handleDeleteAccount}
+              isLoading={isDeleting}
+              disabled={deleteConfirmationText !== DELETE_CONFIRMATION_WORD}
+            >
+              Excluir permanentemente
+            </Button>
+          </>
+        }
+      >
+        <div className="flex flex-col gap-4">
+          <div className="flex size-10 items-center justify-center rounded-full bg-danger/10 text-danger">
+            <TriangleAlert className="size-5" aria-hidden />
+          </div>
+          <p className="text-sm font-medium text-danger">Todos os seus dados serão removidos definitivamente.</p>
+          <p className="text-sm text-text-secondary">
+            Para confirmar, digite <span className="font-semibold text-text-primary">EXCLUIR</span> abaixo.
+          </p>
+          <Input
+            label="Confirmação"
+            value={deleteConfirmationText}
+            onChange={(e) => setDeleteConfirmationText(e.target.value)}
+            disabled={isDeleting}
+            autoComplete="off"
+          />
+          {deleteError && <p className="text-sm text-danger">{deleteError}</p>}
+        </div>
+      </Modal>
     </div>
   )
 }
