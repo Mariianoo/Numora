@@ -34,7 +34,18 @@
 import { NextResponse } from 'next/server'
 import type { NextRequest } from 'next/server'
 
-const AUTH_COOKIE_PREFIX = 'sb-iebttmvrjgwtvibuauxr-auth-token'
+// O prefixo do cookie de sessão embute o project ref do Supabase
+// (`sb-<project-ref>-auth-token`) — hardcoded aqui até a Etapa 15.10.21E
+// (só o ref de PRODUCTION), o que fazia este arquivo confundir "deslogado"
+// com "logado num projeto Supabase diferente" (ex.: DEVELOPMENT, em
+// ambiente local). Lido de `process.env.NEXT_PUBLIC_SUPABASE_URL`
+// diretamente (sem importar `@/lib/env` nem qualquer módulo do projeto —
+// continua valendo a regra do topo deste arquivo) para acompanhar
+// automaticamente qual projeto está ativo em cada ambiente.
+const SUPABASE_PROJECT_REF = (process.env.NEXT_PUBLIC_SUPABASE_URL ?? '').match(
+  /^https:\/\/([^.]+)\.supabase\.co/,
+)?.[1]
+const AUTH_COOKIE_PREFIX = `sb-${SUPABASE_PROJECT_REF}-auth-token`
 const PROTECTED_PREFIXES = ['/dashboard', '/admin']
 
 export function proxy(request: NextRequest) {
