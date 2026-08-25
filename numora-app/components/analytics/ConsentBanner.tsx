@@ -26,6 +26,7 @@
 'use client'
 
 import { useEffect, useState } from 'react'
+import Link from 'next/link'
 
 import { setConsent } from '@/lib/analytics/consent'
 import { Button } from '@/components/ui/Button'
@@ -66,7 +67,11 @@ export function ConsentBanner() {
           <div className="mx-auto flex w-full max-w-6xl flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
             <p className="text-sm text-text-secondary">
               Usamos cookies para entender como o Numora é usado e de onde vêm os cadastros. Você decide o que
-              aceitar — nada é ativado sem sua permissão.
+              aceitar — nada é ativado sem sua permissão.{' '}
+              <Link href="/cookies" className="underline underline-offset-2 hover:text-accent">
+                Saiba mais
+              </Link>
+              .
             </p>
             <div className="flex flex-col gap-2 sm:flex-row sm:shrink-0">
               <Button type="button" variant="ghost" size="sm" onClick={() => setIsPreferencesOpen(true)}>

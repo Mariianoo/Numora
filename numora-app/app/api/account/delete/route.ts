@@ -161,7 +161,10 @@ export async function POST() {
   // (nunca mascarar um erro estrutural real como sucesso).
   if (deleteUserError && deleteUserError.status !== 404) {
     return NextResponse.json(
-      { error: 'Conta e dados removidos, mas houve falha ao finalizar no Auth. Contate o suporte.' },
+      {
+        error:
+          'Conta e dados removidos, mas houve falha ao finalizar no Auth. Contate o suporte: suporte.numora@gmail.com.',
+      },
       { status: 500 },
     )
   }

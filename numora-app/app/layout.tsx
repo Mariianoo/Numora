@@ -5,6 +5,7 @@ import "./globals.css";
 import { GoogleTagManager } from "@/components/analytics/GoogleTagManager";
 import { AttributionCapture } from "@/components/analytics/AttributionCapture";
 import { ConsentBanner } from "@/components/analytics/ConsentBanner";
+import { Footer } from "@/components/layout/Footer";
 
 const inter = Inter({
   variable: "--font-inter",
@@ -23,6 +24,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
         <GoogleTagManager />
         <AttributionCapture />
         {children}
+        <Footer />
         <ConsentBanner />
       </body>
     </html>
