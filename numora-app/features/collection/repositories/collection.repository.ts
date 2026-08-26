@@ -20,6 +20,8 @@
  * valor sincronizado. Reduzir a quantidade nunca é feito por aqui —
  * exige excluir exemplares individualmente (`CollectionUnitsRepository.remove`).
  */
+import * as Sentry from '@sentry/nextjs'
+
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import { createSupabasePurchasesRepository } from '@/features/purchases/repositories/purchases.repository'
 import {
@@ -358,8 +360,9 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
         if (count === 1) {
           trackFirstItemAdded()
         }
-      } catch {
+      } catch (err) {
         // Nunca bloqueia a criação do item — analytics é best-effort.
+        Sentry.captureException(err)
       }
 
       return withUnits

@@ -35,6 +35,7 @@
  */
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
+import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 
@@ -58,6 +59,10 @@ export async function GET(request: Request) {
   if (code) {
     const supabase = await getSupabaseServerClient()
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
+
+    if (error) {
+      Sentry.captureException(error)
+    }
 
     if (!error) {
       const user = data.user
@@ -96,8 +101,9 @@ export async function GET(request: Request) {
           )
 
           attributionPersisted = !attributionError
-        } catch {
+        } catch (err) {
           // JSON inválido/cookie corrompido — nunca bloqueia o login.
+          Sentry.captureException(err)
         }
       }
 

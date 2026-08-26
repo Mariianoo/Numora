@@ -20,6 +20,7 @@
  * a mesma garantia de first-touch usada nos dois caminhos possíveis.
  */
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
+import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { AuthSession, AuthUser, SignUpInput, SignUpResult } from '@/features/auth/types'
@@ -199,8 +200,9 @@ export function createSupabaseAuthRepository(): AuthRepository {
             if (!attributionError) {
               clearStoredAttribution()
             }
-          } catch {
+          } catch (err) {
             // Exceção de rede/timeout — nunca bloqueia o cadastro.
+            Sentry.captureException(err)
           }
         }
       }

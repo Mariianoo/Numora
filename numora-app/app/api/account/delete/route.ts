@@ -32,6 +32,7 @@
  * em vez de prometer atomicidade impossível (ver relatório da etapa).
  */
 import { NextResponse } from 'next/server'
+import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
@@ -103,6 +104,7 @@ export async function POST() {
   const { data: isOwner, error: ownerCheckError } = await sessionClient.rpc('is_platform_owner')
 
   if (ownerCheckError) {
+    Sentry.captureException(ownerCheckError)
     return NextResponse.json({ error: 'Falha ao verificar permissões.' }, { status: 500 })
   }
 
@@ -121,13 +123,15 @@ export async function POST() {
   })
 
   if (banError) {
+    Sentry.captureException(banError)
     return NextResponse.json({ error: 'Falha ao iniciar a exclusão da conta.' }, { status: 500 })
   }
 
   let filePaths: string[]
   try {
     filePaths = await listAllUserFiles(adminClient, userId)
-  } catch {
+  } catch (err) {
+    Sentry.captureException(err)
     return NextResponse.json(
       { error: 'Falha ao localizar arquivos do usuário. A exclusão foi interrompida com segurança.' },
       { status: 500 },
@@ -138,6 +142,7 @@ export async function POST() {
     const { error: removeError } = await adminClient.storage.from(COIN_IMAGES_BUCKET).remove(filePaths)
 
     if (removeError) {
+      Sentry.captureException(removeError)
       return NextResponse.json(
         { error: 'Falha ao remover arquivos do usuário. A exclusão foi interrompida com segurança.' },
         { status: 500 },
@@ -148,6 +153,7 @@ export async function POST() {
   const { error: rpcError } = await adminClient.rpc('delete_own_account_data', { p_user_id: userId })
 
   if (rpcError) {
+    Sentry.captureException(rpcError)
     return NextResponse.json(
       { error: 'Falha ao remover os dados da conta. A exclusão foi interrompida com segurança.' },
       { status: 500 },
@@ -160,6 +166,7 @@ export async function POST() {
   // idempotente, não é falha. Qualquer outro erro continua sendo reportado
   // (nunca mascarar um erro estrutural real como sucesso).
   if (deleteUserError && deleteUserError.status !== 404) {
+    Sentry.captureException(deleteUserError)
     return NextResponse.json(
       {
         error:
