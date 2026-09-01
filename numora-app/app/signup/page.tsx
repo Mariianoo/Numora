@@ -20,16 +20,17 @@ import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import type { Country } from '@/features/collection/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { isPasswordStrong } from '@/lib/validation/password-policy'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
+import { PasswordInput } from '@/components/ui/PasswordInput'
+import { PasswordRequirementsList } from '@/components/ui/PasswordRequirementsList'
 import { Select } from '@/components/ui/Select'
 import { Card } from '@/components/ui/Card'
 import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
 const referenceRepository = createSupabaseReferenceRepository()
-
-const MIN_PASSWORD_LENGTH = 8
 
 export default function SignupPage() {
   const router = useRouter()
@@ -87,8 +88,8 @@ export default function SignupPage() {
       return
     }
 
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      setError(`A senha precisa ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`)
+    if (!isPasswordStrong(password)) {
+      setError('A senha não atende aos requisitos mínimos.')
       return
     }
 
@@ -156,18 +157,18 @@ export default function SignupPage() {
             onChange={(e) => setEmail(e.target.value)}
             required
           />
-          <Input
-            label="Senha"
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={MIN_PASSWORD_LENGTH}
-            required
-          />
-          <Input
+          <div className="flex flex-col gap-2">
+            <PasswordInput
+              label="Senha"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+            <PasswordRequirementsList password={password} />
+          </div>
+          <PasswordInput
             label="Confirmar senha"
-            type="password"
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
@@ -204,7 +205,12 @@ export default function SignupPage() {
 
           {error && <p className="text-sm text-danger">{error}</p>}
 
-          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
+          <Button
+            type="submit"
+            isLoading={isSubmitting}
+            disabled={!isPasswordStrong(password)}
+            className="mt-1 w-full"
+          >
             {isSubmitting ? 'Criando conta...' : 'Criar minha conta'}
           </Button>
         </form>

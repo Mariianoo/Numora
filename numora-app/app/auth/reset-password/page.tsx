@@ -17,13 +17,14 @@ import { CheckCircle2, Loader2, TriangleAlert } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { isPasswordStrong } from '@/lib/validation/password-policy'
 import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
+import { PasswordInput } from '@/components/ui/PasswordInput'
+import { PasswordRequirementsList } from '@/components/ui/PasswordRequirementsList'
 import { Card } from '@/components/ui/Card'
 import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
-const MIN_PASSWORD_LENGTH = 8
 const LINK_VERIFICATION_TIMEOUT_MS = 5000
 
 export default function ResetPasswordPage() {
@@ -60,8 +61,8 @@ export default function ResetPasswordPage() {
     event.preventDefault()
     setError(null)
 
-    if (password.length < MIN_PASSWORD_LENGTH) {
-      setError(`A senha precisa ter pelo menos ${MIN_PASSWORD_LENGTH} caracteres.`)
+    if (!isPasswordStrong(password)) {
+      setError('A senha não atende aos requisitos mínimos.')
       return
     }
 
@@ -136,18 +137,18 @@ export default function ResetPasswordPage() {
     <AuthShell tagline="Defina sua nova senha">
       <Card className="w-full max-w-sm p-7">
         <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <Input
-            label="Nova senha"
-            type="password"
-            autoComplete="new-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            minLength={MIN_PASSWORD_LENGTH}
-            required
-          />
-          <Input
+          <div className="flex flex-col gap-2">
+            <PasswordInput
+              label="Nova senha"
+              autoComplete="new-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+            />
+            <PasswordRequirementsList password={password} />
+          </div>
+          <PasswordInput
             label="Confirmar nova senha"
-            type="password"
             autoComplete="new-password"
             value={confirmPassword}
             onChange={(e) => setConfirmPassword(e.target.value)}
@@ -156,7 +157,12 @@ export default function ResetPasswordPage() {
 
           {error && <p className="text-sm text-danger">{error}</p>}
 
-          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
+          <Button
+            type="submit"
+            isLoading={isSubmitting}
+            disabled={!isPasswordStrong(password)}
+            className="mt-1 w-full"
+          >
             {isSubmitting ? 'Salvando...' : 'Salvar nova senha'}
           </Button>
         </form>

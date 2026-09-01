@@ -20,6 +20,7 @@
  * a mesma garantia de first-touch usada nos dois caminhos possíveis.
  */
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
+import { isAuthWeakPasswordError } from '@supabase/supabase-js'
 import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
@@ -138,7 +139,28 @@ export function createSupabaseAuthRepository(): AuthRepository {
     },
 
     async signInWithPassword(email, password) {
-      const { error } = await supabase.auth.signInWithPassword({ email, password })
+      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+
+      // Investigação no código-fonte instalado (@supabase/auth-js, dentro
+      // de @supabase/supabase-js) confirma: quando a senha está CORRETA
+      // mas mais fraca que a política de senha atual do projeto (ex.:
+      // conta antiga, criada antes de uma política mais forte existir),
+      // o GoTrue autentica normalmente — `error` fica `null` e o aviso de
+      // senha fraca vem à parte, em `data.weakPassword` (ver
+      // GoTrueClient.signInWithPassword). Ou seja: o `if (error)` abaixo
+      // já NUNCA bloqueia esse caso, mesmo sem este bloco.
+      //
+      // A checagem abaixo existe como segunda camada de segurança, caso o
+      // Supabase um dia passe a anexar `error`/sessão juntos: nunca
+      // bloqueia login com sessão real só por `weak_password`, mas
+      // qualquer outro erro (`invalid_credentials`, `email_not_confirmed`,
+      // rate limit etc.) continua lançado normalmente, sem exceção — só
+      // este código de erro específico, e só quando uma sessão de verdade
+      // já existe.
+      if (error && isAuthWeakPasswordError(error) && data.session) {
+        return
+      }
+
       if (error) {
         throw new Error(mapAuthErrorMessage(error))
       }
