@@ -135,7 +135,7 @@ export default function ProfilePage() {
       profileRepository.getOwnProfile(),
       profileRepository.getOwnEffectivePlan(),
       profileRepository.getOwnStats(),
-      referenceRepository.listCountries(),
+      referenceRepository.listResidenceCountries(),
       adminRepository.getOwnRole(),
     ])
       .then(([profileResult, effectivePlanResult, statsResult, countriesResult, roleResult]) => {

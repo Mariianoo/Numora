@@ -54,7 +54,7 @@ export default function SignupPage() {
   // app/dashboard/collection/page.tsx.
   const loadCountries = useCallback(() => {
     return referenceRepository
-      .listCountries()
+      .listResidenceCountries()
       .then((result) => {
         setCountries(result)
         setCountriesError(null)
