@@ -7,6 +7,9 @@
  * obrigatórias nesta versão.
  */
 
+/** Bucket PÚBLICO das derivações com marca d'água (Fundação de imagens) — nunca a imagem original, que continua só em `coin-images` (privado). */
+export const PUBLIC_COIN_IMAGE_BUCKET = 'coin-images-public'
+
 export type CoinImageKind = 'front' | 'back' | 'edge'
 
 export const COIN_IMAGE_KIND_LABELS: Record<CoinImageKind, string> = {

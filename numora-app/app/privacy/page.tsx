@@ -125,9 +125,16 @@ export default function PrivacyPage() {
             <h2 className="text-lg font-semibold text-text-primary">4. Onde seus dados ficam armazenados</h2>
             <p className="mt-2">
               Todos os dados descritos acima são armazenados em infraestrutura da Supabase (banco de dados,
-              autenticação e armazenamento de arquivos). As fotos ficam em um espaço de armazenamento privado,
-              nunca acessível publicamente — o acesso é sempre feito através de links temporários e de curta
-              duração, gerados só para você.
+              autenticação e armazenamento de arquivos). As fotos originais ficam em um espaço de armazenamento
+              privado, nunca acessível publicamente — o acesso é sempre feito através de links temporários e de
+              curta duração, gerados só para você.
+            </p>
+            <p className="mt-2">
+              Se você optar por publicar a foto de uma moeda no seu Numora Passport, geramos uma versão separada
+              dessa foto, especificamente para exibição pública: removemos metadados técnicos do arquivo (como
+              informações de localização/GPS e outros dados EXIF da câmera) e adicionamos a marca d&apos;água
+              &quot;Numora Collect&quot;. A foto original, sem marca d&apos;água, nunca é publicada — continua no
+              armazenamento privado.
             </p>
             <p className="mt-2">A aplicação em si é hospedada pela Vercel.</p>
           </section>
@@ -177,10 +184,15 @@ export default function PrivacyPage() {
             </h2>
             <p className="mt-2">
               Você pode, se quiser, ativar um perfil público (&quot;Numora Passport&quot;) que exibe seu nome,
-              username, Numora ID, foto, país, data de início como colecionador e estatísticas agregadas da sua
-              coleção (quantas moedas, quantos países, quantos metais, período). Essa ativação é opcional,
-              desligada por padrão, e você pode desativá-la a qualquer momento. O Passport nunca exibe seu e-mail,
-              valores financeiros ou o detalhe de itens individuais.
+              username, país, data de início como colecionador e estatísticas agregadas da sua coleção (quantas
+              moedas, quantos países, quantos metais, período). Essa ativação é opcional, desligada por padrão, e
+              você pode desativá-la a qualquer momento. O Passport nunca exibe seu e-mail, valores financeiros ou
+              dados internos.
+            </p>
+            <p className="mt-2">
+              A publicação de fotos de moedas específicas é uma decisão separada e explícita, feita moeda por
+              moeda — nunca acontece automaticamente junto com a ativação do Passport. Fotos publicadas exibem a
+              versão com marca d&apos;água descrita na seção 4, nunca a foto original.
             </p>
           </section>
 

@@ -34,6 +34,7 @@ import {
   FolderTree,
   Globe,
   HelpCircle,
+  ImagePlus,
   Info,
   Landmark,
   Layers,
@@ -83,6 +84,7 @@ import {
 } from '@/features/collection-units/types'
 import { COIN_IMAGE_KINDS, COIN_IMAGE_KIND_LABELS, type CoinImage, type CoinImageKind } from '@/features/coin-images/types'
 import { OUTPUT_SIZE, encodeCroppedCoinImage, UnsupportedImageFormatError, ImageTooLargeError } from '@/lib/images/process-coin-image'
+import { applyPublicWatermark } from '@/lib/images/watermark-coin-image'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Select } from '@/components/ui/Select'
@@ -305,6 +307,21 @@ function MiniStars({ rating }: { rating: number | null }) {
  */
 function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
   return item.units.find((u) => u.isPrimary) ?? item.units[0] ?? null
+}
+
+/**
+ * Fundação de imagens — só oferece o botão de publicar foto quando a moeda
+ * já apareceria no Passport (senão a foto nunca teria onde ser vista) e
+ * existe de fato uma foto de frente no exemplar principal. Independente da
+ * publicação de TEXTO (`isPublicInPassport`) já ter sido decidida antes —
+ * publicar a foto continua exigindo o clique próprio, nunca decorre daqui.
+ */
+function canPublishPhoto(item: CollectionItem, visibilityMode: PassportCollectionVisibility | null): boolean {
+  const isVisibleOnPassport = visibilityMode === 'all' || (visibilityMode === 'selected' && item.isPublicInPassport)
+  if (!isVisibleOnPassport) return false
+
+  const primaryUnit = getPrimaryUnit(item)
+  return primaryUnit?.images.some((image) => image.kind === 'front') ?? false
 }
 
 /**
@@ -936,6 +953,18 @@ export default function CollectionPage() {
   const [passportVisibilityMode, setPassportVisibilityMode] = useState<PassportCollectionVisibility | null>(null)
   const [passportToggleErrorItemId, setPassportToggleErrorItemId] = useState<string | null>(null)
 
+  /**
+   * Fundação de imagens — só para compor a marca d'água ("NUMORA COLLECT •
+   * @username"); nunca usado para nenhuma outra decisão nesta página.
+   */
+  const [ownUsername, setOwnUsername] = useState<string | null>(null)
+  /** Item aguardando confirmação explícita de publicação de foto (nunca publicada direto no clique). */
+  const [photoPublishConfirmItem, setPhotoPublishConfirmItem] = useState<CollectionItem | null>(null)
+  const [isPublishingPhoto, setIsPublishingPhoto] = useState(false)
+  const [photoPublishError, setPhotoPublishError] = useState<string | null>(null)
+  /** Erro de UM item específico ao retirar a foto do Passport (ação sem confirmação, mesmo padrão de `passportToggleErrorItemId`). */
+  const [photoToggleErrorItemId, setPhotoToggleErrorItemId] = useState<string | null>(null)
+
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [isSaving, setIsSaving] = useState(false)
@@ -1273,6 +1302,93 @@ export default function CollectionPage() {
   }
 
   /**
+   * Fundação de imagens — abre a confirmação antes de publicar a FOTO
+   * (ação separada de `handleTogglePassportVisibility`, nunca decorrente
+   * dela). Só chamado quando existe de fato uma foto de frente no
+   * exemplar principal — a UI nunca oferece o botão sem isso (ver render).
+   */
+  function openPhotoPublishConfirm(item: CollectionItem) {
+    setPhotoPublishError(null)
+    setPhotoPublishConfirmItem(item)
+  }
+
+  function closePhotoPublishConfirm() {
+    if (isPublishingPhoto) return
+    setPhotoPublishConfirmItem(null)
+    setPhotoPublishError(null)
+  }
+
+  /**
+   * Gera a derivação pública (marca d'água, sem EXIF/GPS — garantia
+   * estrutural de `applyPublicWatermark`, ver comentário do arquivo) a
+   * partir da imagem original PRIVADA (via signed URL de curta duração) e
+   * só then grava `photo_public = true`. Nunca publica antes de o upload
+   * da derivação ter sucesso — mesma ordem "Storage primeiro, banco
+   * depois" já usada por `CoinImagesRepository.upload`.
+   */
+  async function confirmPublishPhoto() {
+    const item = photoPublishConfirmItem
+    if (!item) return
+
+    const primaryUnit = getPrimaryUnit(item)
+    const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
+
+    if (!primaryUnit || !frontImage) {
+      setPhotoPublishError('Este exemplar ainda não tem foto de frente cadastrada.')
+      return
+    }
+
+    setPhotoPublishError(null)
+    setIsPublishingPhoto(true)
+
+    try {
+      const signedUrl = await coinImagesRepository.getSignedUrl(frontImage.storagePath)
+      const sourceBlob = await fetch(signedUrl).then((res) => res.blob())
+      const sourceBitmap = await createImageBitmap(sourceBlob)
+      const watermarked = await applyPublicWatermark(sourceBitmap, ownUsername)
+
+      await coinImagesRepository.uploadPublicDerivative(frontImage.storagePath, watermarked.blob)
+
+      const updated = await collectionRepository.setPhotoPublic(item.id, true)
+      setItems((current) => current.map((current_item) => (current_item.id === updated.id ? updated : current_item)))
+      setPhotoPublishConfirmItem(null)
+    } catch (err) {
+      setPhotoPublishError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setIsPublishingPhoto(false)
+    }
+  }
+
+  /**
+   * Retirar do Passport é a direção SEGURA (a imagem original privada
+   * nunca é tocada) — sem confirmação, mesmo critério já usado por
+   * `handleTogglePassportVisibility`. Remove a derivação pública em
+   * melhor esforço: se falhar, a foto já não aparece mais no Passport
+   * (`photo_public = false` já foi gravado — a RPC para de expor o path),
+   * só pode sobrar um arquivo órfão no bucket público, sem risco de
+   * segurança (é uma derivação sem EXIF já pensada para ser pública).
+   */
+  async function handleUnpublishPhoto(item: CollectionItem) {
+    setPhotoToggleErrorItemId(null)
+
+    const primaryUnit = getPrimaryUnit(item)
+    const frontImage = primaryUnit?.images.find((image) => image.kind === 'front')
+
+    try {
+      const updated = await collectionRepository.setPhotoPublic(item.id, false)
+      setItems((current) => current.map((current_item) => (current_item.id === updated.id ? updated : current_item)))
+
+      if (frontImage) {
+        await coinImagesRepository.removePublicDerivative(frontImage.storagePath).catch(() => {
+          // Melhor esforço — ver comentário acima.
+        })
+      }
+    } catch {
+      setPhotoToggleErrorItemId(item.id)
+    }
+  }
+
+  /**
    * Carregamento inicial da tela (Etapa 12.4) — extraído para ser
    * reutilizado tanto pelo `useEffect` de montagem quanto pelo botão
    * "Tentar novamente" do `ErrorState`, sem duplicar a lógica de fetch.
@@ -1305,6 +1421,7 @@ export default function CollectionPage() {
         setMetals(metalsResult)
         setGrades(gradesResult)
         setPassportVisibilityMode(profileResult.passportCollectionVisibility)
+        setOwnUsername(profileResult.username)
         setLoadError(null)
       })
       .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
@@ -2145,6 +2262,23 @@ export default function CollectionPage() {
                                 className={item.isPublicInPassport ? 'text-accent' : undefined}
                               />
                             )}
+                            {(item.isPhotoPublic || canPublishPhoto(item, passportVisibilityMode)) && (
+                              <IconButton
+                                icon={ImagePlus}
+                                onClick={() =>
+                                  item.isPhotoPublic ? handleUnpublishPhoto(item) : openPhotoPublishConfirm(item)
+                                }
+                                aria-label={item.isPhotoPublic ? 'Foto pública no Passport — remover' : 'Publicar foto no Passport'}
+                                title={
+                                  photoToggleErrorItemId === item.id
+                                    ? 'Não foi possível salvar. Tente novamente.'
+                                    : item.isPhotoPublic
+                                      ? 'Foto pública no Passport'
+                                      : 'Publicar foto no Passport'
+                                }
+                                className={item.isPhotoPublic ? 'text-accent' : undefined}
+                              />
+                            )}
                             <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
                             <IconButton
                               icon={Trash2}
@@ -2216,6 +2350,21 @@ export default function CollectionPage() {
                                   : 'Não aparece no Passport'
                             }
                             className={item.isPublicInPassport ? 'text-accent' : undefined}
+                          />
+                        )}
+                        {(item.isPhotoPublic || canPublishPhoto(item, passportVisibilityMode)) && (
+                          <IconButton
+                            icon={ImagePlus}
+                            onClick={() => (item.isPhotoPublic ? handleUnpublishPhoto(item) : openPhotoPublishConfirm(item))}
+                            aria-label={item.isPhotoPublic ? 'Foto pública no Passport — remover' : 'Publicar foto no Passport'}
+                            title={
+                              photoToggleErrorItemId === item.id
+                                ? 'Não foi possível salvar. Tente novamente.'
+                                : item.isPhotoPublic
+                                  ? 'Foto pública no Passport'
+                                  : 'Publicar foto no Passport'
+                            }
+                            className={item.isPhotoPublic ? 'text-accent' : undefined}
                           />
                         )}
                         <IconButton icon={Info} onClick={() => openInfoModal(item)} aria-label="Informações da moeda" />
@@ -2703,6 +2852,36 @@ export default function CollectionPage() {
               ))}
           </div>
         )}
+      </ConfirmDialog>
+
+      {/*
+        Fundação de imagens — confirmação explícita antes de publicar a
+        foto (item C/F da etapa: "nenhuma imagem deve se tornar pública
+        automaticamente", com texto simples explicando a marca d'água e
+        link para a política completa, sem termos jurídicos extensos no
+        modal). Retirar a foto do Passport (handleUnpublishPhoto) é a
+        direção segura e não passa por aqui — mesmo critério já usado por
+        `handleTogglePassportVisibility`.
+      */}
+      <ConfirmDialog
+        isOpen={photoPublishConfirmItem !== null}
+        onClose={closePhotoPublishConfirm}
+        onConfirm={confirmPublishPhoto}
+        title="Publicar foto no Passport?"
+        description="Esta imagem será exibida publicamente no seu Passport e receberá a marca d'água Numora Collect."
+        icon={ImagePlus}
+        confirmLabel="Publicar foto"
+        isLoading={isPublishingPhoto}
+        error={photoPublishError}
+      >
+        <p className="text-xs text-text-secondary">
+          A foto original continua privada. Você pode remover a foto pública do Passport a qualquer momento. Veja
+          nossa{' '}
+          <Link href="/privacy" className="text-accent underline underline-offset-2 hover:text-accent-hover">
+            Política de Privacidade
+          </Link>
+          .
+        </p>
       </ConfirmDialog>
 
       <CoinImageViewer

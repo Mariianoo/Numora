@@ -67,6 +67,16 @@ export interface CollectionRepository {
    */
   setPublicInPassport(id: string, value: boolean): Promise<CollectionItem>
   /**
+   * Fundação de imagens — só liga/desliga `photo_public`. Independente de
+   * `setPublicInPassport`: publicar a FOTO é sempre uma ação explícita à
+   * parte, nunca decorrente de `is_public`/modo de visibilidade (ver
+   * comentário da coluna na migration). O caller (UI) é responsável por
+   * gerar a derivação com marca d'água e enviá-la ao bucket público ANTES
+   * de chamar isto com `value = true` — este método só grava a decisão,
+   * nunca processa imagem.
+   */
+  setPhotoPublic(id: string, value: boolean): Promise<CollectionItem>
+  /**
    * Etapa Lixeira — move para a lixeira (`deleted_at = now()`). Só essa
    * coluna muda: nenhum `collection_unit`, `coin_image`, arquivo do
    * Storage ou `purchase` é tocado. Update mínimo (sem `.select()`), não
@@ -130,7 +140,7 @@ const ITEM_SELECT = `
   metal_code, secondary_metal_code, gross_weight_g, purity, face_value, quantity,
   unit_cost_override, description, location, tags,
   mintage::text, history, trivia, catalog_references,
-  created_at, updated_at, deleted_at, is_public,
+  created_at, updated_at, deleted_at, is_public, photo_public,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
@@ -169,6 +179,8 @@ interface CollectionItemRow {
   deleted_at: string | null
   /** Passport V1 (Fase 3) — ver comentário em `CollectionItem.isPublicInPassport` (types.ts). */
   is_public: boolean
+  /** Fundação de imagens — ver comentário em `CollectionItem.isPhotoPublic` (types.ts). */
+  photo_public: boolean
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
   secondary_metals: { name: string } | null
@@ -218,6 +230,7 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
     isPublicInPassport: row.is_public,
+    isPhotoPublic: row.photo_public,
     countryDisplayName: row.countries?.name ?? null,
     countryFlagEmoji: row.countries?.flag_emoji ?? null,
     metalName: row.metals?.name ?? null,
@@ -508,6 +521,21 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
 
       if (error) {
         throw new Error(`[CollectionRepository] Falha ao atualizar visibilidade no Passport: ${error.message}`)
+      }
+
+      return toCollectionItem(data as unknown as CollectionItemRow)
+    },
+
+    async setPhotoPublic(id, value) {
+      const { data, error } = await supabase
+        .from('collection_items')
+        .update({ photo_public: value })
+        .eq('id', id)
+        .select(ITEM_SELECT)
+        .single()
+
+      if (error) {
+        throw new Error(`[CollectionRepository] Falha ao atualizar visibilidade da foto: ${error.message}`)
       }
 
       return toCollectionItem(data as unknown as CollectionItemRow)

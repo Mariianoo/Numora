@@ -85,21 +85,34 @@ export default function TermsPage() {
             <h2 className="text-lg font-semibold text-text-primary">5. Uso aceitável</h2>
             <p className="mt-2">
               Você concorda em não usar o Numora para: praticar atividades ilegais; tentar acessar dados de outros
-              usuários sem autorização; tentar comprometer a segurança ou o funcionamento da plataforma; ou
-              cadastrar conteúdo (incluindo fotos) que você não tenha o direito de usar.
+              usuários sem autorização; tentar comprometer a segurança ou o funcionamento da plataforma; cadastrar
+              conteúdo (incluindo fotos) que você não tenha o direito de usar; ou reutilizar, copiar ou redistribuir
+              sem autorização fotos ou informações públicas de outros usuários (incluindo conteúdo exibido em um
+              Numora Passport), dentro dos limites da lei aplicável.
             </p>
           </section>
 
           <section>
             <h2 className="text-lg font-semibold text-text-primary">6. Seu conteúdo</h2>
             <p className="mt-2">
-              Os dados e fotos que você cadastra na sua coleção continuam sendo seus. Ao usá-los no Numora, você
-              nos autoriza a armazená-los e exibi-los de volta para você — e, caso você ative o Numora Passport, a
-              exibir publicamente as informações que essa funcionalidade mostra (ver{' '}
+              Os dados e fotos que você cadastra na sua coleção continuam sendo seus — o Numora não reivindica
+              propriedade sobre eles. Ao usá-los no Numora, você nos concede uma autorização limitada para
+              armazená-los, processá-los tecnicamente (incluindo gerar a versão pública com marca d&apos;água
+              descrita na{' '}
               <Link href="/privacy" className="text-accent underline underline-offset-2 hover:text-accent-hover">
                 Política de Privacidade
               </Link>
-              , seção 7).
+              , seção 4) e exibi-los de volta para você, na medida necessária para prestar o serviço.
+            </p>
+            <p className="mt-2">
+              Fotos e dados privados nunca são publicados automaticamente. Se você escolher publicar uma foto ou
+              ativar o Numora Passport, você nos autoriza a exibir publicamente, respectivamente, essa foto (com
+              marca d&apos;água) ou as informações que essa funcionalidade mostra (ver{' '}
+              <Link href="/privacy" className="text-accent underline underline-offset-2 hover:text-accent-hover">
+                Política de Privacidade
+              </Link>
+              , seção 7). Esta autorização não inclui uso das suas fotos para treinamento de modelos de inteligência
+              artificial.
             </p>
           </section>
 

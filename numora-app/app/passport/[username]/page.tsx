@@ -32,12 +32,21 @@
  * `bg-accent`/`bg-surface`) — sem upload, sem Storage, sem tabela nova;
  * `Card` é usado sem padding próprio (`overflow-hidden` recorta o banner
  * nos cantos arredondados) para o banner poder colar na borda do cartão.
+ *
+ * Fundação de imagens — `coin.photoStoragePath` (quando presente) aponta
+ * SEMPRE para o bucket PÚBLICO `coin-images-public` (nunca para o bucket
+ * privado `coin-images`); a RPC só preenche esse campo quando o dono
+ * publicou a foto explicitamente (`collection_items.photo_public`,
+ * independente do texto da moeda já estar público). `getPublicUrl` é uma
+ * função pura (monta a URL, não faz request nem checa RLS) — nenhuma
+ * chamada de rede extra por moeda.
  */
 import { notFound } from 'next/navigation'
 import { Coins, Layers, Globe2, Gem, CalendarRange, PackageOpen } from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import type { PublicPassport } from '@/features/passport/types'
+import { PUBLIC_COIN_IMAGE_BUCKET } from '@/features/coin-images/types'
 import { Avatar } from '@/components/ui/Avatar'
 import { Card } from '@/components/ui/Card'
 import { Badge } from '@/components/ui/Badge'
@@ -140,10 +149,20 @@ export default async function PassportPage({ params }: { params: Promise<{ usern
             <EmptyState icon={PackageOpen} title={EMPTY_COLLECTION_MESSAGE} />
           ) : (
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-              {passport.coins.map((coin, index) => (
+              {passport.coins.map((coin, index) => {
+                const photoUrl = coin.photoStoragePath
+                  ? supabase.storage.from(PUBLIC_COIN_IMAGE_BUCKET).getPublicUrl(coin.photoStoragePath).data.publicUrl
+                  : null
+
+                return (
                 <Card key={index} className="flex items-center gap-3 p-3.5">
-                  <div className="flex size-10 shrink-0 items-center justify-center rounded-lg bg-accent/10 text-lg">
-                    {coin.countryFlagEmoji ?? <Coins className="size-4 text-accent" aria-hidden />}
+                  <div className="flex size-10 shrink-0 items-center justify-center overflow-hidden rounded-lg bg-accent/10 text-lg">
+                    {photoUrl ? (
+                      // eslint-disable-next-line @next/next/no-img-element -- URL pública estável do bucket coin-images-public, não é asset estático do Next
+                      <img src={photoUrl} alt="" className="size-full object-cover" />
+                    ) : (
+                      (coin.countryFlagEmoji ?? <Coins className="size-4 text-accent" aria-hidden />)
+                    )}
                   </div>
                   <div className="min-w-0 flex-1">
                     <p className="truncate text-sm font-semibold text-text-primary">
@@ -160,7 +179,8 @@ export default async function PassportPage({ params }: { params: Promise<{ usern
                     </Badge>
                   )}
                 </Card>
-              ))}
+                )
+              })}
             </div>
           )}
         </div>

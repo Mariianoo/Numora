@@ -32,8 +32,10 @@
  * Storage nesse caso: não há para onde reverter (é a primeira foto
  * daquele tipo) ou os bytes antigos já não existem mais para restaurar.
  */
+import * as Sentry from '@sentry/nextjs'
+
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { CoinImage, CoinImageKind, CoinImageUpload } from '@/features/coin-images/types'
+import { PUBLIC_COIN_IMAGE_BUCKET, type CoinImage, type CoinImageKind, type CoinImageUpload } from '@/features/coin-images/types'
 
 const BUCKET = 'coin-images'
 const DEFAULT_SIGNED_URL_TTL_SECONDS = 3600
@@ -52,6 +54,22 @@ export interface CoinImagesRepository {
    * tratar a ausência (ex.: mostrar o estado "sem imagem").
    */
   getSignedUrls(storagePaths: string[], expiresInSeconds?: number): Promise<Record<string, string>>
+  /**
+   * Fundação de imagens — envia a derivação PÚBLICA (já com marca d'água,
+   * gerada no navegador por `applyPublicWatermark`) para o bucket público
+   * `coin-images-public`, no MESMO path relativo do original privado
+   * (`{user_id}/{collection_unit_id}/{kind}.webp`) — só o bucket muda.
+   * Nunca recebe a imagem original, só o blob já processado.
+   */
+  uploadPublicDerivative(storagePath: string, blob: Blob): Promise<void>
+  /**
+   * Remove a derivação pública (usuário retirou a foto/moeda do
+   * Passport). Nunca toca no bucket privado nem na linha de `coin_images`
+   * — só desfaz a cópia derivada.
+   */
+  removePublicDerivative(storagePath: string): Promise<void>
+  /** URL pública estável (sem expiração, sem checagem de RLS) do bucket `coin-images-public` — só faz sentido para paths que passaram por `uploadPublicDerivative`. */
+  getPublicUrl(storagePath: string): string
 }
 
 interface CoinImageRow {
@@ -181,6 +199,55 @@ export function createSupabaseCoinImagesRepository(): CoinImagesRepository {
       if (error) {
         throw new Error(`[CoinImagesRepository] Arquivo removido, mas falha ao remover o registro: ${error.message}`)
       }
+
+      // Fundação de imagens — Fix 1 (revisão arquitetural): o original já
+      // foi removido com sucesso acima; a derivação pública (se existir)
+      // usa o MESMO `storagePath` relativo, só em outro bucket — nunca uma
+      // segunda lógica de path. Best-effort DE PROPÓSITO: se isto falhar,
+      // NUNCA desfaz a remoção do original (já confirmada) nem propaga erro
+      // para a UI — só registra para diagnóstico. Único ponto por onde
+      // TODA remoção de foto privada passa (chamado por `CollectionRepository.remove`,
+      // `CollectionUnitsRepository.remove` e pelo editor de fotos), então
+      // corrigir aqui cobre os três fluxos de uma vez, sem duplicar lógica
+      // em cada chamador.
+      const { error: publicRemoveError } = await supabase.storage.from(PUBLIC_COIN_IMAGE_BUCKET).remove([
+        image.storagePath,
+      ])
+
+      if (publicRemoveError) {
+        Sentry.captureException(
+          new Error(`[CoinImagesRepository] Falha ao remover derivação pública (melhor esforço): ${publicRemoveError.message}`),
+        )
+      }
+
+      // Fix 3 — se a foto removida era a de FRENTE do exemplar PRINCIPAL do
+      // item, ela é exatamente a única foto que `photo_public` pode estar
+      // anunciando como pública (ver get_public_passport). Sem este reset,
+      // o toggle na Coleção continuaria mostrando "publicada" para uma
+      // moeda sem nenhuma foto por trás — nunca um vazamento de dado (a RPC
+      // já esconde a foto sozinha assim que a linha de `coin_images` some),
+      // só uma inconsistência de estado. Nunca toca `is_public` nem
+      // `passport_collection_visibility` — só a coluna de foto.
+      if (image.kind === 'front') {
+        const { data: unitRow } = await supabase
+          .from('collection_units')
+          .select('collection_item_id, is_primary')
+          .eq('id', image.collectionUnitId)
+          .maybeSingle()
+
+        if (unitRow?.is_primary) {
+          const { error: resetError } = await supabase
+            .from('collection_items')
+            .update({ photo_public: false })
+            .eq('id', unitRow.collection_item_id)
+
+          if (resetError) {
+            Sentry.captureException(
+              new Error(`[CoinImagesRepository] Falha ao resetar photo_public (melhor esforço): ${resetError.message}`),
+            )
+          }
+        }
+      }
     },
 
     async getSignedUrl(storagePath, expiresInSeconds = DEFAULT_SIGNED_URL_TTL_SECONDS) {
@@ -209,6 +276,29 @@ export function createSupabaseCoinImagesRepository(): CoinImagesRepository {
         }
       }
       return result
+    },
+
+    async uploadPublicDerivative(storagePath, blob) {
+      const { error } = await supabase.storage.from(PUBLIC_COIN_IMAGE_BUCKET).upload(storagePath, blob, {
+        upsert: true,
+        contentType: 'image/webp',
+      })
+
+      if (error) {
+        throw new Error(`[CoinImagesRepository] Falha ao publicar a imagem: ${error.message}`)
+      }
+    },
+
+    async removePublicDerivative(storagePath) {
+      const { error } = await supabase.storage.from(PUBLIC_COIN_IMAGE_BUCKET).remove([storagePath])
+
+      if (error) {
+        throw new Error(`[CoinImagesRepository] Falha ao remover a imagem pública: ${error.message}`)
+      }
+    },
+
+    getPublicUrl(storagePath) {
+      return supabase.storage.from(PUBLIC_COIN_IMAGE_BUCKET).getPublicUrl(storagePath).data.publicUrl
     },
   }
 }

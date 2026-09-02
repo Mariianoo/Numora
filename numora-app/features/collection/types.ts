@@ -115,6 +115,14 @@ export interface CollectionItem {
    * este valor corretamente).
    */
   isPublicInPassport: boolean
+  /**
+   * Fundação de imagens — publicação EXPLÍCITA e independente de
+   * `isPublicInPassport`/modo de visibilidade: controla só se a foto de
+   * frente do exemplar principal tem uma derivação pública (com marca
+   * d'água) exibida no Passport. Nunca fica `true` automaticamente, nem
+   * no modo 'all'.
+   */
+  isPhotoPublic: boolean
 }
 
 /**

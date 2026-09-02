@@ -28,6 +28,16 @@ export interface PublicPassportCoin {
   metalName: string | null
   secondaryMetalName: string | null
   quantity: number
+  /**
+   * Fundação de imagens — path relativo no bucket PÚBLICO
+   * `coin-images-public` (nunca no bucket privado `coin-images`), só
+   * preenchido quando o dono publicou explicitamente a foto (independente
+   * do texto da moeda já estar público). `null` = sem foto pública; a
+   * página resolve a URL pública via `getPublicUrl`, nunca recebe a URL
+   * pronta da RPC (evita hardcodear domínio do Storage num retorno de
+   * banco).
+   */
+  photoStoragePath: string | null
 }
 
 /** Retorno de `get_public_passport(p_username)` — `null` quando o username não existe OU quando existe mas é privado (a página nunca diferencia os dois casos). */
