@@ -12,6 +12,16 @@
  * nunca mais referencia `plan_tier`.
  */
 
+/**
+ * Passport V1 (Fase 3) — modo de visibilidade da coleção no Passport
+ * público. Espelha o CHECK de `profiles.passport_collection_visibility`:
+ * 'none' = só agregados (nenhuma moeda individual); 'all' = toda a
+ * coleção ativa; 'selected' = só os `collection_items.is_public = true`
+ * do dono. Nunca afeta os agregados em si, que a RPC sempre calcula sobre
+ * a coleção real.
+ */
+export type PassportCollectionVisibility = 'none' | 'all' | 'selected'
+
 export interface Profile {
   id: string
   numoraId: string
@@ -21,6 +31,7 @@ export interface Profile {
   avatarUrl: string | null
   countryCode: string | null
   passportPublic: boolean
+  passportCollectionVisibility: PassportCollectionVisibility
   collectorSince: string
   createdAt: string
 }

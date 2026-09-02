@@ -57,6 +57,16 @@ export interface CollectionRepository {
    */
   updateEnrichment(id: string, input: CollectionItemEnrichmentInput): Promise<CollectionItem>
   /**
+   * Passport V1 (Fase 3) — só liga/desliga `is_public`. Método dedicado
+   * (não parte de `update()`/`updateEnrichment()`) pela mesma razão de
+   * `ProfileRepository.setPassportPublic`: uma ação de visibilidade
+   * pública merece ficar isolada e auditável, nunca escondida dentro de um
+   * payload de edição maior. Só tem efeito real quando o perfil do dono
+   * está com `passportCollectionVisibility = 'selected'` — a RPC pública
+   * decide isso, não este método.
+   */
+  setPublicInPassport(id: string, value: boolean): Promise<CollectionItem>
+  /**
    * Etapa Lixeira — move para a lixeira (`deleted_at = now()`). Só essa
    * coluna muda: nenhum `collection_unit`, `coin_image`, arquivo do
    * Storage ou `purchase` é tocado. Update mínimo (sem `.select()`), não
@@ -120,7 +130,7 @@ const ITEM_SELECT = `
   metal_code, secondary_metal_code, gross_weight_g, purity, face_value, quantity,
   unit_cost_override, description, location, tags,
   mintage::text, history, trivia, catalog_references,
-  created_at, updated_at, deleted_at,
+  created_at, updated_at, deleted_at, is_public,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
@@ -157,6 +167,8 @@ interface CollectionItemRow {
   updated_at: string
   /** Etapa Lixeira — `null` = ativo, preenchido = na lixeira. Única fonte de verdade (ver types.ts). */
   deleted_at: string | null
+  /** Passport V1 (Fase 3) — ver comentário em `CollectionItem.isPublicInPassport` (types.ts). */
+  is_public: boolean
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
   secondary_metals: { name: string } | null
@@ -205,6 +217,7 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     deletedAt: row.deleted_at,
+    isPublicInPassport: row.is_public,
     countryDisplayName: row.countries?.name ?? null,
     countryFlagEmoji: row.countries?.flag_emoji ?? null,
     metalName: row.metals?.name ?? null,
@@ -480,6 +493,21 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
 
       if (error) {
         throw new Error(`[CollectionRepository] Falha ao salvar informações da moeda: ${error.message}`)
+      }
+
+      return toCollectionItem(data as unknown as CollectionItemRow)
+    },
+
+    async setPublicInPassport(id, value) {
+      const { data, error } = await supabase
+        .from('collection_items')
+        .update({ is_public: value })
+        .eq('id', id)
+        .select(ITEM_SELECT)
+        .single()
+
+      if (error) {
+        throw new Error(`[CollectionRepository] Falha ao atualizar visibilidade no Passport: ${error.message}`)
       }
 
       return toCollectionItem(data as unknown as CollectionItemRow)

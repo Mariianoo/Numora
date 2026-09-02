@@ -32,6 +32,7 @@ import {
   Eye,
   EyeOff,
   FolderTree,
+  Globe,
   HelpCircle,
   Info,
   Landmark,
@@ -39,6 +40,7 @@ import {
   LayoutGrid,
   List,
   Loader2,
+  Lock,
   MoreVertical,
   Pencil,
   PackageOpen,
@@ -51,6 +53,8 @@ import {
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
+import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
+import type { PassportCollectionVisibility } from '@/features/profile/types'
 import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
@@ -99,6 +103,7 @@ const collectionRepository = createSupabaseCollectionRepository()
 const referenceRepository = createSupabaseReferenceRepository()
 const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
 const coinImagesRepository = createSupabaseCoinImagesRepository()
+const profileRepository = createSupabaseProfileRepository()
 
 /** Indicador visual rápido por status, usado na lista de exemplares (seção 12/13 da etapa). */
 const GRADE_SCALE_LABELS: Record<string, string> = {
@@ -921,6 +926,15 @@ export default function CollectionPage() {
   const [countries, setCountries] = useState<Country[]>([])
   const [metals, setMetals] = useState<Metal[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
+  /**
+   * Passport V1 (Fase 3) — controla só se o toggle "visível no Passport"
+   * aparece nos cards; a decisão de o que é realmente exposto é da RPC
+   * pública, nunca desta página. `null` (ainda carregando) nunca mostra o
+   * controle, evitando um "pisca" de ícone que desaparece logo em seguida
+   * se o modo não for 'selected'.
+   */
+  const [passportVisibilityMode, setPassportVisibilityMode] = useState<PassportCollectionVisibility | null>(null)
+  const [passportToggleErrorItemId, setPassportToggleErrorItemId] = useState<string | null>(null)
 
   const [isLoading, setIsLoading] = useState(true)
   const [loadError, setLoadError] = useState<string | null>(null)
@@ -1242,6 +1256,23 @@ export default function CollectionPage() {
   }
 
   /**
+   * Passport V1 (Fase 3) — só chamado quando `passportVisibilityMode ===
+   * 'selected'` (único caso em que o controle aparece na UI). Erro fica
+   * anexado ao PRÓPRIO item (`passportToggleErrorItemId`), mesmo padrão de
+   * `unitDeleteError`: nunca precisa de um modal para uma ação de 1 clique.
+   */
+  async function handleTogglePassportVisibility(item: CollectionItem) {
+    setPassportToggleErrorItemId(null)
+
+    try {
+      const updated = await collectionRepository.setPublicInPassport(item.id, !item.isPublicInPassport)
+      setItems((current) => current.map((current_item) => (current_item.id === updated.id ? updated : current_item)))
+    } catch {
+      setPassportToggleErrorItemId(item.id)
+    }
+  }
+
+  /**
    * Carregamento inicial da tela (Etapa 12.4) — extraído para ser
    * reutilizado tanto pelo `useEffect` de montagem quanto pelo botão
    * "Tentar novamente" do `ErrorState`, sem duplicar a lógica de fetch.
@@ -1266,12 +1297,14 @@ export default function CollectionPage() {
       referenceRepository.listCountries(),
       referenceRepository.listMetals(),
       referenceRepository.listGrades(),
+      profileRepository.getOwnProfile(),
     ])
-      .then(([itemsResult, countriesResult, metalsResult, gradesResult]) => {
+      .then(([itemsResult, countriesResult, metalsResult, gradesResult, profileResult]) => {
         setItems(itemsResult)
         setCountries(countriesResult)
         setMetals(metalsResult)
         setGrades(gradesResult)
+        setPassportVisibilityMode(profileResult.passportCollectionVisibility)
         setLoadError(null)
       })
       .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
@@ -2095,6 +2128,23 @@ export default function CollectionPage() {
                             onToggle={() => togglePurchaseVisibility(item.id)}
                           />
                           <div className="flex gap-1">
+                            {passportVisibilityMode === 'selected' && (
+                              <IconButton
+                                icon={item.isPublicInPassport ? Globe : Lock}
+                                onClick={() => handleTogglePassportVisibility(item)}
+                                aria-label={
+                                  item.isPublicInPassport ? 'Visível no Passport — remover' : 'Tornar visível no Passport'
+                                }
+                                title={
+                                  passportToggleErrorItemId === item.id
+                                    ? 'Não foi possível salvar. Tente novamente.'
+                                    : item.isPublicInPassport
+                                      ? 'Visível no Passport'
+                                      : 'Não aparece no Passport'
+                                }
+                                className={item.isPublicInPassport ? 'text-accent' : undefined}
+                              />
+                            )}
                             <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
                             <IconButton
                               icon={Trash2}
@@ -2151,6 +2201,23 @@ export default function CollectionPage() {
                       />
 
                       <div className="flex shrink-0 gap-1">
+                        {passportVisibilityMode === 'selected' && (
+                          <IconButton
+                            icon={item.isPublicInPassport ? Globe : Lock}
+                            onClick={() => handleTogglePassportVisibility(item)}
+                            aria-label={
+                              item.isPublicInPassport ? 'Visível no Passport — remover' : 'Tornar visível no Passport'
+                            }
+                            title={
+                              passportToggleErrorItemId === item.id
+                                ? 'Não foi possível salvar. Tente novamente.'
+                                : item.isPublicInPassport
+                                  ? 'Visível no Passport'
+                                  : 'Não aparece no Passport'
+                            }
+                            className={item.isPublicInPassport ? 'text-accent' : undefined}
+                          />
+                        )}
                         <IconButton icon={Info} onClick={() => openInfoModal(item)} aria-label="Informações da moeda" />
                         <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
                         <IconButton

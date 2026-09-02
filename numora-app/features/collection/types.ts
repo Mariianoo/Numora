@@ -107,6 +107,14 @@ export interface CollectionItem {
   } | null
   /** Ordenados por `createdAt` ascendente — `units[0]` é o exemplar mais antigo (convenção de "exemplar preferido" desta etapa, ver Etapa 10). */
   units: CollectionItemUnit[]
+  /**
+   * Passport V1 (Fase 3) — só tem efeito quando
+   * `profile.passportCollectionVisibility === 'selected'`; nos modos
+   * 'none'/'all' este campo existe mas não é consultado por ninguém (a
+   * RPC pública decide sozinha o que mostrar, sem depender da UI ler
+   * este valor corretamente).
+   */
+  isPublicInPassport: boolean
 }
 
 /**

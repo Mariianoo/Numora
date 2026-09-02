@@ -30,13 +30,27 @@
 
 import { useCallback, useEffect, useState, type FormEvent } from 'react'
 import { useRouter } from 'next/navigation'
-import { Coins, Layers, Globe2, Gem, Wallet, Loader2, Check, Copy, TriangleAlert } from 'lucide-react'
+import Link from 'next/link'
+import {
+  Coins,
+  Layers,
+  Globe2,
+  Gem,
+  Wallet,
+  Loader2,
+  Check,
+  Copy,
+  TriangleAlert,
+  ExternalLink,
+  QrCode,
+  Lock,
+} from 'lucide-react'
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
-import type { Profile, EffectivePlan } from '@/features/profile/types'
+import type { Profile, EffectivePlan, PassportCollectionVisibility } from '@/features/profile/types'
 import type { Country } from '@/features/collection/types'
 import type { AdminRole } from '@/features/admin/types'
 import type { CollectionStats } from '@/lib/stats/collection-stats'
@@ -55,6 +69,13 @@ import { ErrorState } from '@/components/ui/ErrorState'
 import { Modal } from '@/components/ui/Modal'
 import { cn } from '@/components/ui/utils'
 import { ConsentPreferencesModal } from '@/components/analytics/ConsentPreferencesModal'
+import { PassportShareModal } from '@/components/passport/PassportShareModal'
+
+const PASSPORT_VISIBILITY_LABELS: Record<PassportCollectionVisibility, string> = {
+  none: 'Nenhuma moeda individual (só os números-resumo)',
+  all: 'Toda a minha coleção',
+  selected: 'Somente as moedas que eu marcar',
+}
 
 const profileRepository = createSupabaseProfileRepository()
 const referenceRepository = createSupabaseReferenceRepository()
@@ -84,6 +105,9 @@ export default function ProfilePage() {
   const [isTogglingPassport, setIsTogglingPassport] = useState(false)
   const [passportError, setPassportError] = useState<string | null>(null)
   const [linkCopied, setLinkCopied] = useState(false)
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false)
+  const [isSavingVisibility, setIsSavingVisibility] = useState(false)
+  const [visibilityError, setVisibilityError] = useState<string | null>(null)
 
   const [isPreferencesOpen, setIsPreferencesOpen] = useState(false)
 
@@ -182,13 +206,32 @@ export default function ProfilePage() {
     }
   }
 
-  function handleCopyPassportLink() {
-    if (!profile?.username) return
+  function getPassportUrl() {
+    if (!profile?.username) return null
+    return `${window.location.origin}/passport/${profile.username}`
+  }
 
-    const url = `${window.location.origin}/passport/${profile.username}`
+  function handleCopyPassportLink() {
+    const url = getPassportUrl()
+    if (!url) return
+
     navigator.clipboard.writeText(url)
     setLinkCopied(true)
     setTimeout(() => setLinkCopied(false), 2000)
+  }
+
+  async function handleChangeCollectionVisibility(value: PassportCollectionVisibility) {
+    setVisibilityError(null)
+    setIsSavingVisibility(true)
+
+    try {
+      const updated = await profileRepository.setPassportCollectionVisibility(value)
+      setProfile(updated)
+    } catch (err) {
+      setVisibilityError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setIsSavingVisibility(false)
+    }
   }
 
   /**
@@ -359,7 +402,12 @@ export default function ProfilePage() {
 
             <Card className="p-6">
               <div className="flex items-center justify-between gap-4">
-                <h2 className="text-base font-semibold text-text-primary">Passport público</h2>
+                <div className="flex items-center gap-2">
+                  <h2 className="text-base font-semibold text-text-primary">Passport público</h2>
+                  <Badge tone={profile.passportPublic ? 'success' : 'neutral'}>
+                    {profile.passportPublic ? 'Ativo' : 'Privado'}
+                  </Badge>
+                </div>
                 <button
                   type="button"
                   role="switch"
@@ -383,31 +431,80 @@ export default function ProfilePage() {
                 </button>
               </div>
 
-              <p className="mt-2 text-sm text-text-secondary">
-                {profile.passportPublic
-                  ? 'Seu Passport está visível publicamente.'
-                  : 'Compartilhe sua identidade de colecionador publicamente.'}
+              <p className="mt-3 text-sm text-text-secondary">
+                O Passport é a identidade pública do seu colecionismo: um cartão com seu nome, país, tempo de
+                coleção e os números-resumo (moedas, unidades, países, metais) — nunca preço, custo ou e-mail.
               </p>
+
+              {!profile.username && (
+                <p className="mt-3 flex items-start gap-2 rounded-lg border border-border bg-background px-3 py-2.5 text-sm text-text-secondary">
+                  <Lock className="mt-0.5 size-4 shrink-0" aria-hidden />
+                  Defina um nome de usuário no formulário ao lado antes de ativar o Passport público.
+                </p>
+              )}
 
               {passportError && <p className="mt-2 text-sm text-danger">{passportError}</p>}
 
-              {profile.passportPublic && profile.username && (
-                <div className="mt-4 flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2.5">
-                  <p className="truncate text-sm text-text-secondary">/passport/{profile.username}</p>
-                  <Button type="button" variant="ghost" size="sm" onClick={handleCopyPassportLink}>
-                    {linkCopied ? (
-                      <>
-                        <Check className="size-4" aria-hidden />
-                        Copiado
-                      </>
-                    ) : (
-                      <>
-                        <Copy className="size-4" aria-hidden />
-                        Copiar
-                      </>
-                    )}
-                  </Button>
+              {profile.passportPublic && profile.username ? (
+                <div className="mt-4 flex flex-col gap-3">
+                  <div className="flex items-center justify-between gap-2 rounded-lg border border-border bg-background px-3 py-2.5">
+                    <p className="truncate text-sm text-text-secondary">/passport/{profile.username}</p>
+                    <Button type="button" variant="ghost" size="sm" onClick={handleCopyPassportLink}>
+                      {linkCopied ? (
+                        <>
+                          <Check className="size-4" aria-hidden />
+                          Copiado
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="size-4" aria-hidden />
+                          Copiar
+                        </>
+                      )}
+                    </Button>
+                  </div>
+
+                  <div className="flex gap-2">
+                    <Link href={`/passport/${profile.username}`} target="_blank" rel="noopener noreferrer" className="flex-1">
+                      <Button type="button" className="w-full">
+                        <ExternalLink className="size-4" aria-hidden />
+                        Ver meu Passport
+                      </Button>
+                    </Link>
+                    <Button type="button" variant="secondary" onClick={() => setIsShareModalOpen(true)}>
+                      <QrCode className="size-4" aria-hidden />
+                      QR Code
+                    </Button>
+                  </div>
+
+                  <div className="border-t border-border pt-3">
+                    <Select
+                      label="Moedas visíveis no Passport"
+                      value={profile.passportCollectionVisibility}
+                      disabled={isSavingVisibility}
+                      onChange={(e) =>
+                        handleChangeCollectionVisibility(e.target.value as PassportCollectionVisibility)
+                      }
+                    >
+                      {(Object.keys(PASSPORT_VISIBILITY_LABELS) as PassportCollectionVisibility[]).map((value) => (
+                        <option key={value} value={value}>
+                          {PASSPORT_VISIBILITY_LABELS[value]}
+                        </option>
+                      ))}
+                    </Select>
+                    <p className="mt-1.5 text-xs text-text-secondary">
+                      {profile.passportCollectionVisibility === 'selected'
+                        ? 'Marque as moedas em "Minha Coleção" para escolher quais aparecem.'
+                        : 'Os números-resumo da coleção aparecem sempre, em qualquer opção.'}
+                    </p>
+                    {visibilityError && <p className="mt-1.5 text-sm text-danger">{visibilityError}</p>}
+                  </div>
                 </div>
+              ) : (
+                <p className="mt-3 text-xs text-text-secondary">
+                  Quando ativado, seu perfil fica acessível para qualquer pessoa com o link — nunca aparece em
+                  buscas externas por padrão. Você pode desativar a qualquer momento.
+                </p>
               )}
             </Card>
 
@@ -431,6 +528,14 @@ export default function ProfilePage() {
       </section>
 
       <ConsentPreferencesModal isOpen={isPreferencesOpen} onClose={() => setIsPreferencesOpen(false)} />
+
+      {profile.passportPublic && profile.username && (
+        <PassportShareModal
+          isOpen={isShareModalOpen}
+          onClose={() => setIsShareModalOpen(false)}
+          url={getPassportUrl() ?? ''}
+        />
+      )}
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">Estatísticas</p>

@@ -6,7 +6,8 @@ import { cn } from './utils'
 
 export interface AvatarProps {
   name: string
-  size?: 'sm' | 'md'
+  /** 'lg' (Passport V1) — hero do cabeçalho público, único caller até agora é app/passport/[username]/page.tsx. */
+  size?: 'sm' | 'md' | 'lg'
   className?: string
 }
 
@@ -20,6 +21,7 @@ function getInitials(name: string): string {
 const SIZE_CLASSES = {
   sm: 'size-8 text-xs',
   md: 'size-10 text-sm',
+  lg: 'size-20 text-2xl',
 }
 
 export function Avatar({ name, size = 'md', className }: AvatarProps) {

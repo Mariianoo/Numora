@@ -14,7 +14,7 @@
 
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { LayoutDashboard, Coins, UserRound, Shield } from 'lucide-react'
+import { LayoutDashboard, Coins, UserRound, Shield, Compass } from 'lucide-react'
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
 import type { AdminRole } from '@/features/admin/types'
@@ -30,6 +30,7 @@ const MAIN_NAV: NavItem[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/dashboard/collection', label: 'Minha Coleção', icon: Coins },
   { href: '/dashboard/profile', label: 'Meu Perfil', icon: UserRound },
+  { href: '/explore', label: 'Explorar', icon: Compass },
 ]
 
 const ADMIN_NAV_ITEM: NavItem = { href: '/admin', label: 'Painel Administrativo', icon: Shield }

@@ -50,7 +50,7 @@
  * regra de prioridade é reimplementada aqui.
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { Profile, ProfileUpdateInput, EffectivePlan } from '@/features/profile/types'
+import type { Profile, ProfileUpdateInput, EffectivePlan, PassportCollectionVisibility } from '@/features/profile/types'
 import { normalizeUsername, validateUsernameFormat } from '@/features/profile/username'
 import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow, type CollectionStats } from '@/lib/stats/collection-stats'
 
@@ -59,13 +59,22 @@ export interface ProfileRepository {
   updateOwnProfile(input: ProfileUpdateInput): Promise<Profile>
   getOwnStats(): Promise<CollectionStats>
   setPassportPublic(value: boolean): Promise<Profile>
+  /**
+   * Passport V1 (Fase 3) — método dedicado, separado de `setPassportPublic`,
+   * mesma razão de design: ação sensível de visibilidade, auditável
+   * isoladamente. Não exige `passport_public = true` para ser chamado (o
+   * valor fica só guardado, inerte, enquanto o Passport estiver privado) —
+   * a única validação real de negócio é o CHECK do banco no próprio valor
+   * ('none'/'all'/'selected').
+   */
+  setPassportCollectionVisibility(value: PassportCollectionVisibility): Promise<Profile>
   getOwnEffectivePlan(): Promise<EffectivePlan>
 }
 
 const PASSPORT_REQUIRES_USERNAME_MESSAGE = 'Defina um nome de usuário antes de ativar seu Passport público.'
 
 const PROFILE_SELECT =
-  'id, numora_id, email, name, username, avatar_url, country_code, passport_public, collector_since, created_at'
+  'id, numora_id, email, name, username, avatar_url, country_code, passport_public, passport_collection_visibility, collector_since, created_at'
 
 interface ProfileRow {
   id: string
@@ -76,6 +85,7 @@ interface ProfileRow {
   avatar_url: string | null
   country_code: string | null
   passport_public: boolean
+  passport_collection_visibility: PassportCollectionVisibility
   collector_since: string
   created_at: string
 }
@@ -90,6 +100,7 @@ function toProfile(row: ProfileRow): Profile {
     avatarUrl: row.avatar_url,
     countryCode: row.country_code,
     passportPublic: row.passport_public,
+    passportCollectionVisibility: row.passport_collection_visibility,
     collectorSince: row.collector_since,
     createdAt: row.created_at,
   }
@@ -233,6 +244,23 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     return toProfile(data as ProfileRow)
   }
 
+  async function setPassportCollectionVisibility(value: PassportCollectionVisibility): Promise<Profile> {
+    const userId = await requireUserId()
+
+    const { data, error } = await supabase
+      .from('profiles')
+      .update({ passport_collection_visibility: value })
+      .eq('id', userId)
+      .select(PROFILE_SELECT)
+      .single()
+
+    if (error) {
+      throw new Error(`[ProfileRepository] Falha ao atualizar visibilidade da coleção no Passport: ${error.message}`)
+    }
+
+    return toProfile(data as ProfileRow)
+  }
+
   async function getOwnEffectivePlan(): Promise<EffectivePlan> {
     const userId = await requireUserId()
 
@@ -245,5 +273,12 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     return toEffectivePlan(data as EffectivePlanRow)
   }
 
-  return { getOwnProfile, updateOwnProfile, getOwnStats, setPassportPublic, getOwnEffectivePlan }
+  return {
+    getOwnProfile,
+    updateOwnProfile,
+    getOwnStats,
+    setPassportPublic,
+    setPassportCollectionVisibility,
+    getOwnEffectivePlan,
+  }
 }
