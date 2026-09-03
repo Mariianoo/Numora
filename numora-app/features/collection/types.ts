@@ -133,11 +133,15 @@ export interface CollectionItem {
  * banco (Etapa 4) mas não têm UI ainda — permanecem null nesta versão,
  * sem perda de dado futuro.
  *
- * `secondaryMetalCode`: `null` = moeda monometálica. Preenchido = moeda
- * bimetálica (ex.: núcleo de um metal, anel de outro). A coluna
- * `secondary_metal_code` já existe no banco desde a Etapa 4 — só não
- * tinha UI até agora. Trimetálicas não são representáveis com o schema
- * atual (só 2 colunas de metal); ficaria para uma etapa futura.
+ * Etapa 3B — `metalCode`/`secondaryMetalCode`/`purity` SAÍRAM deste tipo:
+ * a partir desta etapa, `create()`/`update()` recebem só os dados gerais
+ * do item. Composição (simples, liga, bimetálica, trimetálica, plating ou
+ * desconhecida) é responsabilidade exclusiva de
+ * `CoinCompositionRepository.setComposition()` (features/coin-composition),
+ * chamada separadamente logo após `create()`/`update()`. Os 3 campos
+ * continuam existindo em `CollectionItem` (leitura) — são derivados e
+ * escritos pela RPC `set_collection_item_composition`, nunca mais por
+ * este repository.
  *
  * Conservação não é mais um campo do item (Etapa collection_units): é
  * propriedade de cada exemplar físico (`collection_units.grade_id`),
@@ -161,10 +165,7 @@ export interface CollectionItemInput {
   countryCode: string | null
   year: number | null
   denomination: string | null
-  metalCode: string | null
-  secondaryMetalCode: string | null
   grossWeightG: number | null
-  purity: number | null
   faceValue: number | null
   quantity: number
   initialGradeId: string | null
@@ -200,6 +201,14 @@ export interface Metal {
   code: string
   name: string
   isPrecious: boolean
+  /**
+   * Etapa 3B — `element` (metal puro, ex.: prata) ou `alloy` (liga
+   * nomeada, ex.: bronze, latão, cuproníquel, aço). Coluna `metals.kind`
+   * existe desde a Fundação de composição (Etapa 1); só exposta aqui
+   * agora que a UI de composição precisa distinguir os dois para rotular
+   * ligas como "Bronze (liga)" no seletor de metal.
+   */
+  kind: 'element' | 'alloy'
 }
 
 export interface Grade {

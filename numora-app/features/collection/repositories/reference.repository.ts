@@ -35,6 +35,8 @@ interface MetalRow {
   code: string
   name: string
   is_precious: boolean
+  /** Etapa 3B — ver comentário de `Metal.kind` (types.ts). */
+  kind: string
 }
 
 interface GradeRow {
@@ -88,6 +90,7 @@ export function createSupabaseReferenceRepository(): ReferenceRepository {
         code: row.code,
         name: row.name,
         isPrecious: row.is_precious,
+        kind: row.kind === 'alloy' ? 'alloy' : 'element',
       }))
     },
 

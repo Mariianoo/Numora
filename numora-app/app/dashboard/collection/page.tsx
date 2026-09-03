@@ -20,6 +20,7 @@
 import Link from 'next/link'
 import { useCallback, useEffect, useRef, useMemo, useState, type ChangeEvent, type FormEvent, type ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import * as Sentry from '@sentry/nextjs'
 import {
   ArrowUpDown,
   Award,
@@ -54,6 +55,11 @@ import {
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
+import { createSupabaseCoinCompositionRepository } from '@/features/coin-composition/repositories/coin-composition.repository'
+import { CoinCompositionEditor } from '@/features/coin-composition/components/CoinCompositionEditor'
+import { summarizeDraftComposition } from '@/features/coin-composition/summary'
+import { getCompositionErrorMessage, isKnownCompositionErrorCode } from '@/features/coin-composition/errors'
+import type { SetCoinCompositionInput } from '@/features/coin-composition/types'
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import type { PassportCollectionVisibility } from '@/features/profile/types'
 import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
@@ -102,6 +108,7 @@ import { ErrorState } from '@/components/ui/ErrorState'
 import { cn } from '@/components/ui/utils'
 
 const collectionRepository = createSupabaseCollectionRepository()
+const coinCompositionRepository = createSupabaseCoinCompositionRepository()
 const referenceRepository = createSupabaseReferenceRepository()
 const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
 const coinImagesRepository = createSupabaseCoinImagesRepository()
@@ -175,16 +182,6 @@ function toNullableInt(value: string): number | null {
 
 function toNullableText(value: string): string | null {
   return value.trim() === '' ? null : value
-}
-
-/** UI trabalha com pureza em porcentagem (0–100); o banco guarda fração (0–1]. */
-function purityToPercentString(purity: number | null): string {
-  return purity !== null ? String(purity * 100) : ''
-}
-
-function percentStringToPurity(value: string): number | null {
-  const percent = toNullableNumber(value)
-  return percent !== null ? percent / 100 : null
 }
 
 /**
@@ -1020,13 +1017,41 @@ export default function CollectionPage() {
   const [countryCode, setCountryCode] = useState('')
   const [year, setYear] = useState('')
   const [denomination, setDenomination] = useState('')
-  const [hasSecondMetal, setHasSecondMetal] = useState(false)
-  const [metalCode, setMetalCode] = useState('')
-  const [secondaryMetalCode, setSecondaryMetalCode] = useState('')
+
+  // Composição (Etapa 3B) — rascunho no formato aceito pela RPC
+  // (`SetCoinCompositionInput`), mantido por `CoinCompositionEditor` via
+  // `onChange`. `compositionEditorDefaultMode` só afeta a hidratação
+  // inicial do editor quando o rascunho está vazio (ver
+  // `CoinCompositionEditor.deriveInitialState`) — 'simples' ao adicionar,
+  // 'desconhecida' ao editar uma moeda sem nenhum metal registrado.
+  const [compositionDraft, setCompositionDraft] = useState<SetCoinCompositionInput>([])
+  const [compositionEditorDefaultMode, setCompositionEditorDefaultMode] = useState<'simples' | 'desconhecida'>('simples')
+  /**
+   * Força o `CoinCompositionEditor` a remontar (perder e re-hidratar seu
+   * estado interno) só quando o usuário abre o modal para uma moeda
+   * diferente (`openAddModal`/`openEditModal`) — DELIBERADAMENTE não
+   * incrementado na transição "item criado mas composição falhou" (ver
+   * `handleSubmit`), para que o rascunho que falhou continue visível e o
+   * usuário possa só clicar em Salvar de novo, sem perder o que digitou.
+   */
+  const [compositionEditorKey, setCompositionEditorKey] = useState(0)
+  const [isCompositionLoading, setIsCompositionLoading] = useState(false)
+  const [compositionLoadError, setCompositionLoadError] = useState<string | null>(null)
+  /** Erro específico de `setComposition()` — separado do `error` geral do formulário porque pode surgir DEPOIS do item já ter sido criado/atualizado com sucesso (ver `handleSubmit`). */
+  const [compositionSaveError, setCompositionSaveError] = useState<string | null>(null)
+  /**
+   * Etapa 3D — reflete `CoinCompositionEditor.onValidityChange`: `false`
+   * quando algum percentual do rascunho atual certamente será rejeitado
+   * pela RPC (ex.: metal único com 50%). `handleSubmit` usa isto para NÃO
+   * chamar `create()`/`update()`/`setComposition()` nesse caso — o feedback
+   * inline já visível no editor é suficiente, não depende só do 22023.
+   */
+  const [isCompositionValid, setIsCompositionValid] = useState(true)
+  /** Mensagem exibida quando o submit é bloqueado por `isCompositionValid === false` — nunca implica que o item foi salvo (ao contrário de `compositionSaveError`). */
+  const [compositionValidationError, setCompositionValidationError] = useState<string | null>(null)
 
   // Características
   const [grossWeightG, setGrossWeightG] = useState('')
-  const [purityPercent, setPurityPercent] = useState('')
   /** Conservação inicial dos exemplares criados agora — só se aplica ao ADICIONAR (ver seção 2/4 da etapa). */
   const [initialGradeId, setInitialGradeId] = useState('')
   const [faceValue, setFaceValue] = useState('')
@@ -1585,11 +1610,12 @@ export default function CollectionPage() {
     setCountryCode('')
     setYear('')
     setDenomination('')
-    setHasSecondMetal(false)
-    setMetalCode('')
-    setSecondaryMetalCode('')
+    setCompositionDraft([])
+    setCompositionLoadError(null)
+    setCompositionSaveError(null)
+    setCompositionValidationError(null)
+    setIsCompositionValid(true)
     setGrossWeightG('')
-    setPurityPercent('')
     setInitialGradeId('')
     setFaceValue('')
     setQuantity('1')
@@ -1605,23 +1631,21 @@ export default function CollectionPage() {
     setSuccessMessage(null)
     setEditingItemId(null)
     resetForm()
+    setCompositionEditorDefaultMode('simples')
+    setCompositionEditorKey((current) => current + 1)
     // Só ao adicionar — editar preserva a data já registrada da compra.
     setPurchaseDate(getTodayDateString())
     setIsModalOpen(true)
   }
 
-  function openEditModal(item: CollectionItem) {
+  async function openEditModal(item: CollectionItem) {
     setError(null)
     setSuccessMessage(null)
     setEditingItemId(item.id)
     setCountryCode(item.countryCode ?? '')
     setYear(item.year !== null ? String(item.year) : '')
     setDenomination(item.denomination ?? '')
-    setHasSecondMetal(item.secondaryMetalCode !== null)
-    setMetalCode(item.metalCode ?? '')
-    setSecondaryMetalCode(item.secondaryMetalCode ?? '')
     setGrossWeightG(item.grossWeightG !== null ? String(item.grossWeightG) : '')
-    setPurityPercent(purityToPercentString(item.purity))
     setInitialGradeId('')
     setFaceValue(item.faceValue !== null ? String(item.faceValue) : '')
     setQuantity(String(item.quantity))
@@ -1639,7 +1663,39 @@ export default function CollectionPage() {
     setPurchaseDate(item.purchase?.purchaseDate ?? '')
     setSellerName(item.purchase?.sellerName ?? '')
     setNotes(item.purchase?.notes ?? '')
+
+    setCompositionDraft([])
+    setCompositionLoadError(null)
+    setCompositionSaveError(null)
+    setCompositionValidationError(null)
+    setIsCompositionValid(true)
+    setCompositionEditorDefaultMode('desconhecida')
+    setCompositionEditorKey((current) => current + 1)
+    setIsCompositionLoading(true)
     setIsModalOpen(true)
+
+    // `getComposition` já faz o fallback para itens legados (Caso 1/2/3) —
+    // a UI não precisa (e não deve) saber se veio da estrutura nova ou do
+    // fallback. Falha aqui não bloqueia a edição dos outros campos: mostra
+    // um aviso e deixa o editor em "Composição não informada", permitindo
+    // que o usuário prossiga e defina a composição do zero.
+    try {
+      const composition = await coinCompositionRepository.getComposition(item.id)
+      const draft: SetCoinCompositionInput = composition.parts.map((part) => ({
+        part: part.part,
+        sortOrder: part.sortOrder,
+        components: part.components.map((component) => ({
+          metalCode: component.metalCode,
+          percentage: component.percentage,
+          sortOrder: component.sortOrder,
+        })),
+      }))
+      setCompositionDraft(draft)
+    } catch (err) {
+      setCompositionLoadError(getCompositionErrorMessage(err))
+    } finally {
+      setIsCompositionLoading(false)
+    }
   }
 
   const closeModal = useCallback(() => {
@@ -1652,6 +1708,17 @@ export default function CollectionPage() {
     event.preventDefault()
 
     setError(null)
+    setCompositionSaveError(null)
+    setCompositionValidationError(null)
+
+    // Etapa 3D — um erro de composição já visível inline (ex.: metal único
+    // com 50%) nunca deve gerar uma chamada evitável a create()/update()/
+    // setComposition(): a RPC rejeitaria com 22023 de qualquer forma, mas
+    // isso criaria/atualizaria o item sem necessidade antes de falhar.
+    if (!isCompositionValid) {
+      setCompositionValidationError('Corrija os percentuais indicados na composição antes de salvar.')
+      return
+    }
 
     const parsedQuantity = Number.parseInt(quantity, 10)
     const normalizedQuantity = Number.isFinite(parsedQuantity) && parsedQuantity > 0 ? parsedQuantity : 1
@@ -1664,15 +1731,13 @@ export default function CollectionPage() {
     setIsSaving(true)
 
     const totalPrice = toNullableNumber(pricePaid)
+    const wasCreate = editingItemId === null
 
     const input = {
       countryCode: toNullableText(countryCode),
       year: toNullableInt(year),
       denomination: toNullableText(denomination),
-      metalCode: toNullableText(metalCode),
-      secondaryMetalCode: hasSecondMetal ? toNullableText(secondaryMetalCode) : null,
       grossWeightG: toNullableNumber(grossWeightG),
-      purity: percentStringToPurity(purityPercent),
       faceValue: toNullableNumber(faceValue),
       quantity: normalizedQuantity,
       initialGradeId: toNullableText(initialGradeId),
@@ -1688,20 +1753,56 @@ export default function CollectionPage() {
           : null,
     }
 
+    // Etapa 3B — dados gerais do item e composição são duas escritas
+    // separadas: collection_items (via collectionRepository) primeiro,
+    // depois a composição (via coinCompositionRepository, exclusivamente
+    // pela RPC). Um item sem composição salva ainda é um estado válido
+    // ("composição não informada") — nunca é desfeito automaticamente.
+    let itemId: string
     try {
-      if (editingItemId === null) {
+      if (wasCreate) {
         const newItem = await collectionRepository.create(input)
+        itemId = newItem.id
         setItems((current) => [newItem, ...current])
-        setSuccessMessage('Moeda adicionada com sucesso.')
+        // A partir daqui o item já existe de verdade no banco — se a
+        // composição falhar abaixo, um novo clique em "Salvar" precisa
+        // ATUALIZAR este item, nunca criar outro.
+        setEditingItemId(itemId)
       } else {
+        itemId = editingItemId
         const updatedItem = await collectionRepository.update(editingItemId, input)
         setItems((current) => current.map((item) => (item.id === updatedItem.id ? updatedItem : item)))
-        setSuccessMessage('Moeda atualizada com sucesso.')
       }
-
-      closeModal()
     } catch (err) {
       setError(getUserFriendlyErrorMessage(err))
+      setIsSaving(false)
+      return
+    }
+
+    try {
+      await coinCompositionRepository.setComposition(itemId, compositionDraft)
+
+      // Recarrega o item para refletir metal_code/secondary_metal_code/
+      // purity (e os nomes de exibição resolvidos por join, metalName/
+      // secondaryMetalName) já derivados pela RPC — nunca montados à mão
+      // aqui.
+      const refreshed = await collectionRepository.get(itemId)
+      if (refreshed) {
+        setItems((current) => current.map((item) => (item.id === refreshed.id ? refreshed : item)))
+      }
+
+      setSuccessMessage(wasCreate ? 'Moeda adicionada com sucesso.' : 'Moeda atualizada com sucesso.')
+      closeModal()
+    } catch (err) {
+      // Erro conhecido da RPC (42501/22023/23503/23505) não é logado — é
+      // uma rejeição de validação esperada, não uma falha inesperada.
+      if (!isKnownCompositionErrorCode(err)) {
+        Sentry.captureException(err)
+      }
+      setCompositionSaveError(getCompositionErrorMessage(err))
+      // Modal continua aberto (nunca fecha, nunca reseta o formulário) —
+      // editingItemId já aponta para o item real; o usuário só precisa
+      // clicar em "Salvar" de novo.
     } finally {
       setIsSaving(false)
     }
@@ -2396,7 +2497,7 @@ export default function CollectionPage() {
             <Button type="button" variant="secondary" onClick={closeModal} disabled={isSaving}>
               Cancelar
             </Button>
-            <Button type="submit" form="coin-form" isLoading={isSaving}>
+            <Button type="submit" form="coin-form" isLoading={isSaving} disabled={isCompositionLoading}>
               {isSaving ? 'Salvando...' : 'Salvar'}
             </Button>
           </>
@@ -2438,83 +2539,48 @@ export default function CollectionPage() {
 
             <div className="flex flex-col gap-2">
               <span className="text-sm font-medium text-text-secondary">Composição</span>
-              <div className="flex gap-5">
-                <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-                  <input
-                    type="radio"
-                    name="metal-composition"
-                    checked={!hasSecondMetal}
-                    onChange={() => setHasSecondMetal(false)}
-                    className="accent-accent"
+              {isCompositionLoading ? (
+                <p className="text-sm text-text-secondary">Carregando composição...</p>
+              ) : (
+                <>
+                  {compositionLoadError && <p className="text-sm text-danger">{compositionLoadError}</p>}
+                  <CoinCompositionEditor
+                    key={compositionEditorKey}
+                    metals={metals}
+                    value={compositionDraft}
+                    defaultMode={compositionEditorDefaultMode}
+                    onChange={setCompositionDraft}
+                    onValidityChange={(isValid) => {
+                      setIsCompositionValid(isValid)
+                      if (isValid) setCompositionValidationError(null)
+                    }}
                   />
-                  Um metal
-                </label>
-                <label className="flex cursor-pointer items-center gap-2 text-sm text-text-primary">
-                  <input
-                    type="radio"
-                    name="metal-composition"
-                    checked={hasSecondMetal}
-                    onChange={() => setHasSecondMetal(true)}
-                    className="accent-accent"
-                  />
-                  Dois metais
-                </label>
-              </div>
-            </div>
-
-            <FieldRow>
-              <Select
-                label={hasSecondMetal ? 'Metal principal' : 'Metal'}
-                value={metalCode}
-                onChange={(e) => setMetalCode(e.target.value)}
-              >
-                <option value="">Selecione...</option>
-                {metals.map((metal) => (
-                  <option key={metal.code} value={metal.code}>
-                    {metal.name}
-                  </option>
-                ))}
-              </Select>
-              {hasSecondMetal && (
-                <Select
-                  label="Segundo metal"
-                  value={secondaryMetalCode}
-                  onChange={(e) => setSecondaryMetalCode(e.target.value)}
-                >
-                  <option value="">Selecione...</option>
-                  {metals.map((metal) => (
-                    <option key={metal.code} value={metal.code}>
-                      {metal.name}
-                    </option>
-                  ))}
-                </Select>
+                  <p className="text-sm text-text-secondary">
+                    {summarizeDraftComposition(compositionDraft, metals)}
+                  </p>
+                  {compositionValidationError && <p className="text-sm text-danger">{compositionValidationError}</p>}
+                  {compositionSaveError && (
+                    <p className="text-sm text-danger">
+                      A moeda foi salva, mas a composição não pôde ser salva: {compositionSaveError} Você pode
+                      revisar e clicar em Salvar novamente.
+                    </p>
+                  )}
+                </>
               )}
-            </FieldRow>
+            </div>
           </div>
 
           <div className="flex flex-col gap-4 border-t border-border pt-6">
             <SectionHeading icon={ClipboardList}>Características</SectionHeading>
 
-            <FieldRow>
-              <Input
-                label="Peso (g)"
-                type="number"
-                step="any"
-                min="0"
-                value={grossWeightG}
-                onChange={(e) => setGrossWeightG(e.target.value)}
-              />
-              <Input
-                label="Pureza (%)"
-                type="number"
-                step="any"
-                min="0"
-                max="100"
-                value={purityPercent}
-                onChange={(e) => setPurityPercent(e.target.value)}
-                placeholder="Ex.: 90"
-              />
-            </FieldRow>
+            <Input
+              label="Peso (g)"
+              type="number"
+              step="any"
+              min="0"
+              value={grossWeightG}
+              onChange={(e) => setGrossWeightG(e.target.value)}
+            />
 
             <FieldRow>
               {editingItemId === null && (

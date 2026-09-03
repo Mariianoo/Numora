@@ -12,6 +12,13 @@
  * relação; não existe conceito de "lote" separado — vários itens podem
  * apontar para a mesma compra, isso não é modelado aqui.
  *
+ * Etapa 3B — `create()`/`update()` NÃO escrevem mais `metal_code`/
+ * `secondary_metal_code`/`purity`: recebem só os dados gerais do item.
+ * Composição é responsabilidade exclusiva de
+ * `CoinCompositionRepository.setComposition()` (features/coin-composition),
+ * chamada pelo caller (UI) logo depois de `create()`/`update()` — nunca
+ * por este repository, que não conhece a RPC de composição.
+ *
  * Também orquestra `CollectionUnitsRepository` (Etapa collection_units):
  * cada `collection_item` precisa de ao menos 1 `collection_unit` (o
  * exemplar físico). `quantity` não é mais escrito aqui — é um espelho de
@@ -323,10 +330,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           country_code: input.countryCode,
           year: input.year,
           denomination: input.denomination,
-          metal_code: input.metalCode,
-          secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
-          purity: input.purity,
           face_value: input.faceValue,
         })
         .select(ITEM_SELECT)
@@ -453,10 +457,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
           country_code: input.countryCode,
           year: input.year,
           denomination: input.denomination,
-          metal_code: input.metalCode,
-          secondary_metal_code: input.secondaryMetalCode,
           gross_weight_g: input.grossWeightG,
-          purity: input.purity,
           face_value: input.faceValue,
         })
         .eq('id', id)
