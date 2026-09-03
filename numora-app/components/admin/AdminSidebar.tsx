@@ -42,6 +42,7 @@ import {
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
 import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
 import { Badge } from '@/components/ui/Badge'
+import { NumoraLogo } from '@/components/ui/NumoraLogo'
 import { cn } from '@/components/ui/utils'
 
 const adminRepository = createSupabaseAdminRepository()
@@ -108,9 +109,7 @@ export function AdminSidebar({ isMobileOpen, onClose }: AdminSidebarProps) {
   const content = (
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="flex flex-col gap-1.5 px-2 pt-2">
-        <span className="text-lg font-semibold tracking-wide text-text-primary">
-          NUMORA<span className="text-accent">.</span>
-        </span>
+        <NumoraLogo variant="full" theme="dark" size={26} />
         <Badge tone="accent" className="w-fit">
           Admin Control Center
         </Badge>

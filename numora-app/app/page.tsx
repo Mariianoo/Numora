@@ -26,6 +26,7 @@ import { Coins, Layers, Search, Wallet, IdCard, UserPlus, PackagePlus, LineChart
 import { LandingViewTracker } from '@/components/analytics/LandingViewTracker'
 import { LandingProductPreview } from './LandingProductPreview'
 import { Card } from '@/components/ui/Card'
+import { NumoraLogo } from '@/components/ui/NumoraLogo'
 import { cn } from '@/components/ui/utils'
 
 const CTA_PRIMARY_CLASSES = cn(
@@ -82,7 +83,7 @@ export default function Home() {
           aria-hidden
         />
         <div className="relative z-10 mx-auto flex max-w-2xl flex-col items-center gap-6 text-center">
-          <p className="text-xs font-semibold tracking-wider text-accent uppercase">Numora</p>
+          <NumoraLogo variant="full" theme="dark" size={44} withTagline />
           <h1 className="text-3xl font-semibold tracking-tight text-text-primary sm:text-5xl">
             Sua coleção em ordem, sob controle e pronta para crescer.
           </h1>

@@ -6,6 +6,8 @@
  */
 import type { ReactNode } from 'react'
 
+import { NumoraLogo } from './NumoraLogo'
+
 export interface AuthShellProps {
   tagline: string
   children: ReactNode
@@ -19,11 +21,9 @@ export function AuthShell({ tagline, children }: AuthShellProps) {
         aria-hidden
       />
       <div className="relative z-10 flex w-full flex-col items-center gap-8">
-        <div className="text-center">
-          <h1 className="text-3xl font-semibold tracking-wide text-text-primary">
-            NUMORA<span className="text-accent">.</span>
-          </h1>
-          <p className="mt-2 text-sm text-text-secondary">{tagline}</p>
+        <div className="flex flex-col items-center text-center">
+          <NumoraLogo variant="full" theme="dark" size={48} />
+          <p className="mt-3 text-sm text-text-secondary">{tagline}</p>
         </div>
         {children}
       </div>

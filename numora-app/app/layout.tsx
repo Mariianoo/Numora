@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 
@@ -15,6 +15,15 @@ const inter = Inter({
 export const metadata: Metadata = {
   title: "Numora — Sua coleção. Sua história.",
   description: "Gestão profissional de coleções numismáticas.",
+};
+
+// Identidade visual Numora (favicon/apple-icon vêm da convenção de arquivo
+// `app/icon.svg`/`app/apple-icon.png` — Next.js os detecta sozinho, sem
+// precisar declarar `metadata.icons` aqui). `themeColor` mora num export
+// `viewport` separado (não em `metadata`) desde que o Next.js 14 dividiu
+// os dois — colocá-lo em `metadata` gera aviso de build nesta versão.
+export const viewport: Viewport = {
+  themeColor: "#0B1F3B",
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {

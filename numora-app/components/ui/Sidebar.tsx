@@ -18,6 +18,7 @@ import { LayoutDashboard, Coins, UserRound, Shield, Compass } from 'lucide-react
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
 import type { AdminRole } from '@/features/admin/types'
+import { NumoraLogo } from './NumoraLogo'
 import { cn } from './utils'
 
 interface NavItem {
@@ -72,9 +73,7 @@ export function Sidebar({ isMobileOpen, onClose, role }: SidebarProps) {
   const content = (
     <div className="flex h-full flex-col gap-6 p-4">
       <div className="px-2 pt-2">
-        <span className="text-lg font-semibold tracking-wide text-text-primary">
-          NUMORA<span className="text-accent">.</span>
-        </span>
+        <NumoraLogo variant="full" theme="dark" size={26} />
       </div>
 
       <div className="flex flex-1 flex-col gap-1.5">

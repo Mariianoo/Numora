@@ -18,6 +18,7 @@ import { Menu } from 'lucide-react'
 import { Avatar } from './Avatar'
 import { Badge } from './Badge'
 import { IconButton } from './IconButton'
+import { NumoraLogo } from './NumoraLogo'
 import type { AdminRole } from '@/features/admin/types'
 
 const PAGE_TITLES: Record<string, string> = {
@@ -50,9 +51,7 @@ export function Topbar({ onMenuClick, userLabel, title, role }: TopbarProps) {
       <IconButton icon={Menu} onClick={onMenuClick} aria-label="Abrir menu" className="md:hidden" />
 
       {/* Mobile: a marca fica visível aqui, já que a Sidebar (onde ela mora no desktop) está oculta */}
-      <span className="text-base font-semibold tracking-wide text-text-primary md:hidden">
-        NUMORA<span className="text-accent">.</span>
-      </span>
+      <NumoraLogo variant="full" theme="dark" size={20} className="md:hidden" />
 
       <p className="hidden flex-1 truncate text-sm font-medium text-text-secondary md:block">{pageTitle}</p>
       <div className="flex-1 md:hidden" />
