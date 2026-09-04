@@ -140,7 +140,33 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">5. Com quem compartilhamos dados</h2>
+            <h2 className="text-lg font-semibold text-text-primary">
+              5. Hospedagem, processamento e transferência de dados
+            </h2>
+            <p className="mt-2">
+              O banco de dados, a autenticação e o armazenamento de arquivos do Numora (descritos na seção 4) são
+              operados pela Supabase em um data center localizado em São Paulo, Brasil. É lá que seus dados
+              pessoais, sua coleção, suas fotos e os demais dados descritos na seção 2 ficam armazenados e são
+              processados.
+            </p>
+            <p className="mt-2">
+              A aplicação em si é hospedada pela Vercel, que opera por meio de uma rede de infraestrutura global —
+              isso pode envolver processamento fora do Brasil, a depender de como a Vercel distribui essa
+              infraestrutura. O mesmo vale para o Google Tag Manager, usado apenas quando você consente com
+              cookies de analytics (seção 6): por ser uma empresa global, a Google pode processar esses eventos
+              fora do Brasil.
+            </p>
+            <p className="mt-2">
+              Quando isso ocorre, essa transferência internacional acontece só na medida necessária para operar o
+              Numora através desses fornecedores, e permanece sujeita às exigências aplicáveis da Lei Geral de
+              Proteção de Dados (LGPD) para esse tipo de transferência. Este é um ponto que segue em avaliação
+              junto aos nossos fornecedores e pode ser detalhado com mais precisão em uma atualização futura desta
+              política.
+            </p>
+          </section>
+
+          <section>
+            <h2 className="text-lg font-semibold text-text-primary">6. Com quem compartilhamos dados</h2>
             <p className="mt-2">
               <strong className="text-text-primary">Supabase</strong> e <strong className="text-text-primary">Vercel</strong>:
               como provedores de infraestrutura que operam o produto (hospedagem, banco de dados, autenticação,
@@ -167,7 +193,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">6. Cookies</h2>
+            <h2 className="text-lg font-semibold text-text-primary">7. Cookies</h2>
             <p className="mt-2">
               O Numora usa cookies para manter sua sessão de login (sempre necessário) e, só com seu consentimento
               explícito, para analytics e atribuição de origem. Detalhes completos na nossa{' '}
@@ -180,7 +206,7 @@ export default function PrivacyPage() {
 
           <section>
             <h2 className="text-lg font-semibold text-text-primary">
-              7. Perfil público opcional (Numora Passport)
+              8. Perfil público opcional (Numora Passport)
             </h2>
             <p className="mt-2">
               Você pode, se quiser, ativar um perfil público (&quot;Numora Passport&quot;) que exibe seu nome,
@@ -197,7 +223,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">8. Segurança</h2>
+            <h2 className="text-lg font-semibold text-text-primary">9. Segurança</h2>
             <p className="mt-2">
               Cada conta só tem acesso aos próprios dados — isso é garantido diretamente no banco de dados (Row
               Level Security), não apenas na interface. Fotos são acessadas exclusivamente por links temporários
@@ -206,15 +232,15 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">9. Por quanto tempo mantemos seus dados</h2>
+            <h2 className="text-lg font-semibold text-text-primary">10. Por quanto tempo mantemos seus dados</h2>
             <p className="mt-2">
               Mantemos seus dados enquanto sua conta existir. Se você excluir sua conta, seus dados são removidos
-              permanentemente (ver seção 11).
+              permanentemente (ver seção 12).
             </p>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">10. Seus direitos</h2>
+            <h2 className="text-lg font-semibold text-text-primary">11. Seus direitos</h2>
             <p className="mt-2">Você pode, a qualquer momento:</p>
             <ul className="mt-2 list-disc space-y-1 pl-5">
               <li>Acessar e corrigir seus dados de perfil, diretamente em /dashboard/profile.</li>
@@ -228,12 +254,12 @@ export default function PrivacyPage() {
                 </a>
                 .
               </li>
-              <li>Excluir sua conta e todos os seus dados, de forma definitiva (ver seção 11).</li>
+              <li>Excluir sua conta e todos os seus dados, de forma definitiva (ver seção 12).</li>
             </ul>
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">11. Exclusão de conta</h2>
+            <h2 className="text-lg font-semibold text-text-primary">12. Exclusão de conta</h2>
             <p className="mt-2">
               O Numora oferece exclusão de conta self-service, disponível em /dashboard/profile, na seção
               &quot;Zona de perigo&quot;. Ao confirmar a exclusão:
@@ -255,7 +281,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">12. Crianças e adolescentes</h2>
+            <h2 className="text-lg font-semibold text-text-primary">13. Crianças e adolescentes</h2>
             <p className="mt-2">
               O Numora não é direcionado a menores de 18 anos. Se tomarmos conhecimento de que coletamos dados de
               um menor sem o devido consentimento dos responsáveis, excluiremos esses dados mediante solicitação.
@@ -263,7 +289,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">13. Alterações a esta política</h2>
+            <h2 className="text-lg font-semibold text-text-primary">14. Alterações a esta política</h2>
             <p className="mt-2">
               Podemos atualizar esta política conforme o Numora evolui, especialmente ao sair do Beta Fechado.
               Mudanças relevantes serão comunicadas dentro do produto.
@@ -271,7 +297,7 @@ export default function PrivacyPage() {
           </section>
 
           <section>
-            <h2 className="text-lg font-semibold text-text-primary">14. Contato</h2>
+            <h2 className="text-lg font-semibold text-text-primary">15. Contato</h2>
             <p className="mt-2">
               Dúvidas sobre esta política ou sobre seus dados:{' '}
               <a
