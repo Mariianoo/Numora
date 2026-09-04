@@ -89,15 +89,16 @@ export default function Home() {
             priority
             className="h-auto w-[260px] sm:w-[330px] md:w-[420px] lg:w-[520px]"
           />
+          <p className="text-xs font-semibold tracking-wider text-accent uppercase">Beta Fechado</p>
           <h1 className="text-3xl font-semibold tracking-tight text-text-primary sm:text-5xl">
             Sua coleção em ordem, sob controle e pronta para crescer.
           </h1>
           <p className="max-w-lg text-base text-text-secondary sm:text-lg">
-            Organize suas moedas, registre cada exemplar e acompanhe sua coleção em um só lugar.
+            Estamos selecionando os primeiros colecionadores para testar o Numora.
           </p>
           <div className="mt-2 flex flex-col gap-3 sm:flex-row">
             <Link href="/signup" className={CTA_PRIMARY_CLASSES}>
-              Começar minha coleção
+              Quero participar do Beta
             </Link>
             <Link href="/login" className={CTA_SECONDARY_CLASSES}>
               Entrar
@@ -206,11 +207,11 @@ export default function Home() {
       <section className="px-6 py-20">
         <div className="mx-auto flex max-w-xl flex-col items-center gap-6 text-center">
           <h2 className="text-2xl font-semibold text-text-primary sm:text-3xl">
-            Comece a organizar sua coleção hoje.
+            Estamos selecionando os primeiros colecionadores para testar o Numora.
           </h2>
           <div className="flex flex-col gap-3 sm:flex-row">
             <Link href="/signup" className={CTA_PRIMARY_CLASSES}>
-              Começar minha coleção
+              Quero participar do Beta
             </Link>
             <Link href="/login" className={CTA_SECONDARY_CLASSES}>
               Já tenho uma conta

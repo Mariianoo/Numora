@@ -119,14 +119,8 @@ export default function LoginPage() {
           </Link>
         </form>
 
-        <div className="mt-6 flex flex-col items-center gap-3 border-t border-border pt-5">
-          <p className="text-sm text-text-secondary">Ainda não tenho uma conta</p>
-          <Link
-            href="/signup"
-            className="flex h-10 w-full items-center justify-center rounded-lg border border-border bg-surface-hover text-sm font-medium text-text-primary transition-colors hover:bg-surface focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
-          >
-            Criar minha conta
-          </Link>
+        <div className="mt-6 flex flex-col items-center gap-1 border-t border-border pt-5 text-center">
+          <p className="text-sm text-text-secondary">Beta fechado — acesso somente por convite.</p>
         </div>
       </Card>
     </AuthShell>
