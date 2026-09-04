@@ -20,8 +20,9 @@
  * `lib/stats/collection-stats.ts`): `unit.unitCost ?? 0` somado, `null`
  * nunca interpretado como custo real zero.
  */
-import type { CollectionItem } from './types'
+import type { CollectionItem, CollectionItemUnit } from './types'
 import type { CollectionUnit } from '@/features/collection-units/types'
+import type { PassportCollectionVisibility } from '@/features/profile/types'
 
 /**
  * Nome próprio (em vez de acessar `item.units` direto em cada call site)
@@ -94,4 +95,37 @@ export function getItemPurchaseIds(item: CollectionItem): string[] {
   return Array.from(
     new Set(getActiveUnits(item).map((unit) => unit.purchaseId).filter((id): id is string => id !== null)),
   )
+}
+
+/**
+ * Exemplar principal do item (Etapa 10) — fonte de verdade é
+ * `unit.isPrimary`, nunca mais a antiga convenção "mais antigo = principal".
+ * O fallback para `units[0]` (que `CollectionRepository` sempre ordena por
+ * `createdAt` ascendente) só existe para o caso defensivo de um item chegar
+ * sem nenhum principal marcado — não deveria acontecer dado o backfill +
+ * o índice único parcial no banco, mas a UI nunca fica sem exemplar
+ * nenhum para representar a moeda.
+ *
+ * Extraída de `app/dashboard/collection/page.tsx` (Etapa "F2 — Closed
+ * Beta Test Suite") para ser testável sem montar a página inteira —
+ * mesmo padrão das demais funções deste arquivo. Nenhuma mudança de
+ * comportamento, só de localização.
+ */
+export function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
+  return item.units.find((u) => u.isPrimary) ?? item.units[0] ?? null
+}
+
+/**
+ * Fundação de imagens — só oferece o botão de publicar foto quando a moeda
+ * já apareceria no Passport (senão a foto nunca teria onde ser vista) e
+ * existe de fato uma foto de frente no exemplar principal. Independente da
+ * publicação de TEXTO (`isPublicInPassport`) já ter sido decidida antes —
+ * publicar a foto continua exigindo o clique próprio, nunca decorre daqui.
+ */
+export function canPublishPhoto(item: CollectionItem, visibilityMode: PassportCollectionVisibility | null): boolean {
+  const isVisibleOnPassport = visibilityMode === 'all' || (visibilityMode === 'selected' && item.isPublicInPassport)
+  if (!isVisibleOnPassport) return false
+
+  const primaryUnit = getPrimaryUnit(item)
+  return primaryUnit?.images.some((image) => image.kind === 'front') ?? false
 }

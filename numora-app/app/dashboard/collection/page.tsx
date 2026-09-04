@@ -66,9 +66,11 @@ import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import {
+  canPublishPhoto,
   getItemAcquisitionSummary,
   getItemAcquisitionTotal,
   getItemPurchaseIds,
+  getPrimaryUnit,
 } from '@/features/collection/aggregate'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
@@ -291,34 +293,6 @@ function MiniStars({ rating }: { rating: number | null }) {
       ))}
     </span>
   )
-}
-
-/**
- * Exemplar principal do item (Etapa 10) — fonte de verdade é
- * `unit.isPrimary`, nunca mais a antiga convenção "mais antigo = principal".
- * O fallback para `units[0]` (que `CollectionRepository` sempre ordena por
- * `createdAt` ascendente) só existe para o caso defensivo de um item chegar
- * sem nenhum principal marcado — não deveria acontecer dado o backfill +
- * o índice único parcial no banco, mas a UI nunca fica sem exemplar
- * nenhum para representar a moeda.
- */
-function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
-  return item.units.find((u) => u.isPrimary) ?? item.units[0] ?? null
-}
-
-/**
- * Fundação de imagens — só oferece o botão de publicar foto quando a moeda
- * já apareceria no Passport (senão a foto nunca teria onde ser vista) e
- * existe de fato uma foto de frente no exemplar principal. Independente da
- * publicação de TEXTO (`isPublicInPassport`) já ter sido decidida antes —
- * publicar a foto continua exigindo o clique próprio, nunca decorre daqui.
- */
-function canPublishPhoto(item: CollectionItem, visibilityMode: PassportCollectionVisibility | null): boolean {
-  const isVisibleOnPassport = visibilityMode === 'all' || (visibilityMode === 'selected' && item.isPublicInPassport)
-  if (!isVisibleOnPassport) return false
-
-  const primaryUnit = getPrimaryUnit(item)
-  return primaryUnit?.images.some((image) => image.kind === 'front') ?? false
 }
 
 /**

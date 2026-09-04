@@ -32,6 +32,9 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# Template committed on purpose (Etapa "F2 — Closed Beta Test Suite") — no
+# secrets, só os nomes das 3 variáveis que tests/support/dev-env.ts espera.
+!.env.test.example
 
 # vercel
 .vercel

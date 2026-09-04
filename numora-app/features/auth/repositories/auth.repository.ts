@@ -25,7 +25,7 @@ import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { AuthSession, AuthUser, SignUpInput, SignUpResult } from '@/features/auth/types'
-import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { mapAuthErrorMessage } from '@/features/auth/map-auth-error-message'
 import { getStoredAttribution, clearStoredAttribution } from '@/lib/analytics/attribution'
 
 export interface AuthRepository {
@@ -57,38 +57,6 @@ function toAuthSession(session: Session | null): AuthSession | null {
     user,
     accessToken: session.access_token,
     expiresAt: session.expires_at ?? null,
-  }
-}
-
-/**
- * Traduz os códigos de erro conhecidos do Supabase Auth (`error.code`,
- * estável — nunca `error.message`, que é texto em inglês sujeito a
- * mudar) para mensagens em português. Propositalmente NÃO diferencia
- * "e-mail não existe" de "senha errada": o próprio Supabase retorna o
- * mesmo `invalid_credentials` para os dois casos, por segurança contra
- * enumeração de contas — não tentamos ser mais específicos que isso.
- */
-function mapAuthErrorMessage(error: { code?: string; message: string }): string {
-  switch (error.code) {
-    case 'invalid_credentials':
-      return 'E-mail ou senha incorretos.'
-    case 'email_not_confirmed':
-      return 'Confirme seu e-mail antes de entrar — verifique sua caixa de entrada.'
-    case 'user_already_exists':
-    case 'email_exists':
-      return 'Já existe uma conta com este e-mail.'
-    case 'weak_password':
-      return 'Senha muito fraca. Use pelo menos 8 caracteres.'
-    case 'same_password':
-      return 'A nova senha precisa ser diferente da atual.'
-    case 'over_email_send_rate_limit':
-      return 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.'
-    default:
-      // Código não mapeado (ex.: erro de rede antes de chegar ao Supabase,
-      // ou algum código novo do SDK) — nunca mostramos error.message bruto
-      // direto; o fallback preserva o texto original só quando ele já é
-      // seguro (ver getUserFriendlyErrorMessage).
-      return getUserFriendlyErrorMessage(new Error(error.message), error.message)
   }
 }
 
