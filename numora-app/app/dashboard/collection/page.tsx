@@ -2934,7 +2934,7 @@ export default function CollectionPage() {
         onClose={closePhotoPublishConfirm}
         onConfirm={confirmPublishPhoto}
         title="Publicar foto no Passport?"
-        description="Esta imagem será exibida publicamente no seu Passport e receberá a marca d'água Numora Collect."
+        description="Somente a foto frontal do exemplar principal desta moeda será exibida publicamente no seu Passport, com a marca d'água Numora Collect."
         icon={ImagePlus}
         confirmLabel="Publicar foto"
         isLoading={isPublishingPhoto}

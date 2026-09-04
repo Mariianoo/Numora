@@ -34,6 +34,7 @@ import Link from 'next/link'
 import {
   Coins,
   Layers,
+  Globe,
   Globe2,
   Gem,
   Wallet,
@@ -67,6 +68,7 @@ import { StatCard } from '@/components/ui/StatCard'
 import { Avatar } from '@/components/ui/Avatar'
 import { ErrorState } from '@/components/ui/ErrorState'
 import { Modal } from '@/components/ui/Modal'
+import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { cn } from '@/components/ui/utils'
 import { ConsentPreferencesModal } from '@/components/analytics/ConsentPreferencesModal'
 import { PassportShareModal } from '@/components/passport/PassportShareModal'
@@ -108,6 +110,8 @@ export default function ProfilePage() {
   const [isShareModalOpen, setIsShareModalOpen] = useState(false)
   const [isSavingVisibility, setIsSavingVisibility] = useState(false)
   const [visibilityError, setVisibilityError] = useState<string | null>(null)
+  /** F7 (Beta Readiness Audit) — "all" publica toda a coleção ativa de uma vez, então exige confirmação explícita antes da mutação; "none"/"selected" continuam imediatos, como já eram. */
+  const [isAllVisibilityConfirmOpen, setIsAllVisibilityConfirmOpen] = useState(false)
 
   const [isPreferencesOpen, setIsPreferencesOpen] = useState(false)
 
@@ -227,6 +231,43 @@ export default function ProfilePage() {
     try {
       const updated = await profileRepository.setPassportCollectionVisibility(value)
       setProfile(updated)
+    } catch (err) {
+      setVisibilityError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setIsSavingVisibility(false)
+    }
+  }
+
+  /**
+   * F7 — selecionar "all" no <Select> nunca chama a mutação direto: só
+   * abre a confirmação. "none"/"selected" continuam imediatos (não
+   * representam publicação ampla — auditoria não encontrou necessidade de
+   * confirmação para eles).
+   */
+  function handleSelectCollectionVisibility(value: PassportCollectionVisibility) {
+    if (value === 'all') {
+      setVisibilityError(null)
+      setIsAllVisibilityConfirmOpen(true)
+      return
+    }
+    handleChangeCollectionVisibility(value)
+  }
+
+  function closeAllVisibilityConfirm() {
+    if (isSavingVisibility) return
+    setIsAllVisibilityConfirmOpen(false)
+    setVisibilityError(null)
+  }
+
+  /** Mesmo critério de "só fecha ao suceder" já usado por `confirmPublishPhoto` — em erro, o dialog continua aberto mostrando `visibilityError`. */
+  async function confirmPublishAllCollection() {
+    setVisibilityError(null)
+    setIsSavingVisibility(true)
+
+    try {
+      const updated = await profileRepository.setPassportCollectionVisibility('all')
+      setProfile(updated)
+      setIsAllVisibilityConfirmOpen(false)
     } catch (err) {
       setVisibilityError(getUserFriendlyErrorMessage(err))
     } finally {
@@ -483,7 +524,7 @@ export default function ProfilePage() {
                       value={profile.passportCollectionVisibility}
                       disabled={isSavingVisibility}
                       onChange={(e) =>
-                        handleChangeCollectionVisibility(e.target.value as PassportCollectionVisibility)
+                        handleSelectCollectionVisibility(e.target.value as PassportCollectionVisibility)
                       }
                     >
                       {(Object.keys(PASSPORT_VISIBILITY_LABELS) as PassportCollectionVisibility[]).map((value) => (
@@ -536,6 +577,31 @@ export default function ProfilePage() {
           url={getPassportUrl() ?? ''}
         />
       )}
+
+      {/*
+        F7 (Beta Readiness Audit) — confirmação explícita antes de publicar
+        toda a coleção ("all"), mesmo padrão do ConfirmDialog de publicação
+        de foto em app/dashboard/collection/page.tsx: só fecha ao suceder,
+        erro aparece dentro do próprio dialog. "none"/"selected" continuam
+        sem confirmação — não representam publicação ampla.
+      */}
+      <ConfirmDialog
+        isOpen={isAllVisibilityConfirmOpen}
+        onClose={closeAllVisibilityConfirm}
+        onConfirm={confirmPublishAllCollection}
+        title="Publicar toda a coleção?"
+        description="Isso tornará públicas todas as moedas ativas da sua coleção no seu Passport — não só os números-resumo."
+        icon={Globe}
+        confirmLabel="Publicar coleção"
+        isLoading={isSavingVisibility}
+        error={visibilityError}
+      >
+        <p className="text-xs text-text-secondary">
+          Cada moeda aparece com denominação, país, ano e metal — nunca preço, custo ou dados pessoais. As fotos
+          continuam privadas até você publicá-las individualmente. Você pode voltar para uma visibilidade mais
+          restrita a qualquer momento.
+        </p>
+      </ConfirmDialog>
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">Estatísticas</p>
