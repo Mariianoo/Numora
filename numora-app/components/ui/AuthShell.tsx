@@ -22,7 +22,7 @@ export function AuthShell({ tagline, children }: AuthShellProps) {
       />
       <div className="relative z-10 flex w-full flex-col items-center gap-8">
         <div className="flex flex-col items-center text-center">
-          <NumoraLogo variant="full" theme="dark" size={48} />
+          <NumoraLogo variant="full" theme="dark" priority className="h-auto w-[220px] sm:w-[260px]" />
           <p className="mt-3 text-sm text-text-secondary">{tagline}</p>
         </div>
         {children}

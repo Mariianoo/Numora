@@ -83,7 +83,12 @@ export default function Home() {
           aria-hidden
         />
         <div className="relative z-10 mx-auto flex max-w-2xl flex-col items-center gap-6 text-center">
-          <NumoraLogo variant="full" theme="dark" size={44} withTagline />
+          <NumoraLogo
+            variant="full"
+            theme="dark"
+            priority
+            className="h-auto w-[260px] sm:w-[330px] md:w-[420px] lg:w-[520px]"
+          />
           <h1 className="text-3xl font-semibold tracking-tight text-text-primary sm:text-5xl">
             Sua coleção em ordem, sob controle e pronta para crescer.
           </h1>

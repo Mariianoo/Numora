@@ -7,8 +7,8 @@ import type { MetadataRoute } from 'next'
  * worker (fora do escopo desta etapa; só o manifest, para o app ser
  * "instalável" e ter ícone/tema corretos quando adicionado à tela inicial).
  *
- * Ícones apontam para `public/icons/`, gerados a partir do símbolo Numora
- * aprovado (`public/brand/numora-symbol.svg`) — nunca duplicados à mão.
+ * Ícones apontam para `public/icons/`, gerados a partir dos assets de marca
+ * oficiais aprovados em `public/brand/` — nunca duplicados à mão.
  */
 export default function manifest(): MetadataRoute.Manifest {
   return {

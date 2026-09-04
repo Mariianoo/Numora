@@ -18,7 +18,7 @@ export const metadata: Metadata = {
 };
 
 // Identidade visual Numora (favicon/apple-icon vêm da convenção de arquivo
-// `app/icon.svg`/`app/apple-icon.png` — Next.js os detecta sozinho, sem
+// `app/favicon.ico`/`app/apple-icon.png` — Next.js os detecta sozinho, sem
 // precisar declarar `metadata.icons` aqui). `themeColor` mora num export
 // `viewport` separado (não em `metadata`) desde que o Next.js 14 dividiu
 // os dois — colocá-lo em `metadata` gera aviso de build nesta versão.

@@ -50,8 +50,8 @@ export function Topbar({ onMenuClick, userLabel, title, role }: TopbarProps) {
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-border bg-surface px-4 sm:px-6">
       <IconButton icon={Menu} onClick={onMenuClick} aria-label="Abrir menu" className="md:hidden" />
 
-      {/* Mobile: a marca fica visível aqui, já que a Sidebar (onde ela mora no desktop) está oculta */}
-      <NumoraLogo variant="full" theme="dark" size={20} className="md:hidden" />
+      {/* Mobile: a marca fica visível aqui, já que a Sidebar (onde ela mora no desktop) está oculta. Só o símbolo — espaço restrito nesta barra. */}
+      <NumoraLogo variant="mark" size={28} className="md:hidden" />
 
       <p className="hidden flex-1 truncate text-sm font-medium text-text-secondary md:block">{pageTitle}</p>
       <div className="flex-1 md:hidden" />
