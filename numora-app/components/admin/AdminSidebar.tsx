@@ -37,6 +37,7 @@ import {
   ScrollText,
   Settings,
   Activity,
+  MessageCircle,
 } from 'lucide-react'
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
@@ -64,6 +65,7 @@ export const ADMIN_NAV: AdminNavItem[] = [
   { href: '/admin/revenue', label: 'Receita', icon: TrendingUp },
   { href: '/admin/usage', label: 'Utilização', icon: BarChart3 },
   { href: '/admin/alerts', label: 'Alertas', icon: Bell },
+  { href: '/admin/feedback', label: 'Feedback', icon: MessageCircle },
   { href: '/admin/audit', label: 'Auditoria', icon: ScrollText },
   { href: '/admin/settings', label: 'Configurações', icon: Settings },
 ]
