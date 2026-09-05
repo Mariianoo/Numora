@@ -123,6 +123,13 @@ export interface CollectionItem {
    * no modo 'all'.
    */
   isPhotoPublic: boolean
+  /**
+   * Etapa "F4 — Numora Labels" — identificador humano estável (formato
+   * `NMR-0000001`), `null` até a primeira geração de etiqueta deste item.
+   * Só atribuído por `ensure_label_codes()` (RPC SECURITY DEFINER) — nunca
+   * escrito por este repositório, nunca gerado antecipadamente em massa.
+   */
+  labelCode: string | null
 }
 
 /**

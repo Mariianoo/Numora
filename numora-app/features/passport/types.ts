@@ -77,3 +77,43 @@ export interface PublicPassportListPage {
   entries: PublicPassportListEntry[]
   hasMore: boolean
 }
+
+/**
+ * Etapa "F4 — Numora Labels" — retorno de `get_public_passport_item(username, itemId)`,
+ * o Passport público de UMA moeda (alvo do QR Code impresso na etiqueta).
+ * Mesma disciplina de `PublicPassport`: nenhum dado financeiro/privado,
+ * `null` para qualquer motivo de indisponibilidade (username inexistente,
+ * Passport privado, item inexistente/de outro usuário/excluído/fora da
+ * visibilidade selecionada), sem diferenciar qual.
+ *
+ * `coin` é aninhado (não plano) de propósito: `countryCode`/`countryName`/
+ * `countryFlagEmoji` existem tanto no colecionador (país dele) quanto na
+ * moeda (país de cunhagem) — a RPC evita a colisão de nomes aninhando o
+ * item em vez de renomear campos já usados em `PublicPassportCoin`.
+ *
+ * `coin.labelCode` não existe em `PublicPassportCoin` — ao contrário do
+ * `numoraId` do perfil (removido do Passport agregado por revelar
+ * ordem/volume de cadastro), o `labelCode` de um item já está impresso na
+ * própria etiqueta física que levou à leitura do QR.
+ */
+export interface PublicPassportItem {
+  name: string | null
+  username: string
+  avatarUrl: string | null
+  countryCode: string | null
+  countryName: string | null
+  countryFlagEmoji: string | null
+  collectorSince: string
+  coin: {
+    labelCode: string | null
+    countryCode: string | null
+    countryName: string | null
+    countryFlagEmoji: string | null
+    year: number | null
+    denomination: string | null
+    metalName: string | null
+    secondaryMetalName: string | null
+    quantity: number
+    photoStoragePath: string | null
+  }
+}

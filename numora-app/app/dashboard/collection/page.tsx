@@ -47,6 +47,7 @@ import {
   Pencil,
   PackageOpen,
   Plus,
+  Printer,
   Receipt,
   Search,
   Star,
@@ -74,6 +75,9 @@ import {
 } from '@/features/collection/aggregate'
 import { createSupabaseCollectionUnitsRepository } from '@/features/collection-units/repositories/collection-units.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
+import { LabelGeneratorModal } from '@/features/labels/components/LabelGeneratorModal'
+import { LabelSelectionToolbar } from '@/features/labels/components/LabelSelectionToolbar'
+import { useLabelSelection } from '@/features/labels/use-label-selection'
 import type {
   CatalogReference,
   CollectionItem,
@@ -1192,6 +1196,12 @@ export default function CollectionPage() {
    * Adicionar/Editar moeda — salva por `updateEnrichment`, que só
    * escreve estes 5 campos (nunca país/ano/metal/quantidade/etc.).
    */
+  // Etapa "F4 — Numora Labels" — `labelItems` guarda 1 item (botão
+  // "Imprimir etiqueta" de uma moeda) ou N itens (seleção em lote, etapa
+  // seguinte); o mesmo `LabelGeneratorModal` atende os dois casos.
+  const [labelItems, setLabelItems] = useState<CollectionItem[]>([])
+  const labelSelection = useLabelSelection()
+
   const [infoModalItem, setInfoModalItem] = useState<CollectionItem | null>(null)
   const [infoMint, setInfoMint] = useState('')
   const [infoMintage, setInfoMintage] = useState('')
@@ -2061,6 +2071,12 @@ export default function CollectionPage() {
               <Trash2 className="size-4" aria-hidden />
               Lixeira
             </Link>
+            {!labelSelection.isSelecting && items.length > 0 && (
+              <Button type="button" variant="secondary" onClick={labelSelection.start}>
+                <Printer className="size-4" aria-hidden />
+                Selecionar moedas
+              </Button>
+            )}
             <Button type="button" onClick={openAddModal}>
               <Plus className="size-4" aria-hidden />
               Adicionar moeda
@@ -2071,6 +2087,17 @@ export default function CollectionPage() {
 
       {error && <p className="text-sm text-danger">{error}</p>}
       {successMessage && <p className="text-sm text-success">{successMessage}</p>}
+
+      {labelSelection.isSelecting && (
+        <LabelSelectionToolbar
+          selectedCount={labelSelection.selectedIds.size}
+          onCancel={labelSelection.cancel}
+          onGenerate={() => {
+            setLabelItems(items.filter((item) => labelSelection.selectedIds.has(item.id)))
+            labelSelection.cancel()
+          }}
+        />
+      )}
 
       {items.length > 0 && (
         <>
@@ -2268,6 +2295,17 @@ export default function CollectionPage() {
                   {group.items.map((item) => (
                     <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col overflow-hidden">
                       <div className="relative aspect-[4/3] bg-gradient-to-br from-surface-hover to-surface">
+                        {labelSelection.isSelecting && (
+                          <label className="absolute top-2 left-2 z-10 flex size-6 cursor-pointer items-center justify-center rounded-md bg-background/80 backdrop-blur-sm">
+                            <input
+                              type="checkbox"
+                              checked={labelSelection.selectedIds.has(item.id)}
+                              onChange={() => labelSelection.toggle(item.id)}
+                              className="size-4 rounded border-border accent-accent"
+                              aria-label={`Selecionar ${item.denomination ?? 'moeda'} para etiqueta`}
+                            />
+                          </label>
+                        )}
                         <CollectionItemThumbnail
                           item={item}
                           thumbUrls={thumbUrls}
@@ -2354,6 +2392,12 @@ export default function CollectionPage() {
                                 className={item.isPhotoPublic ? 'text-accent' : undefined}
                               />
                             )}
+                            <IconButton
+                              icon={Printer}
+                              onClick={() => setLabelItems([item])}
+                              aria-label="Imprimir etiqueta"
+                              title="Numora Labels"
+                            />
                             <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
                             <IconButton
                               icon={Trash2}
@@ -2372,6 +2416,15 @@ export default function CollectionPage() {
                 <div className="flex flex-col gap-2.5">
                   {group.items.map((item) => (
                     <Card key={`${group.key}:${item.id}`} hoverable className="flex flex-col gap-3 p-3 sm:flex-row sm:items-center">
+                      {labelSelection.isSelecting && (
+                        <input
+                          type="checkbox"
+                          checked={labelSelection.selectedIds.has(item.id)}
+                          onChange={() => labelSelection.toggle(item.id)}
+                          className="size-4 shrink-0 rounded border-border accent-accent"
+                          aria-label={`Selecionar ${item.denomination ?? 'moeda'} para etiqueta`}
+                        />
+                      )}
                       <div className="relative size-14 shrink-0 overflow-hidden rounded-lg bg-gradient-to-br from-surface-hover to-surface">
                         <CollectionItemThumbnail
                           item={item}
@@ -2443,6 +2496,12 @@ export default function CollectionPage() {
                           />
                         )}
                         <IconButton icon={Info} onClick={() => openInfoModal(item)} aria-label="Informações da moeda" />
+                        <IconButton
+                          icon={Printer}
+                          onClick={() => setLabelItems([item])}
+                          aria-label="Imprimir etiqueta"
+                          title="Numora Labels"
+                        />
                         <IconButton icon={Pencil} onClick={() => openEditModal(item)} aria-label="Editar moeda" />
                         <IconButton
                           icon={Trash2}
@@ -3229,6 +3288,8 @@ export default function CollectionPage() {
           </div>
         </form>
       </Modal>
+
+      <LabelGeneratorModal items={labelItems} onClose={() => setLabelItems([])} />
     </div>
   )
 }

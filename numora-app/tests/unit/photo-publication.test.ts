@@ -59,6 +59,7 @@ function makeItem(overrides: Partial<CollectionItem>): CollectionItem {
     units: [],
     isPublicInPassport: false,
     isPhotoPublic: false,
+    labelCode: null,
     ...overrides,
   }
 }

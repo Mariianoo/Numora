@@ -147,7 +147,7 @@ const ITEM_SELECT = `
   metal_code, secondary_metal_code, gross_weight_g, purity, face_value, quantity,
   unit_cost_override, description, location, tags,
   mintage::text, history, trivia, catalog_references,
-  created_at, updated_at, deleted_at, is_public, photo_public,
+  created_at, updated_at, deleted_at, is_public, photo_public, label_code,
   countries ( name, flag_emoji ),
   metals!metal_code ( name ),
   secondary_metals:metals!secondary_metal_code ( name ),
@@ -188,6 +188,8 @@ interface CollectionItemRow {
   is_public: boolean
   /** Fundação de imagens — ver comentário em `CollectionItem.isPhotoPublic` (types.ts). */
   photo_public: boolean
+  /** Etapa "F4 — Numora Labels" — ver comentário em `CollectionItem.labelCode` (types.ts). */
+  label_code: string | null
   countries: { name: string; flag_emoji: string | null } | null
   metals: { name: string } | null
   secondary_metals: { name: string } | null
@@ -238,6 +240,7 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
     deletedAt: row.deleted_at,
     isPublicInPassport: row.is_public,
     isPhotoPublic: row.photo_public,
+    labelCode: row.label_code,
     countryDisplayName: row.countries?.name ?? null,
     countryFlagEmoji: row.countries?.flag_emoji ?? null,
     metalName: row.metals?.name ?? null,
