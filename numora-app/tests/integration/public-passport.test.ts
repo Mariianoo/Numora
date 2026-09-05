@@ -37,6 +37,7 @@ const EXPECTED_COIN_KEYS = [
   'secondaryMetalName',
   'quantity',
   'photoStoragePath',
+  'labelCode',
 ].sort()
 
 describe.skipIf(!hasTestEnv())('get_public_passport RPC', () => {
@@ -105,6 +106,28 @@ describe.skipIf(!hasTestEnv())('get_public_passport RPC', () => {
     expect(coin.countryCode).toBe('BR')
     expect(coin.year).toBe(1980)
     expect(coin.photoStoragePath).toBeNull()
+    expect(coin.labelCode).toBeNull()
+  })
+
+  it('F5 — B) labelCode não aparece (vem null) enquanto collection_items.label_code é NULL', async () => {
+    // Item recém-criado no `beforeAll`, nunca teve etiqueta gerada — estado
+    // inicial real de qualquer moeda antes da primeira geração de etiqueta.
+    const { data } = await anon.rpc('get_public_passport', { p_username: username })
+    expect(data.coins[0].labelCode).toBeNull()
+  })
+
+  it('F5 — A) labelCode aparece quando collection_items.label_code já está definido (RPC só lê, nunca gera)', async () => {
+    // `label_code` está fora do GRANT UPDATE de `authenticated` de propósito
+    // (só `ensure_label_codes()`, SECURITY DEFINER, escreve nela — ver
+    // `20260905090000_create_label_codes.sql`) — por isso o setup deste
+    // teste usa `admin` (service_role), nunca o client autenticado comum.
+    // `label_code` também é IMUTÁVEL uma vez definido (trigger
+    // `protect_label_code`) — este teste nunca o reseta de volta para null.
+    const { error } = await admin.from('collection_items').update({ label_code: 'NMR-0000123' }).eq('id', itemId)
+    if (error) throw new Error(`[public-passport.test] setLabelCode falhou: ${error.message}`)
+
+    const { data } = await anon.rpc('get_public_passport', { p_username: username })
+    expect(data.coins[0].labelCode).toBe('NMR-0000123')
   })
 
   it('visibility = "selected" com item privado (is_public=false): coins vazio', async () => {
@@ -127,6 +150,39 @@ describe.skipIf(!hasTestEnv())('get_public_passport RPC', () => {
     for (const forbidden of ['price', 'total_price', 'unit_cost', 'preco', 'preço', 'custo', 'email', 'seller']) {
       expect(serialized).not.toContain(forbidden)
     }
+  })
+
+  it('F5 — E) labelCode não abre um novo vetor de exposição: purchase_id, localização e notas privadas continuam ausentes mesmo quando preenchidas na linha', async () => {
+    // `location`/`description` também estão fora do GRANT UPDATE de
+    // `authenticated` — setup via `admin` (service_role), só para este teste.
+    const { error } = await admin
+      .from('collection_items')
+      .update({ location: 'Cofre em casa, gaveta 3', description: 'Nota pessoal privada' })
+      .eq('id', itemId)
+    if (error) throw new Error(`[public-passport.test] setup de campos privados falhou: ${error.message}`)
+
+    const { data } = await anon.rpc('get_public_passport', { p_username: username })
+    // labelCode já foi definido pelo teste "F5 — A" acima e é imutável — continua presente aqui.
+    expect(data.coins[0].labelCode).toBe('NMR-0000123')
+
+    const serialized = JSON.stringify(data)
+    expect(serialized).not.toContain('Cofre em casa')
+    expect(serialized).not.toContain('Nota pessoal privada')
+    expect(serialized).not.toContain(itemId)
+    expect(Object.keys(data.coins[0])).not.toContain('id')
+    expect(Object.keys(data.coins[0])).not.toContain('purchaseId')
+
+    await admin.from('collection_items').update({ location: null, description: null }).eq('id', itemId)
+  })
+
+  it('F5 — C) Passport privado (passport_public = false) devolve null, mesmo com o username existindo de fato', async () => {
+    const { error } = await client.from('profiles').update({ passport_public: false }).eq('id', user.id)
+    if (error) throw new Error(`[public-passport.test] setPassportPublic(false) falhou: ${error.message}`)
+
+    const { data } = await anon.rpc('get_public_passport', { p_username: username })
+    expect(data).toBeNull()
+
+    await client.from('profiles').update({ passport_public: true }).eq('id', user.id)
   })
 
   it('photoStoragePath: null quando photo_public = false, mesmo com is_public = true', async () => {

@@ -28,7 +28,16 @@ export function LabelCardPreview({ data }: LabelCardPreviewProps) {
       style={{ width: `${LABEL_WIDTH_MM}mm`, height: `${LABEL_HEIGHT_MM}mm` }}
       className="flex shrink-0 items-stretch gap-2 rounded-md border border-[#D4AF37] bg-[#F9F6EE] p-2 text-[#0B1F3B]"
     >
+      {/*
+        Layout reorganizado (Etapa "F5"): símbolo isolado no topo, NMR
+        isolado no rodapé — nunca lado a lado (competiam visualmente,
+        achado de QA física em Production). Mesmo layout do PDF
+        (`pdf.ts`), só que com emoji de bandeira preservado (a restrição
+        de fonte é exclusiva do jsPDF, a tela renderiza emoji normalmente).
+      */}
       <div className="flex min-w-0 flex-1 flex-col justify-between">
+        <Image src="/brand/numora-symbol-reduced.png" alt="" width={11} height={11} unoptimized className="opacity-80" />
+
         <div className="min-w-0">
           <p className="truncate text-sm font-bold">{lines.title ?? 'Sem denominação'}</p>
           {lines.originLine && <p className="truncate text-[11px]">{lines.originLine}</p>}
@@ -39,10 +48,12 @@ export function LabelCardPreview({ data }: LabelCardPreviewProps) {
             </p>
           ))}
         </div>
-        <div className="flex items-center gap-1">
-          <Image src="/brand/numora-symbol-reduced.png" alt="" width={12} height={12} unoptimized />
-          {data.labelCode && <p className="text-[10px] font-medium text-[#D4AF37]">{data.labelCode}</p>}
-        </div>
+
+        {data.labelCode ? (
+          <p className="text-[10px] font-medium text-[#D4AF37]">{data.labelCode}</p>
+        ) : (
+          <span aria-hidden className="h-[14px]" />
+        )}
       </div>
 
       <div className="flex size-[22mm] shrink-0 items-center justify-center rounded bg-white/60">

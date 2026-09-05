@@ -6,7 +6,7 @@
  */
 import { describe, expect, it } from 'vitest'
 
-import { buildLabelData, getLabelLines } from '@/features/labels/label-layout'
+import { buildLabelData, getLabelLines, getPrintSafeLabelLines } from '@/features/labels/label-layout'
 import { buildPassportItemUrl } from '@/features/labels/qr'
 import type { CollectionItem, CollectionItemUnit } from '@/features/collection/types'
 
@@ -179,5 +179,55 @@ describe('getLabelLines', () => {
     const lines = getLabelLines(buildLabelData(item, { ...OPTIONS, financialDisplay: 'purchase' }))
 
     expect(lines.detailLines).toEqual(['5,20 g', 'MS-63', 'R$ 42,50', 'Presente de família'])
+  })
+})
+
+describe('getPrintSafeLabelLines', () => {
+  it('nunca inclui o emoji de bandeira na originLine (achado real: "1 Balboa — Panamá — 1947" quebrado no PDF)', () => {
+    const item = makeItem({
+      countryDisplayName: 'Panamá',
+      countryFlagEmoji: '🇵🇦',
+      countryCode: 'PA',
+      year: 1947,
+      denomination: '1 Balboa',
+    })
+    const lines = getPrintSafeLabelLines(buildLabelData(item, OPTIONS))
+
+    expect(lines.originLine).toBe('PANAMÁ · 1947')
+    expect(lines.originLine).not.toContain('🇵🇦')
+    expect(/^[\x00-\xFF]*$/.test(lines.originLine ?? '')).toBe(true)
+  })
+
+  it('mantém acentos latinos (WinAnsiEncoding cobre Latin-1)', () => {
+    const item = makeItem({ countryDisplayName: 'São Tomé e Príncipe', countryFlagEmoji: '🇸🇹', year: 2000 })
+    const lines = getPrintSafeLabelLines(buildLabelData(item, OPTIONS))
+
+    expect(lines.originLine).toBe('SÃO TOMÉ E PRÍNCIPE · 2000')
+  })
+
+  it('cai para countryCode em maiúsculas quando não há countryName', () => {
+    const item = makeItem({ countryDisplayName: null, countryFlagEmoji: null, countryCode: 'pa', year: 1947 })
+    const lines = getPrintSafeLabelLines(buildLabelData(item, OPTIONS))
+
+    expect(lines.originLine).toBe('PA · 1947')
+  })
+
+  it('título/metalLine/detailLines permanecem idênticos a getLabelLines (só originLine muda)', () => {
+    const item = makeItem({ units: [makeUnit({ gradeLabel: 'MS-63' })] })
+    const data = buildLabelData(item, OPTIONS)
+
+    const normal = getLabelLines(data)
+    const printSafe = getPrintSafeLabelLines(data)
+
+    expect(printSafe.title).toBe(normal.title)
+    expect(printSafe.metalLine).toBe(normal.metalLine)
+    expect(printSafe.detailLines).toEqual(normal.detailLines)
+  })
+
+  it('originLine é null quando não há país nem ano (mesma regra de getLabelLines)', () => {
+    const item = makeItem({ countryDisplayName: null, countryFlagEmoji: null, countryCode: null, year: null })
+    const lines = getPrintSafeLabelLines(buildLabelData(item, OPTIONS))
+
+    expect(lines.originLine).toBeNull()
   })
 })

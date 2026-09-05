@@ -29,6 +29,16 @@ export interface PublicPassportCoin {
   secondaryMetalName: string | null
   quantity: number
   /**
+   * Etapa "F5 — Passport V2 Visual" — `get_public_passport` estendida
+   * (migration `20260905100000_add_label_code_to_public_passport.sql`,
+   * aplicada em DEV) para devolver esta chave. A RPC só LÊ
+   * `collection_items.label_code` — nunca gera etiqueta, nunca chama
+   * `ensure_label_codes`. `null` até a primeira geração de etiqueta deste
+   * item. Mesmo texto já impresso na etiqueta física — nunca um
+   * identificador novo, nunca substitui o UUID interno usado no QR.
+   */
+  labelCode: string | null
+  /**
    * Fundação de imagens — path relativo no bucket PÚBLICO
    * `coin-images-public` (nunca no bucket privado `coin-images`), só
    * preenchido quando o dono publicou explicitamente a foto (independente

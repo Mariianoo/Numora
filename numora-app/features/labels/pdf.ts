@@ -16,7 +16,7 @@
  */
 import { jsPDF } from 'jspdf'
 import type { LabelData } from './types'
-import { getLabelLines } from './label-layout'
+import { getPrintSafeLabelLines } from './label-layout'
 import { generateLabelQrDataUrl } from './qr'
 import {
   A4_HEIGHT_MM,
@@ -68,9 +68,32 @@ function loadSymbolDataUrl(): Promise<string> {
 
 const QR_SIZE_MM = QR_MIN_SIZE_MM + 4
 const PADDING_MM = 3
+const SYMBOL_SIZE_MM = 3.5
 
+/**
+ * Etapa "F5 — Labels PDF fix" — remove qualquer caractere fora de
+ * WinAnsiEncoding/Latin-1 (código > 0xFF) ANTES de desenhar. Rede de
+ * segurança além de `getPrintSafeLabelLines` (que já resolve o caso
+ * conhecido da bandeira): cobre também qualquer emoji/símbolo que
+ * eventualmente apareça num campo de texto livre (ex.: observações),
+ * sem depender de prever cada caso individualmente. Acentos latinos
+ * (á, ã, ç, õ...) têm código ≤ 0xFF e nunca são afetados.
+ */
+export function toPdfSafeText(text: string): string {
+  return text.replace(/[^\x20-\xFF]/g, '').trim()
+}
+
+/**
+ * Layout reorganizado (achado real de QA física em Production — o símbolo
+ * Numora ao lado do NMR competia visualmente com o identificador):
+ *   TOPO — símbolo Numora pequeno e discreto, isolado.
+ *   CENTRO — denominação, país+ano, composição, detalhes (peso/grade/valor).
+ *   RODAPÉ — NMR sozinho, sem nenhum outro elemento na mesma linha.
+ * Nenhum campo novo foi adicionado — mesmo conjunto de informações do V1,
+ * só reposicionado.
+ */
 function drawLabel(doc: jsPDF, x: number, y: number, qrDataUrl: string, symbolDataUrl: string, data: LabelData): void {
-  const lines = getLabelLines(data)
+  const lines = getPrintSafeLabelLines(data)
 
   doc.setDrawColor(...GOLD)
   doc.setLineWidth(0.25)
@@ -78,44 +101,45 @@ function drawLabel(doc: jsPDF, x: number, y: number, qrDataUrl: string, symbolDa
 
   const textX = x + PADDING_MM
   const textWidth = LABEL_WIDTH_MM - QR_SIZE_MM - PADDING_MM * 3
-  let cursorY = y + PADDING_MM + 3
+
+  // TOPO — símbolo isolado, nunca ao lado do NMR.
+  doc.addImage(symbolDataUrl, 'PNG', textX, y + PADDING_MM - 1, SYMBOL_SIZE_MM, SYMBOL_SIZE_MM)
+
+  let cursorY = y + PADDING_MM + SYMBOL_SIZE_MM + 3
 
   doc.setTextColor(...NAVY)
 
   if (lines.title) {
     doc.setFont('helvetica', 'bold')
     doc.setFontSize(10)
-    doc.text(doc.splitTextToSize(lines.title, textWidth)[0], textX, cursorY)
-    cursorY += 4.5
+    doc.text(toPdfSafeText(doc.splitTextToSize(lines.title, textWidth)[0]), textX, cursorY)
+    cursorY += 4.2
   }
 
   doc.setFont('helvetica', 'normal')
   doc.setFontSize(7.5)
   if (lines.originLine) {
-    doc.text(lines.originLine, textX, cursorY)
-    cursorY += 3.6
+    doc.text(toPdfSafeText(lines.originLine), textX, cursorY)
+    cursorY += 3.4
   }
   if (lines.metalLine) {
-    doc.text(lines.metalLine, textX, cursorY)
-    cursorY += 3.6
+    doc.text(toPdfSafeText(lines.metalLine), textX, cursorY)
+    cursorY += 3.4
   }
 
   doc.setFontSize(6.5)
   const maxDetailLines = 2
   for (const detail of lines.detailLines.slice(0, maxDetailLines)) {
-    doc.text(doc.splitTextToSize(detail, textWidth)[0], textX, cursorY)
-    cursorY += 3.1
+    doc.text(toPdfSafeText(doc.splitTextToSize(detail, textWidth)[0]), textX, cursorY)
+    cursorY += 2.9
   }
 
+  // RODAPÉ — NMR sozinho (nenhum outro elemento nesta linha).
   if (data.labelCode) {
     doc.setFontSize(6.5)
     doc.setTextColor(...GOLD)
-    doc.text(data.labelCode, textX, y + LABEL_HEIGHT_MM - PADDING_MM)
+    doc.text(toPdfSafeText(data.labelCode), textX, y + LABEL_HEIGHT_MM - PADDING_MM)
   }
-
-  // Símbolo Numora — pequeno, canto inferior esquerdo, só decorativo.
-  const symbolSize = 4
-  doc.addImage(symbolDataUrl, 'PNG', textX, y + LABEL_HEIGHT_MM - PADDING_MM - symbolSize + 1, symbolSize, symbolSize)
 
   const qrX = x + LABEL_WIDTH_MM - QR_SIZE_MM - PADDING_MM
   const qrY = y + (LABEL_HEIGHT_MM - QR_SIZE_MM) / 2

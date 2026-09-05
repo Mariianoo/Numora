@@ -151,4 +151,27 @@ test.describe('Passport', () => {
 
     await anonContext.close()
   })
+
+  test('E2E 08 — F5: card da coleção expande inline e o botão "i" mostra o placeholder histórico, de forma independente', async ({ browser }) => {
+    const anonContext = await browser.newContext()
+    const anonPage = await anonContext.newPage()
+
+    await anonPage.goto(`/passport/${username}`)
+
+    const coinCardButton = anonPage.getByRole('button', { name: 'E2E Moeda Passport' })
+    await expect(coinCardButton).toContainText('Brasil')
+    await coinCardButton.click()
+    await expect(anonPage.getByText('País de cunhagem: Brasil')).toBeVisible()
+
+    const infoButton = anonPage.getByRole('button', { name: 'Ver informações históricas' })
+    await infoButton.click()
+    await expect(anonPage.getByText('Informações históricas desta emissão estarão disponíveis em breve.')).toBeVisible()
+
+    // Fechar a expansão principal não deve fechar o painel "i" (toggles independentes).
+    await coinCardButton.click()
+    await expect(anonPage.getByText('País de cunhagem: Brasil')).toHaveCount(0)
+    await expect(anonPage.getByText('Informações históricas desta emissão estarão disponíveis em breve.')).toBeVisible()
+
+    await anonContext.close()
+  })
 })

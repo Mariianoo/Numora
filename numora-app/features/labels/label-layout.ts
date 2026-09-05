@@ -95,3 +95,36 @@ export function getLabelLines(data: LabelData): LabelLines {
     detailLines,
   }
 }
+
+/**
+ * Etapa "F5 — Labels PDF fix" — variante de `getLabelLines` SEM emoji, para
+ * uso exclusivo do PDF (`pdf.ts`). Achado real em teste físico em
+ * Production (moeda "1 Balboa — Panamá — 1947"): a bandeira Unicode
+ * (`🇵🇦`, par de indicadores regionais fora do plano básico multilíngue)
+ * não tem glyph nas fontes padrão do jsPDF (`helvetica`/`times`/`courier`,
+ * que só cobrem WinAnsiEncoding/Latin-1) — o resultado impresso foi lixo
+ * binário (`"¤�Y�"`), nunca um erro. A pré-visualização em tela
+ * (`LabelCardPreview.tsx`) CONTINUA usando `getLabelLines` (com emoji) —
+ * só o PDF precisa da variante sem bandeira, por limitação da própria
+ * biblioteca, não por preferência de design.
+ *
+ * Nome do país em maiúsculas (`PANAMÁ`) — acentos latinos (á, ã, ç...)
+ * continuam dentro de WinAnsiEncoding, então renderizam normalmente; só o
+ * emoji é removido. `toPdfSafeText` (`pdf.ts`) permanece como rede de
+ * segurança adicional para qualquer outro caractere fora do intervalo
+ * suportado que apareça em campos de texto livre (ex.: observações).
+ */
+export function getPrintSafeLabelLines(data: LabelData): LabelLines {
+  const lines = getLabelLines(data)
+
+  const countryText = data.countryName ?? data.countryCode
+  const originParts = [
+    countryText ? countryText.toUpperCase() : null,
+    data.year !== null ? String(data.year) : null,
+  ].filter((part): part is string => Boolean(part && part.length > 0))
+
+  return {
+    ...lines,
+    originLine: originParts.length > 0 ? originParts.join(' · ') : null,
+  }
+}
