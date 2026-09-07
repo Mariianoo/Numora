@@ -100,14 +100,20 @@ describe.skipIf(!hasTestEnv())('plan_prices — unicidade (plan_id, interval, cu
   })
 
   it('TESTE 2 — a mesma combinação (plano, intervalo, moeda) duplicada falha por violação de unicidade', async () => {
+    // Etapa "Stripe 3.2": a unicidade virou um índice único PARCIAL
+    // (`WHERE active`) — duas linhas inativas para a mesma combinação são
+    // permitidas de propósito (histórico de preços). Este teste precisa
+    // marcar `active: true` (com `stripe_price_id`, exigido pelo CHECK da
+    // Stripe 3.2) para continuar exercitando a regra que ele testa: só uma
+    // linha ATIVA por combinação.
     const { error: firstError } = await admin
       .from('plan_prices')
-      .insert({ plan_id: testPlanId, interval: 'month', amount: 1.0, currency: 'BRL' })
+      .insert({ plan_id: testPlanId, interval: 'month', amount: 1.0, currency: 'BRL', active: true, stripe_price_id: `price_test2_a_${Date.now()}` })
     expect(firstError).toBeNull()
 
     const { error: secondError } = await admin
       .from('plan_prices')
-      .insert({ plan_id: testPlanId, interval: 'month', amount: 1.0, currency: 'BRL' })
+      .insert({ plan_id: testPlanId, interval: 'month', amount: 1.0, currency: 'BRL', active: true, stripe_price_id: `price_test2_b_${Date.now()}` })
     expect(secondError).not.toBeNull()
     expect(secondError?.code).toBe('23505')
   })
