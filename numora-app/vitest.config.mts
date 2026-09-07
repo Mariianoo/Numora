@@ -44,6 +44,14 @@ export default defineConfig(({ mode }) => {
       // (signup, RPC, Storage) — 20s dá folga sem mascarar uma falha real
       // de rede como timeout. Unit tests terminam bem abaixo disso.
       testTimeout: 20_000,
+      // Etapa "Stripe 4.1.1" — achado real: Vitest roda arquivos de teste em
+      // paralelo por padrão, e dois arquivos de tests/integration podem
+      // mutar/ler o mesmo estado em Supabase DEV ao mesmo tempo (visto
+      // reproduzido: um teste criando uma linha temporária na combinação
+      // real "pro/month/BRL" colidindo com outro lendo o catálogo). Só
+      // afeta arquivos entre si — testes dentro do MESMO arquivo continuam
+      // com o comportamento de concorrência de sempre.
+      fileParallelism: false,
     },
   }
 })

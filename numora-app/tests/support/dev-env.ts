@@ -22,17 +22,12 @@
  */
 import { createClient, type SupabaseClient } from '@supabase/supabase-js'
 
-const DEV_PROJECT_REF = 'sfhnhgkicvtvhbwpttwh' // numora-development
-const PRODUCTION_PROJECT_REF = 'iebttmvrjgwtvibuauxr' // numora — nunca usado por testes
+import { DEV_PROJECT_REF, PRODUCTION_PROJECT_REF, extractProjectRef } from '@/lib/supabase/project-ref'
 
 export interface TestEnv {
   url: string
   anonKey: string
   serviceRoleKey: string
-}
-
-function extractProjectRef(url: string): string | null {
-  return url.match(/^https:\/\/([^.]+)\.supabase\.co/)?.[1] ?? null
 }
 
 /**
