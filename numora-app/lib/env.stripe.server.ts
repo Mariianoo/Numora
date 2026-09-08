@@ -33,6 +33,8 @@
  */
 import { z } from 'zod'
 
+import { assertStripeWebhookSecretFormat } from './stripe/assert-webhook-secret-format'
+
 const stripeEnvSchema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1),
 })
@@ -62,4 +64,24 @@ function parseStripeEnv(): StripeEnv {
  */
 export function getStripeEnv(): StripeEnv {
   return parseStripeEnv()
+}
+
+/**
+ * Etapa "Stripe 5.4A" — `STRIPE_WEBHOOK_SECRET`, DELIBERADAMENTE numa
+ * função separada de `getStripeEnv()`/`parseStripeEnv()`: são dois
+ * segredos com ciclos de vida independentes (a chave da API já existe
+ * desde a Stripe 4.1A; o segredo de webhook só passa a existir quando um
+ * endpoint for registrado no Stripe — ainda não aconteceu nesta etapa).
+ * Se estivessem no mesmo schema, a AUSÊNCIA do segredo de webhook
+ * quebraria `getStripeClient()` para toda rota que só precisa de
+ * `STRIPE_SECRET_KEY` (Checkout, Customer) — nunca acoplar validações de
+ * segredos sem relação de dependência real entre si.
+ *
+ * `assertStripeWebhookSecretFormat` nunca revela o valor — só confirma
+ * presença/formato (`whsec_...`).
+ */
+export function getStripeWebhookSecret(): string {
+  const secret = process.env.STRIPE_WEBHOOK_SECRET
+  assertStripeWebhookSecretFormat(secret)
+  return secret
 }

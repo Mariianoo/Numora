@@ -20,9 +20,12 @@ export type PaidPlanSlug = 'pro' | 'premium'
 export type PriceInterval = 'month' | 'year'
 export type PriceCurrency = 'BRL' | 'USD'
 
-const PAID_PLAN_SLUGS: readonly PaidPlanSlug[] = ['pro', 'premium']
-const VALID_INTERVALS: readonly PriceInterval[] = ['month', 'year']
-const VALID_CURRENCIES: readonly PriceCurrency[] = ['BRL', 'USD']
+// Exportadas (Etapa "Stripe 5.3") para a validação de payload de
+// /api/billing/checkout reutilizar exatamente esta lista — nunca uma
+// segunda cópia dos valores válidos.
+export const PAID_PLAN_SLUGS = ['pro', 'premium'] as const satisfies readonly PaidPlanSlug[]
+export const VALID_INTERVALS = ['month', 'year'] as const satisfies readonly PriceInterval[]
+export const VALID_CURRENCIES = ['BRL', 'USD'] as const satisfies readonly PriceCurrency[]
 
 export interface CommercialPlanPrice {
   /** `plan_prices.id` — usado para gravar `stripe_price_id`/`active` de volta na linha exata (nunca por plan+interval+currency). */

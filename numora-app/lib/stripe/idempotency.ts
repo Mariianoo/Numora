@@ -52,6 +52,6 @@ export function resolveExistingPrice(candidates: StripePriceCandidate[], lookupK
  * interrupção) nunca cria um segundo recurso no Stripe, mesmo sem
  * depender só da checagem por lookup_key/metadata acima.
  */
-export function buildCreationIdempotencyKey(resourceType: 'product' | 'price', localIdentifier: string): string {
+export function buildCreationIdempotencyKey(resourceType: 'product' | 'price' | 'customer' | 'checkout-session', localIdentifier: string): string {
   return `numora:create-${resourceType}:${localIdentifier}`
 }

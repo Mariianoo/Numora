@@ -19,6 +19,12 @@ const clientEnvSchema = z.object({
   NEXT_PUBLIC_SUPABASE_URL: z.string().url(),
   NEXT_PUBLIC_SUPABASE_ANON_KEY: z.string().min(1),
   NEXT_PUBLIC_GTM_ID: z.string().optional(),
+  // Etapa "Stripe 5.3": convenção oficial para a URL pública da aplicação,
+  // usada para montar success_url/cancel_url do Checkout. `.optional()` de
+  // propósito — nunca configurada até hoje (auditado nesta etapa); quando
+  // ausente, o Route Handler deriva a origem do próprio Request recebido
+  // (nunca inventa/hardcoda um domínio).
+  NEXT_PUBLIC_SITE_URL: z.string().url().optional(),
 })
 
 export type ClientEnv = z.infer<typeof clientEnvSchema>
@@ -28,6 +34,7 @@ function parseClientEnv(): ClientEnv {
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     NEXT_PUBLIC_SUPABASE_ANON_KEY: process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY,
     NEXT_PUBLIC_GTM_ID: process.env.NEXT_PUBLIC_GTM_ID,
+    NEXT_PUBLIC_SITE_URL: process.env.NEXT_PUBLIC_SITE_URL,
   })
 
   if (!parsed.success) {
