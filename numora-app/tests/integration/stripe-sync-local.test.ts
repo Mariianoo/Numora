@@ -2,18 +2,26 @@
  * tests/integration/stripe-sync-local.test.ts
  * Etapa "Stripe 4.1.1 — Teste real da sincronização local no DEV" — prova,
  * contra Supabase DEV real, que `recordStripePriceSync()`/
- * `activateSyncedPrice()` (lib/stripe/sync.ts, Stripe 4.1A, até aqui só
- * cobertas por mock) funcionam corretamente contra o banco de verdade,
- * respeitando todas as proteções já implementadas (Stripe 3.2/3.4):
- * índice único parcial, CHECK active→stripe_price_id, trigger de
- * imutabilidade, effective period, RLS, coerência subscription↔price.
+ * `activateSyncedPrice()` (lib/stripe/sync.ts, Stripe 4.1A) funcionam
+ * corretamente contra o banco de verdade, respeitando todas as proteções
+ * já implementadas (Stripe 3.2/3.4): índice único parcial, CHECK
+ * active→stripe_price_id, trigger de imutabilidade, effective period, RLS,
+ * coerência subscription↔price.
  *
  * ZERO chamada ao Stripe — `stripe_price_id` é sempre um valor sintético
- * (`price_test_numora_sync_<uuid>`), nunca um ID real. Usa o `plan_id`
- * REAL de `pro` (pedido explícito da etapa: "use plano Pro existente"),
- * mas as LINHAS de `plan_prices` são sempre temporárias/descartáveis
- * (amount claramente fictício, nunca reaproveitando nenhuma das 8 linhas
- * comerciais reais) — limpas no `afterAll`, nunca deixadas para trás.
+ * (`price_test_numora_sync_<uuid>`), nunca um ID real.
+ *
+ * Redesenhado na Etapa "Stripe 4.1B.1": usava o `plan_id` REAL de `pro`
+ * com a combinação `month/BRL` — depois que a Stripe 4.1B sincronizou de
+ * verdade os 8 preços comerciais com o Stripe (Pro/month/BRL real agora
+ * `active=true`), esse desenho colidia com o índice único parcial
+ * (`uq_plan_prices_plan_interval_currency_active`) sempre que este arquivo
+ * tentava ativar sua própria linha temporária na mesma combinação. Agora
+ * usa um `plan_id` inteiramente DESCARTÁVEL (criado/apagado neste
+ * arquivo) — a mesma combinação `month/BRL` continua livre de usar
+ * internamente, porque a unicidade é sempre por `(plan_id, interval,
+ * currency)`: um plano diferente nunca colide com o catálogo comercial
+ * real, não importa qual interval/currency seja escolhido.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -36,22 +44,51 @@ const EFFECTIVE_FROM_PAST = '2020-01-01T00:00:00Z'
 describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (recordStripePriceSync / activateSyncedPrice)', () => {
   let env: TestEnv
   let admin: SupabaseClient
-  let proPlanId: string
+  let testPlanId: string
+  let otherPlanId: string // plano descartável "diferente" — usado só como alvo de mudanças que devem ser SEMPRE rejeitadas
   let temp1Id: string
   const temp1StripePriceId = `price_test_numora_sync_${crypto.randomUUID()}`
+  let realCommercialRowsSnapshot: unknown
 
   beforeAll(async () => {
     env = getTestEnv()!
     admin = createAdminClient(env)
 
-    const { data: plan, error: planError } = await admin.from('plans').select('id').eq('slug', 'pro').single()
-    if (planError || !plan) throw new Error(`[stripe-sync-local.test] falha ao ler o plano Pro real: ${planError?.message}`)
-    proPlanId = plan.id as string
+    const suffix = Date.now().toString().slice(-8)
+    const { data: plan, error: planError } = await admin
+      .from('plans')
+      .insert({ name: 'Teste Stripe 4.1.1', slug: `test-stripe411-${suffix}`, active: false })
+      .select('id')
+      .single()
+    if (planError || !plan) throw new Error(`[stripe-sync-local.test] setup do plano de teste falhou: ${planError?.message}`)
+    testPlanId = plan.id as string
+
+    const { data: otherPlan, error: otherPlanError } = await admin
+      .from('plans')
+      .insert({ name: 'Teste Stripe 4.1.1 — outro plano', slug: `test-stripe411-other-${suffix}`, active: false })
+      .select('id')
+      .single()
+    if (otherPlanError || !otherPlan) throw new Error(`[stripe-sync-local.test] setup do plano "outro" falhou: ${otherPlanError?.message}`)
+    otherPlanId = otherPlan.id as string
+
+    // Snapshot do catálogo comercial real ANTES deste arquivo fazer
+    // qualquer coisa — usado no teste final para provar que nada aqui
+    // tocou nas 8 linhas reais, sem depender de qual seja o estado
+    // "oficial" no momento (Stripe 3: inativo/sem Price; Stripe 4.1B em
+    // diante: sincronizado/ativo) — o único invariante que este arquivo
+    // realmente precisa garantir é "eu não mudei nada disso".
+    const { data: realRows, error: realRowsError } = await admin
+      .from('plan_prices')
+      .select('id, plan_id, interval, currency, amount, active, stripe_price_id, effective_from, effective_until')
+      .not('plan_id', 'in', `(${testPlanId},${otherPlanId})`)
+      .order('id')
+    if (realRowsError) throw new Error(`[stripe-sync-local.test] falha ao capturar snapshot do catálogo real: ${realRowsError.message}`)
+    realCommercialRowsSnapshot = realRows
 
     const { data: temp1, error: temp1Error } = await admin
       .from('plan_prices')
       .insert({
-        plan_id: proPlanId,
+        plan_id: testPlanId,
         interval: 'month',
         currency: 'BRL',
         amount: TEST_AMOUNT_1,
@@ -67,16 +104,15 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
   })
 
   afterAll(async () => {
-    // Ordem: qualquer subscription temporária (nenhuma deveria sobrar — os
-    // inserts de teste que a criam são sempre rejeitados pelo trigger),
-    // depois os plan_prices temporários. Nunca toca nas 8 linhas reais.
-    await admin.from('plan_prices').delete().eq('plan_id', proPlanId).in('amount', [TEST_AMOUNT_1, TEST_AMOUNT_2])
+    await admin.from('subscriptions').delete().in('plan_id', [testPlanId, otherPlanId])
+    await admin.from('plan_prices').delete().in('plan_id', [testPlanId, otherPlanId])
+    await admin.from('plans').delete().in('id', [testPlanId, otherPlanId])
   })
 
-  it('PRÉ-CHECAGEM — plan_price temporário criado corretamente, isolado das 8 linhas reais', async () => {
+  it('PRÉ-CHECAGEM — plan_price temporário criado corretamente, num plano descartável isolado do catálogo real', async () => {
     const { data, error } = await admin.from('plan_prices').select('*').eq('id', temp1Id).single()
     expect(error).toBeNull()
-    expect(data?.plan_id).toBe(proPlanId)
+    expect(data?.plan_id).toBe(testPlanId)
     expect(Number(data?.amount)).toBe(TEST_AMOUNT_1)
     expect(data?.active).toBe(false)
     expect(data?.stripe_price_id).toBeNull()
@@ -92,7 +128,7 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
     expect(Number(data?.amount)).toBe(TEST_AMOUNT_1)
     expect(data?.currency).toBe('BRL')
     expect(data?.interval).toBe('month')
-    expect(data?.plan_id).toBe(proPlanId)
+    expect(data?.plan_id).toBe(testPlanId)
     expect(data?.effective_from).toBe('2020-01-01T00:00:00+00:00')
     expect(data?.effective_until).toBeNull()
   })
@@ -107,14 +143,14 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
     expect(Number(data?.amount)).toBe(TEST_AMOUNT_1)
     expect(data?.currency).toBe('BRL')
     expect(data?.interval).toBe('month')
-    expect(data?.plan_id).toBe(proPlanId)
+    expect(data?.plan_id).toBe(testPlanId)
   })
 
   it('TESTE 5 — ordem incorreta: activateSyncedPrice() numa linha sem stripe_price_id continua rejeitado pelo banco', async () => {
     const { data: temp2, error: temp2Error } = await admin
       .from('plan_prices')
       .insert({
-        plan_id: proPlanId,
+        plan_id: testPlanId,
         interval: 'year', // combinação diferente de temp1, só para não interferir neste teste isolado
         currency: 'BRL',
         amount: TEST_AMOUNT_2,
@@ -149,8 +185,8 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
       expect(intervalError).not.toBeNull()
       expect(intervalError?.code).toBe('23514')
 
-      const { data: premium } = await admin.from('plans').select('id').eq('slug', 'premium').single()
-      const { error: planIdError } = await admin.from('plan_prices').update({ plan_id: premium!.id }).eq('id', temp1Id)
+      // Alvo "outro plano" é sempre um plano DESCARTÁVEL — nunca pro/premium reais.
+      const { error: planIdError } = await admin.from('plan_prices').update({ plan_id: otherPlanId }).eq('id', temp1Id)
       expect(planIdError).not.toBeNull()
       expect(planIdError?.code).toBe('23514')
 
@@ -183,8 +219,8 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
     const { data: temp3, error: temp3Error } = await admin
       .from('plan_prices')
       .insert({
-        plan_id: proPlanId,
-        interval: 'month', // mesma combinação de temp1 (que está active=true agora)
+        plan_id: testPlanId,
+        interval: 'month', // mesma combinação de temp1 (que está active=true agora), mesmo plano descartável
         currency: 'BRL',
         amount: TEST_AMOUNT_2,
         active: false,
@@ -228,14 +264,12 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
     })
 
     it('subscription com plan_id diferente do plan_price referenciado é rejeitada', async () => {
-      const { data: premium } = await admin.from('plans').select('id').eq('slug', 'premium').single()
-
       const { error } = await admin.from('subscriptions').insert({
         user_id: user.id,
         billing_customer_id: billingCustomerId,
         stripe_subscription_id: `sub_test_411_${Date.now()}`,
-        stripe_price_id: temp1StripePriceId, // pertence a Pro (proPlanId)
-        plan_id: premium!.id, // divergente de propósito
+        stripe_price_id: temp1StripePriceId, // pertence a testPlanId
+        plan_id: otherPlanId, // divergente de propósito — outro plano descartável
         status: 'active',
       })
 
@@ -267,16 +301,17 @@ describe.skipIf(!hasTestEnv())('Stripe 4.1.1 — sincronização local real (rec
     expect(allTemp1Rows).toHaveLength(1) // nenhuma duplicata criada
   })
 
-  it('CLEANUP — as 8 linhas comerciais reais permanecem intactas (nunca tocadas por este arquivo)', async () => {
-    const { data: realRows, error } = await admin
+  it('CLEANUP — o catálogo comercial real (8 linhas) permanece byte-a-byte idêntico ao snapshot de antes deste arquivo', async () => {
+    const { data: realRowsAfter, error } = await admin
       .from('plan_prices')
-      .select('active, stripe_price_id, amount')
-      .not('amount', 'in', `(${TEST_AMOUNT_1},${TEST_AMOUNT_2})`)
+      .select('id, plan_id, interval, currency, amount, active, stripe_price_id, effective_from, effective_until')
+      .not('plan_id', 'in', `(${testPlanId},${otherPlanId})`)
+      .order('id')
     expect(error).toBeNull()
-    expect(realRows).toHaveLength(8)
-    for (const row of realRows ?? []) {
-      expect(row.active).toBe(false)
-      expect(row.stripe_price_id).toBeNull()
-    }
+    // Comparação contra o snapshot capturado no beforeAll — nunca contra
+    // um valor hardcoded de active/stripe_price_id, para este teste
+    // continuar correto independente de qual etapa alterou por último o
+    // estado "oficial" do catálogo (Stripe 3 vs. Stripe 4.1B em diante).
+    expect(realRowsAfter).toEqual(realCommercialRowsSnapshot)
   })
 })

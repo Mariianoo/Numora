@@ -371,7 +371,7 @@ describe.skipIf(!hasTestEnv())('plan_prices + subscriptions — integridade (Str
     })
   })
 
-  it('TESTE 15 — os 8 preços comerciais reais (Pro/Premium) continuam intactos', async () => {
+  it('TESTE 15 — os 8 preços comerciais reais (Pro/Premium) continuam com os valores corretos (Stripe 4.1B: agora sincronizados/ativos)', async () => {
     const { data: plans } = await admin.from('plans').select('id, slug').in('slug', ['pro', 'premium'])
     const proId = plans?.find((p) => p.slug === 'pro')?.id
     const premiumId = plans?.find((p) => p.slug === 'premium')?.id
@@ -382,9 +382,13 @@ describe.skipIf(!hasTestEnv())('plan_prices + subscriptions — integridade (Str
       .in('plan_id', [proId, premiumId])
     expect(error).toBeNull()
     expect(rows).toHaveLength(8)
+    // Etapa "Stripe 4.1B": os 8 preços comerciais foram sincronizados de
+    // verdade com o Stripe TEST MODE — active=true e stripe_price_id
+    // preenchido são agora o estado oficial (nunca mais NULL/false).
     for (const row of rows ?? []) {
-      expect(row.active).toBe(false)
-      expect(row.stripe_price_id).toBeNull()
+      expect(row.active).toBe(true)
+      expect(typeof row.stripe_price_id).toBe('string')
+      expect(row.stripe_price_id).not.toHaveLength(0)
     }
 
     const byKey = Object.fromEntries(

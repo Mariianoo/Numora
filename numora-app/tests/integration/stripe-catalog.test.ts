@@ -3,7 +3,15 @@
  * Etapa "Stripe 4.1A" — `getCommercialPlanPricesCatalog`
  * (lib/stripe/catalog.ts) contra Supabase DEV real. SÓ LEITURA — nenhuma
  * escrita, nenhum dado criado/alterado/removido. Confirma exatamente os 8
- * preços comerciais reais (Stripe 3) e que Free nunca aparece.
+ * preços comerciais reais e que Free nunca aparece.
+ *
+ * Atualizado na Etapa "Stripe 4.1B.1": os 8 preços foram sincronizados de
+ * verdade com o Stripe TEST MODE (Stripe 4.1B) — o estado oficial agora é
+ * "todos os 8 sincronizados" (active=true, stripePriceId preenchido),
+ * nunca mais "nenhum Stripe Price existe ainda". Nunca depende do valor
+ * exato de nenhum `stripePriceId` (esses IDs pertencem ao Stripe, não são
+ * uma propriedade que este teste deveria fixar) — só confirma a FORMA
+ * (string não vazia), nunca um ID específico.
  */
 import { describe, expect, it } from 'vitest'
 
@@ -34,8 +42,9 @@ describe.skipIf(!hasTestEnv())('getCommercialPlanPricesCatalog (DEV real, só le
     expect(byKey).toEqual(EXPECTED_AMOUNTS)
 
     for (const row of catalog) {
-      expect(row.active).toBe(false)
-      expect(row.stripePriceId).toBeNull()
+      expect(row.active).toBe(true)
+      expect(typeof row.stripePriceId).toBe('string')
+      expect(row.stripePriceId).not.toHaveLength(0)
       expect(['pro', 'premium']).toContain(row.planSlug)
     }
   })

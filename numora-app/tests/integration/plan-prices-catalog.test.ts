@@ -2,9 +2,15 @@
  * tests/integration/plan-prices-catalog.test.ts
  * Etapa "Stripe 3 — Catálogo comercial no banco" — prova, contra Supabase
  * DEV real, que a migration `20260905120000_seed_commercial_plan_prices.sql`
- * (a) populou exatamente os 8 preços comerciais aprovados (Pro/Premium ×
- * month/year × BRL/USD, todos com stripe_price_id NULL e active=false) e
- * (b) restringiu `plan_prices.currency` a BRL/USD sem alterar mais nada.
+ * populou exatamente os 8 preços comerciais aprovados (Pro/Premium ×
+ * month/year × BRL/USD) e que `plan_prices.currency` está restrita a
+ * BRL/USD.
+ *
+ * Atualizado na Etapa "Stripe 4.1B.1": os 8 preços foram sincronizados de
+ * verdade com o Stripe TEST MODE (Stripe 4.1B) — `stripe_price_id=NULL` e
+ * `active=false` deixaram de ser o estado oficial. TESTE 4/5 agora
+ * validam o estado oficial ATUAL (sincronizado/ativo), não mais o estado
+ * pré-Stripe.
  *
  * TESTES 1-6 leem as linhas REAIS de `pro`/`premium`/`free` (dado de
  * catálogo definitivo desta etapa, nunca alterado/removido pelos testes —
@@ -97,15 +103,29 @@ describe.skipIf(!hasTestEnv())('plan_prices — catálogo comercial (Stripe 3)',
     expect(byKey).toEqual(PREMIUM_EXPECTED)
   })
 
-  it('TESTE 4 — todas as 8 linhas têm active = false (nenhum Stripe Price existe ainda)', () => {
+  it('TESTE 4 — todas as 8 linhas estão sincronizadas: active = true (Stripe 4.1B)', () => {
     for (const row of [...proRows, ...premiumRows]) {
-      expect(row.active).toBe(false)
+      expect(row.active).toBe(true)
     }
   })
 
-  it('TESTE 5 — todas as 8 linhas têm stripe_price_id IS NULL', () => {
+  it('TESTE 5 — todas as 8 linhas têm stripe_price_id preenchido (Stripe 4.1B)', () => {
     for (const row of [...proRows, ...premiumRows]) {
-      expect(row.stripe_price_id).toBeNull()
+      expect(typeof row.stripe_price_id).toBe('string')
+      expect(row.stripe_price_id).not.toHaveLength(0)
+    }
+  })
+
+  it('TESTE 4b — exatamente uma versão ativa por combinação plan+interval+currency', () => {
+    for (const [label, rows] of [['pro', proRows], ['premium', premiumRows]] as const) {
+      const combos = new Set<string>()
+      for (const row of rows) {
+        if (!row.active) continue
+        const key = `${row.interval}:${row.currency}`
+        expect(combos.has(key)).toBe(false) // já haveria uma ativa para essa combinação neste plano — duplicata
+        combos.add(key)
+      }
+      expect(combos.size, `${label} deveria ter 4 combinações ativas (month/year × BRL/USD)`).toBe(4)
     }
   })
 
