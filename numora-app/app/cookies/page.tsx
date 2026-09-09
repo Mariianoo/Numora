@@ -59,9 +59,17 @@ export default function CookiesPage() {
             </h2>
             <p className="mt-2">
               Se você autorizar, usamos o Google Tag Manager para entender como o Numora é usado — por exemplo,
-              quando o painel é aberto, quando uma moeda é adicionada, ou quando alguém abre pela primeira vez.
-              Esses eventos nunca incluem seu nome, e-mail, valores financeiros ou conteúdo específico da sua
-              coleção.
+              quando o painel é aberto, quando uma moeda é adicionada, quando alguém abre pela primeira vez, ou
+              quando você interage com a jornada de contratação de um plano pago (ex.: ver a tela de limite do
+              plano Free, ou iniciar uma assinatura). Esses eventos nunca incluem seu nome, e-mail, valores
+              financeiros, dados de cartão, ou conteúdo específico da sua coleção.
+            </p>
+            <p className="mt-2">
+              Separadamente, o Numora também pode registrar, de forma interna e só em nossos próprios sistemas, um
+              evento técnico indicando que uma assinatura foi concluída com sucesso. Esse registro interno hoje não
+              é enviado a nenhum fornecedor externo de analytics — não usamos Google Analytics/GA4 nem qualquer
+              serviço equivalente para isso. Ele existe só para métricas internas do produto e nunca contém valores
+              financeiros ou dados de pagamento.
             </p>
           </section>
 
