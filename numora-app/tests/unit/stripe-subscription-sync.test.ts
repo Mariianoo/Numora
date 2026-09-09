@@ -314,17 +314,27 @@ describe('syncFromRecognizedWebhookEvent — dispatcher de negócio', () => {
     })
   }
 
-  it('invoice.paid — no-op, nunca chama Stripe/Supabase (fora de escopo desta etapa)', async () => {
-    const { client: stripe, retrieve } = makeMockStripe(makeStripeSubscription())
-    const { client: supabase, from, rpc } = makeMockSupabase({})
+  it('invoice.paid → delega para o Invoice Sync (Stripe 5.5), nunca chama subscriptions.retrieve', async () => {
+    const { client: stripe, retrieve: subscriptionsRetrieve } = makeMockStripe(makeStripeSubscription())
+    const invoicesRetrieve = vi.fn().mockResolvedValue({
+      id: 'in_test_1',
+      customer: 'cus_test_abc',
+      parent: null,
+      payments: { data: [] },
+      metadata: {},
+      currency: 'brl',
+      amount_paid: 1990,
+      status_transitions: { paid_at: 1700000000 },
+    })
+    ;(stripe as unknown as { invoices: unknown }).invoices = { retrieve: invoicesRetrieve }
+    const { client: supabase } = makeMockSupabase({})
     const event = makeEvent('invoice.paid', { id: 'in_test_1' })
 
     const result = await syncFromRecognizedWebhookEvent(supabase, stripe, event)
 
-    expect(result.outcome).toBe('skipped')
-    expect(retrieve).not.toHaveBeenCalled()
-    expect(from).not.toHaveBeenCalled()
-    expect(rpc).not.toHaveBeenCalled()
+    expect(invoicesRetrieve).toHaveBeenCalledWith('in_test_1', { expand: ['payments'] })
+    expect(subscriptionsRetrieve).not.toHaveBeenCalled() // nunca confunde com sincronização de subscription
+    expect(result.outcome).toBe('synced')
   })
 
   it('tipo desconhecido — no-op, nunca lança', async () => {

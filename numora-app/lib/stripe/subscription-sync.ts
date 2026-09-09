@@ -20,11 +20,19 @@
  * vínculo), falha explicitamente. NÃO cria `plans`/`plan_prices` — se o
  * Stripe Price não corresponder a nenhuma linha local, falha
  * explicitamente. Nenhum dos dois é corrigido/inventado automaticamente.
+ *
+ * Etapa "Stripe 5.5 — Invoice & Payment Sync": `syncFromRecognizedWebhookEvent`
+ * (o dispatcher chamado pela rota do webhook) passou a delegar
+ * `invoice.paid`/`invoice.payment_failed` para `lib/stripe/invoice-sync.ts`
+ * — sincronização financeira (`billing_transactions`), inteiramente
+ * separada desta (nunca toca `subscriptions`).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
+import { resolveBillingCustomerByStripeCustomerId } from './customer'
 import { dispatchWebhookEvent } from './webhook'
+import { syncInvoicePaid, syncInvoicePaymentFailed, type SyncInvoiceResult } from './invoice-sync'
 
 export interface SyncSubscriptionResult {
   outcome: 'synced'
@@ -45,33 +53,6 @@ function toIsoTimestamp(unixSeconds: number): string {
 
 function toNullableIsoTimestamp(unixSeconds: number | null | undefined): string | null {
   return unixSeconds === null || unixSeconds === undefined ? null : toIsoTimestamp(unixSeconds)
-}
-
-interface ResolvedBillingCustomer {
-  id: string
-  userId: string
-}
-
-/**
- * FASE 10/25: resolve o usuário Numora exclusivamente via
- * `billing_customers.stripe_customer_id` (nunca aceita `user_id` de
- * metadata sem essa correspondência local existir primeiro). Se o Stripe
- * Customer não tiver vínculo local, falha explicitamente — não cria
- * billing_customer aqui (isso é escopo da Stripe 5.2).
- */
-async function resolveBillingCustomerByStripeCustomerId(supabase: SupabaseClient, stripeCustomerId: string): Promise<ResolvedBillingCustomer> {
-  const { data, error } = await supabase.from('billing_customers').select('id, user_id').eq('stripe_customer_id', stripeCustomerId).maybeSingle()
-
-  if (error) {
-    throw new Error(`[subscription-sync] Falha ao consultar billing_customers para stripe_customer_id ${stripeCustomerId}: ${error.message}`)
-  }
-  if (!data) {
-    throw new Error(
-      `[subscription-sync] Stripe Customer ${stripeCustomerId} não tem billing_customer local vinculado — subscription não sincronizada (inconsistência real, nunca associada a outro usuário arbitrariamente).`,
-    )
-  }
-
-  return { id: data.id as string, userId: data.user_id as string }
 }
 
 /**
@@ -196,10 +177,13 @@ export async function syncSubscriptionFromCheckoutSession(
 /**
  * Orquestração chamada pela rota do webhook DEPOIS de
  * `dispatchWebhookEvent` (lib/stripe/webhook.ts, Stripe 5.4A, inalterado)
- * confirmar que o tipo é reconhecido. `invoice.*` e qualquer tipo não
- * tratado aqui são no-op de propósito (fora de escopo desta etapa).
+ * confirmar que o tipo é reconhecido. Etapa "Stripe 5.5": `invoice.paid`/
+ * `invoice.payment_failed` agora delegam para `lib/stripe/invoice-sync.ts`
+ * (sincronização financeira, `billing_transactions` — nunca toca
+ * `subscriptions`). Qualquer outro tipo não tratado aqui continua no-op de
+ * propósito (fora de escopo).
  */
-export async function syncFromRecognizedWebhookEvent(supabase: SupabaseClient, stripe: Stripe, event: Stripe.Event): Promise<SyncSubscriptionResult | SkippedSyncResult> {
+export async function syncFromRecognizedWebhookEvent(supabase: SupabaseClient, stripe: Stripe, event: Stripe.Event): Promise<SyncSubscriptionResult | SyncInvoiceResult | SkippedSyncResult> {
   switch (event.type) {
     case 'checkout.session.completed':
       return syncSubscriptionFromCheckoutSession(supabase, stripe, event.data.object as Stripe.Checkout.Session, event.id)
@@ -209,8 +193,16 @@ export async function syncFromRecognizedWebhookEvent(supabase: SupabaseClient, s
       const subscriptionObject = event.data.object as Stripe.Subscription
       return syncSubscriptionFromStripe(supabase, stripe, subscriptionObject.id, event.id)
     }
+    case 'invoice.paid': {
+      const invoiceObject = event.data.object as Stripe.Invoice
+      return syncInvoicePaid(supabase, stripe, invoiceObject.id)
+    }
+    case 'invoice.payment_failed': {
+      const invoiceObject = event.data.object as Stripe.Invoice
+      return syncInvoicePaymentFailed(supabase, stripe, invoiceObject.id)
+    }
     default:
-      return { outcome: 'skipped', reason: `evento ${event.type} não envolve sincronização de subscription nesta etapa.` }
+      return { outcome: 'skipped', reason: `evento ${event.type} não envolve sincronização de subscription/invoice nesta etapa.` }
   }
 }
 

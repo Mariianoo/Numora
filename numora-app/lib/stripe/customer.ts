@@ -86,6 +86,34 @@ function requireStripeCustomerId(row: BillingCustomerRow): string {
   return row.stripe_customer_id
 }
 
+export interface BillingCustomerByStripeIdResult {
+  id: string
+  userId: string
+}
+
+/**
+ * Etapa "Stripe 5.4B/5.5" — resolução na direção OPOSTA de
+ * `getOrCreateBillingCustomer` (Stripe Customer → billing_customer/user,
+ * nunca cria nada, nunca aceita `user_id` de fora). Vive aqui (não em
+ * `subscription-sync.ts`/`invoice-sync.ts`) porque os DOIS módulos
+ * precisam da mesma resolução — evita tanto duplicar a lógica quanto um
+ * import circular entre eles.
+ */
+export async function resolveBillingCustomerByStripeCustomerId(supabase: SupabaseClient, stripeCustomerId: string): Promise<BillingCustomerByStripeIdResult> {
+  const { data, error } = await supabase.from('billing_customers').select('id, user_id').eq('stripe_customer_id', stripeCustomerId).maybeSingle()
+
+  if (error) {
+    throw new Error(`[resolveBillingCustomerByStripeCustomerId] Falha ao consultar billing_customers para stripe_customer_id ${stripeCustomerId}: ${error.message}`)
+  }
+  if (!data) {
+    throw new Error(
+      `[resolveBillingCustomerByStripeCustomerId] Stripe Customer ${stripeCustomerId} não tem billing_customer local vinculado — inconsistência real, nunca associada a outro usuário arbitrariamente.`,
+    )
+  }
+
+  return { id: data.id as string, userId: data.user_id as string }
+}
+
 export async function getOrCreateBillingCustomer(
   supabase: SupabaseClient,
   stripe: Stripe,

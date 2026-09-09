@@ -14,6 +14,14 @@
  * checagem de precisão abaixo existe para capturar entradas genuinamente
  * inválidas (mais de 2 casas decimais), nunca para rejeitar o erro de
  * ponto flutuante esperado de valores como 19.90.
+ *
+ * Etapa "Stripe 5.5 — Invoice & Payment Sync": `fromStripeMinorUnits` é a
+ * conversão INVERSA (minor units do Stripe, ex. `invoice.amount_paid`,
+ * sempre um inteiro → valor decimal, para gravar em
+ * `billing_transactions.amount numeric(10,2)`). Implementada via
+ * manipulação de dígitos em STRING (nunca uma divisão de ponto flutuante
+ * como `minorUnits / 100`) — determinística, sem depender de nenhum
+ * comportamento de arredondamento de IEEE754 para "sair certa".
  */
 export function toStripeMinorUnits(amount: number): number {
   if (typeof amount !== 'number' || !Number.isFinite(amount)) {
@@ -33,4 +41,28 @@ export function toStripeMinorUnits(amount: number): number {
   }
 
   return minorUnits
+}
+
+/**
+ * Inversa de `toStripeMinorUnits` — sempre recebe um INTEIRO (é assim que o
+ * Stripe sempre representa minor units, ex.: `1990` para R$ 19,90). Constrói
+ * a string decimal exata via slicing de dígitos (nunca `minorUnits / 100`)
+ * e só então converte para `number` — o `number` final é sempre a
+ * representação IEEE754 mais próxima da string exata, a MESMA que
+ * `JSON.stringify`/PostgREST devolvem ao serializar de volta (nunca uma
+ * imprecisão introduzida por uma divisão).
+ */
+export function fromStripeMinorUnits(minorUnits: number): number {
+  if (typeof minorUnits !== 'number' || !Number.isFinite(minorUnits) || !Number.isInteger(minorUnits)) {
+    throw new Error(`[fromStripeMinorUnits] Valor inválido — minor units do Stripe são sempre um inteiro: ${String(minorUnits)}`)
+  }
+  if (minorUnits < 0) {
+    throw new Error(`[fromStripeMinorUnits] Valor precisa ser não-negativo: ${minorUnits}`)
+  }
+
+  const digits = Math.abs(minorUnits).toString().padStart(3, '0')
+  const majorDigits = digits.slice(0, -2)
+  const minorDigits = digits.slice(-2)
+
+  return Number(`${majorDigits}.${minorDigits}`)
 }
