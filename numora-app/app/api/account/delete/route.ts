@@ -4,13 +4,25 @@
  * própria conta. Único Route Handler do projeto que usa a `service_role`
  * (via lib/supabase/admin.ts) — todo o resto da aplicação usa `anon key`.
  *
- * Ordem (auditada e aprovada na etapa de planejamento):
+ * Ordem (auditada e aprovada na etapa de planejamento; revisada na Etapa
+ * "5.7 — Account Deletion x Stripe" para inserir o passo 3):
  *   1. Sessão real (cookie) → identifica o usuário, nunca aceita user_id do body.
  *   2. Bloqueia `owner` usando is_platform_owner() na sessão real (auth.uid()
  *      resolve corretamente aqui — client de sessão normal, não admin).
- *   3. Bane a conta (auth.admin.updateUserById, ban_duration ~100 anos) —
+ *   3. [Etapa 5.7] Cancela TODA subscription Stripe não-terminal do Customer
+ *      deste usuário (`cancelAllStripeSubscriptionsForAccountDeletion`,
+ *      lib/stripe/subscription-management.ts) — ANTES de qualquer alteração
+ *      local. Se essa etapa falhar (Stripe indisponível, cancelamento
+ *      rejeitado, etc.), a exclusão inteira é abortada AQUI: nenhum ban,
+ *      nenhuma remoção de Storage, nenhuma chamada à RPC, nenhum
+ *      `deleteUser` — o usuário continua com a conta intacta e pode tentar
+ *      de novo. Isso é o que impede uma subscription Stripe `active`
+ *      sobreviver à exclusão da conta local (achado do audit pós-Stripe
+ *      5.6, SEC-01). Usuário Free/courtesy-only nunca instancia o client
+ *      Stripe (a função só o faz se existir `billing_customers.stripe_customer_id`).
+ *   4. Bane a conta (auth.admin.updateUserById, ban_duration ~100 anos) —
  *      bloqueio de login imediato, antes de qualquer dado ser tocado.
- *   4. Lista e remove TODOS os objetos do usuário nos DOIS buckets de fotos
+ *   5. Lista e remove TODOS os objetos do usuário nos DOIS buckets de fotos
  *      — o privado (`coin-images`, originais) e o público (`coin-images-public`,
  *      derivações com marca d'água — Fundação de imagens/Fix 2 da revisão
  *      arquitetural). Mesma função `listAllUserFiles`, só parametrizada
@@ -23,25 +35,30 @@
  *      Storage do Supabase), listamos o nível seguinte. Sem isso, a
  *      derivação pública de uma foto publicada sobreviveria à exclusão da
  *      conta inteira, contradizendo a Política de Privacidade.
- *   5. Chama delete_own_account_data(userId) — RPC SECURITY DEFINER,
+ *   6. Chama delete_own_account_data(userId) — RPC SECURITY DEFINER,
  *      EXECUTE só para service_role, bloqueia owner internamente também
  *      (defesa em profundidade, Etapa 15.10.17B migration 3).
- *   6. auth.admin.deleteUser(userId) — documentação oficial confirma que
+ *   7. auth.admin.deleteUser(userId) — documentação oficial confirma que
  *      isso FALHA se sobrar qualquer objeto de Storage do usuário; por isso
- *      o passo 4 é obrigatório antes deste. "Não encontrado" é tratado como
+ *      o passo 5 é obrigatório antes deste. "Não encontrado" é tratado como
  *      sucesso (idempotência — 2ª chamada nunca falha).
  *
  * Cada etapa aborta e retorna erro se a anterior não teve certeza de
  * sucesso — nunca prossegue "torcendo para dar certo". Nenhuma etapa
  * reverte as anteriores (não há rollback cross-sistema possível entre
- * GoTrue/Storage/Postgres) — a ordem escolhida minimiza o risco residual
- * em vez de prometer atomicidade impossível (ver relatório da etapa).
+ * Stripe/GoTrue/Storage/Postgres) — a ordem escolhida minimiza o risco
+ * residual em vez de prometer atomicidade impossível (ver relatório da
+ * etapa). O Stripe Customer NUNCA é deletado (`customers.del`) — só a
+ * capacidade de gerar nova cobrança é removida; o histórico de invoices
+ * permanece no Stripe para auditoria/contabilidade.
  */
 import { NextResponse } from 'next/server'
 import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { getStripeClient } from '@/lib/stripe/client'
+import { cancelAllStripeSubscriptionsForAccountDeletion } from '@/lib/stripe/subscription-management'
 import { PUBLIC_COIN_IMAGE_BUCKET } from '@/features/coin-images/types'
 
 const PRIVATE_COIN_IMAGES_BUCKET = 'coin-images'
@@ -127,6 +144,19 @@ export async function POST() {
 
   const userId = user.id
   const adminClient = getSupabaseAdminClient()
+
+  // Etapa "5.7" — fail-closed: se o Stripe não puder confirmar que toda
+  // subscription não-terminal foi cancelada, a exclusão para AQUI. Nada
+  // abaixo desta linha (ban, Storage, RPC, deleteUser) é executado.
+  try {
+    await cancelAllStripeSubscriptionsForAccountDeletion(adminClient, getStripeClient, userId)
+  } catch (err) {
+    Sentry.captureException(err)
+    return NextResponse.json(
+      { error: 'Falha ao cancelar sua assinatura de cobrança. A exclusão foi interrompida com segurança — tente novamente.' },
+      { status: 500 },
+    )
+  }
 
   const { error: banError } = await adminClient.auth.admin.updateUserById(userId, {
     ban_duration: BAN_DURATION,

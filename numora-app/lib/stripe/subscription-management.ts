@@ -28,8 +28,12 @@ import type Stripe from 'stripe'
 
 import { getCommercialPlanPricesCatalog, type PaidPlanSlug, type PriceCurrency, type PriceInterval } from './catalog'
 import { resolveSellablePrice } from './checkout'
+import { syncSubscriptionFromStripe } from './subscription-sync'
 
 const ELIGIBLE_STATUSES = ['trialing', 'active', 'past_due']
+
+/** Estados que o Stripe já trata como terminais — nenhuma cobrança futura é possível, nenhuma ação de cancelamento é necessária (ou sequer aceita pela API do Stripe). */
+const STRIPE_TERMINAL_STATUSES: Stripe.Subscription.Status[] = ['canceled', 'incomplete_expired']
 
 export interface OwnedSubscription {
   id: string
@@ -191,4 +195,86 @@ async function scheduleDowngrade(stripe: Stripe, stripeSubscriptionId: string, t
   })
 
   return updated.id
+}
+
+export interface CancelAccountSubscriptionsResult {
+  /** `null` quando o usuário nunca teve nenhum billing_customer (Free/courtesy-only) — nenhuma chamada ao Stripe foi feita. */
+  stripeCustomerId: string | null
+  canceledSubscriptionIds: string[]
+}
+
+/**
+ * Etapa "5.7 — Account Deletion x Stripe" — cancela TODA subscription
+ * Stripe ainda não terminal (`STRIPE_TERMINAL_STATUSES`) do Customer
+ * vinculado a este usuário, ANTES de qualquer exclusão local
+ * (`app/api/account/delete/route.ts`). Nunca confia no `status` local de
+ * `subscriptions` (pode estar desatualizado se o webhook não processou a
+ * última mudança) — sempre lista o estado CANÔNICO direto do Stripe
+ * (`stripe.subscriptions.list`), mesma filosofia de
+ * `syncSubscriptionFromStripe`.
+ *
+ * Se a subscription tiver um Subscription Schedule ativo, cancela o
+ * SCHEDULE (`subscriptionSchedules.cancel`) — que cancela a subscription
+ * associada atomicamente do lado do Stripe — em vez de cancelar a
+ * subscription diretamente: evita o Schedule tentar executar uma troca de
+ * fase numa subscription que a aplicação já considera encerrada, e evita 2
+ * chamadas quando 1 resolve as duas coisas.
+ *
+ * NUNCA usa `cancel_at_period_end` (diferente de `cancelOwnSubscription`,
+ * Stripe 5.6) — a conta está sendo apagada, não há usuário para manter
+ * acesso até o fim do período; cancelamento é sempre IMEDIATO.
+ *
+ * NUNCA deleta o Stripe Customer (`customers.del`) — preservado
+ * deliberadamente para histórico/auditoria de invoices; só a capacidade de
+ * gerar NOVA cobrança é removida.
+ *
+ * `userId` nunca vem de fora — sempre resolvido pela sessão real do
+ * chamador. `getStripe` só é invocado (e só então a validação de TEST MODE
+ * roda) quando existe de fato um `stripe_customer_id` a tratar — um usuário
+ * Free ou courtesy-only nunca instancia o client Stripe.
+ *
+ * Propaga qualquer erro sem mascarar — quem decide "abortar a exclusão de
+ * conta" é o chamador (fail-closed), nunca esta função.
+ */
+export async function cancelAllStripeSubscriptionsForAccountDeletion(
+  supabase: SupabaseClient,
+  getStripe: () => Stripe,
+  userId: string,
+): Promise<CancelAccountSubscriptionsResult> {
+  const { data: billingCustomer, error } = await supabase.from('billing_customers').select('stripe_customer_id').eq('user_id', userId).maybeSingle()
+
+  if (error) {
+    throw new Error(`[subscription-management] Falha ao consultar billing_customers para user_id ${userId}: ${error.message}`)
+  }
+
+  if (!billingCustomer?.stripe_customer_id) {
+    return { stripeCustomerId: null, canceledSubscriptionIds: [] }
+  }
+
+  const stripeCustomerId = billingCustomer.stripe_customer_id as string
+  const stripe = getStripe()
+  const canceledSubscriptionIds: string[] = []
+
+  for await (const subscription of stripe.subscriptions.list({ customer: stripeCustomerId, status: 'all' })) {
+    if (STRIPE_TERMINAL_STATUSES.includes(subscription.status)) {
+      continue
+    }
+
+    const scheduleId = typeof subscription.schedule === 'string' ? subscription.schedule : (subscription.schedule?.id ?? null)
+
+    if (scheduleId) {
+      await stripe.subscriptionSchedules.cancel(scheduleId)
+    } else {
+      await stripe.subscriptions.cancel(subscription.id)
+    }
+
+    canceledSubscriptionIds.push(subscription.id)
+
+    // Reflete o cancelamento localmente já aqui — se um passo posterior da
+    // exclusão de conta falhar, o estado local não fica divergente (nunca
+    // mostrando "active" para uma subscription que o Stripe já encerrou).
+    await syncSubscriptionFromStripe(supabase, stripe, subscription.id, null)
+  }
+
+  return { stripeCustomerId, canceledSubscriptionIds }
 }
