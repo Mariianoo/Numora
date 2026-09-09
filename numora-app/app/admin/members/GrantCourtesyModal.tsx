@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
 import { Input } from '@/components/ui/Input'
 import { Textarea } from '@/components/ui/Textarea'
+import { endOfDayLocalISOString } from '@/lib/format/date'
 import type { AdminMember, BenefitType } from '@/features/admin/types'
 
 const BENEFIT_TYPE_LABELS: Record<BenefitType, string> = {
@@ -52,7 +53,7 @@ export function GrantCourtesyModal({ member, onClose, onSubmit }: GrantCourtesyM
         type,
         plan,
         reason: reason.trim() || '',
-        expiresAt: expiresAt ? new Date(expiresAt).toISOString() : null,
+        expiresAt: expiresAt ? endOfDayLocalISOString(expiresAt) : null,
       })
     } catch (err) {
       setError((err as Error).message)
