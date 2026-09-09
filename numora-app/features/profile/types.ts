@@ -64,3 +64,29 @@ export interface ProfileUpdateInput {
   username: string | null
   countryCode: string | null
 }
+
+/**
+ * Etapa "Stripe 5.6 — Customer Portal / Gestão da Assinatura" — espelha
+ * `get_my_subscription()` (RPC self-scoped). Independente de
+ * `EffectivePlan`: `EffectivePlan` é a prioridade courtesy > subscription >
+ * free que decide o ACESSO; `OwnSubscription` é a assinatura Stripe REAL
+ * do usuário, exista ou não uma cortesia sobrepondo o plano exibido. `null`
+ * quando o usuário nunca teve nenhuma subscription.
+ */
+export interface OwnSubscription {
+  subscriptionId: string
+  planSlug: string
+  planName: string
+  status: string
+  interval: string
+  currency: string
+  amount: number
+  currentPeriodStart: string | null
+  currentPeriodEnd: string | null
+  cancelAtPeriodEnd: boolean
+  canceledAt: string | null
+  trialEnd: string | null
+  /** Plano para o qual um downgrade está agendado (Subscription Schedule) — `null` quando não há nenhum agendado. */
+  scheduledPlanSlug: string | null
+  scheduledPlanName: string | null
+}

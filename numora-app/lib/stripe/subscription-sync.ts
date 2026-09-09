@@ -26,6 +26,13 @@
  * `invoice.paid`/`invoice.payment_failed` para `lib/stripe/invoice-sync.ts`
  * — sincronização financeira (`billing_transactions`), inteiramente
  * separada desta (nunca toca `subscriptions`).
+ *
+ * Etapa "Stripe 5.6 — Customer Portal / Gestão da Assinatura": também
+ * captura `subscription.schedule` (Subscription Schedule, usado para
+ * downgrade agendado) — `scheduled_plan_id`/`stripe_schedule_id` são
+ * sempre sobrescritos com o que o Stripe disser AGORA (auto-curativo: uma
+ * vez que o Schedule libera a subscription, a próxima sincronização já
+ * limpa os dois campos sozinha, sem nenhuma flag/cron do Numora).
  */
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
@@ -75,6 +82,49 @@ async function resolvePlanIdByStripePriceId(supabase: SupabaseClient, stripePric
   return data.plan_id as string
 }
 
+interface ScheduledPlanInfo {
+  stripeScheduleId: string | null
+  scheduledPlanId: string | null
+}
+
+/**
+ * Etapa "Stripe 5.6": se a subscription tiver um Subscription Schedule
+ * ativo, resolve o Price da ÚLTIMA fase (o destino final do agendamento)
+ * para um `plan_id` local. Se a última fase já for o MESMO Price atual (o
+ * Schedule ainda não avançou de fase, ou é um schedule de 1 fase só),
+ * `scheduledPlanId` fica `null` — não há downgrade pendente de verdade
+ * para reportar. Nunca lança por um Price de fase futura desconhecido
+ * localmente — trata como "sem informação de agendamento" em vez de
+ * quebrar a sincronização inteira da subscription por causa disso.
+ */
+async function resolveScheduledPlan(stripe: Stripe, supabase: SupabaseClient, subscription: Stripe.Subscription): Promise<ScheduledPlanInfo> {
+  const scheduleId = typeof subscription.schedule === 'string' ? subscription.schedule : (subscription.schedule?.id ?? null)
+  if (!scheduleId) {
+    return { stripeScheduleId: null, scheduledPlanId: null }
+  }
+
+  const schedule = await stripe.subscriptionSchedules.retrieve(scheduleId)
+  const lastPhase = schedule.phases[schedule.phases.length - 1]
+  const lastItem = lastPhase?.items[0]
+  if (!lastItem) {
+    return { stripeScheduleId: scheduleId, scheduledPlanId: null }
+  }
+
+  const scheduledStripePriceId = typeof lastItem.price === 'string' ? lastItem.price : lastItem.price.id
+  const currentItem = subscription.items.data[0]
+  const currentStripePriceId = typeof currentItem.price === 'string' ? currentItem.price : currentItem.price.id
+  if (scheduledStripePriceId === currentStripePriceId) {
+    return { stripeScheduleId: scheduleId, scheduledPlanId: null }
+  }
+
+  try {
+    const scheduledPlanId = await resolvePlanIdByStripePriceId(supabase, scheduledStripePriceId)
+    return { stripeScheduleId: scheduleId, scheduledPlanId }
+  } catch {
+    return { stripeScheduleId: scheduleId, scheduledPlanId: null }
+  }
+}
+
 interface SyncSubscriptionRpcRow {
   subscription_id: string
   previous_status: string | null
@@ -120,6 +170,7 @@ export async function syncSubscriptionFromStripe(
   const item = items[0]
   const stripePriceId = typeof item.price === 'string' ? item.price : item.price.id
   const planId = await resolvePlanIdByStripePriceId(supabase, stripePriceId)
+  const { stripeScheduleId, scheduledPlanId } = await resolveScheduledPlan(stripe, supabase, subscription)
 
   const { data, error } = await supabase
     .rpc('sync_subscription_from_stripe', {
@@ -136,6 +187,8 @@ export async function syncSubscriptionFromStripe(
       p_trial_end: toNullableIsoTimestamp(subscription.trial_end),
       p_stripe_event_id: stripeEventId,
       p_source: 'webhook',
+      p_stripe_schedule_id: stripeScheduleId,
+      p_scheduled_plan_id: scheduledPlanId,
     })
     .single()
 

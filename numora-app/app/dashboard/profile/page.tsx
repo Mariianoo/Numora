@@ -25,6 +25,19 @@
  * pela fonte efetiva e, quando a origem não é o default, um rótulo
  * discreto ("Cortesia"/"Assinatura") — nunca reimplementa a prioridade
  * aqui, só formata (`lib/plans/plan-display.ts`).
+ *
+ * Etapa "Stripe 5.6 — Customer Portal / Gestão da Assinatura": novo card
+ * "Assinatura", inteiramente separado do card "Plano" acima —
+ * `ownSubscription` (`getOwnSubscription()` → RPC `get_my_subscription()`)
+ * é a assinatura Stripe REAL do usuário, nunca a mesma coisa que
+ * `effectivePlan` (que pode estar mostrando uma cortesia sobrepondo essa
+ * assinatura real — os dois blocos nunca se confundem, de propósito).
+ * Todas as ações (Portal/cancelar/upgrade/downgrade) chamam as rotas
+ * próprias do Numora (nunca Supabase direto, nunca o Stripe do browser) e,
+ * depois de qualquer uma delas, SEMPRE recarregam `effectivePlan` +
+ * `ownSubscription` do zero — a resposta da rota nunca é tratada como
+ * definitiva, só o estado canônico recarregado (mesmo princípio de
+ * `handleDeleteAccount` abaixo, que também nunca confia em otimismo local).
  */
 'use client'
 
@@ -45,13 +58,17 @@ import {
   ExternalLink,
   QrCode,
   Lock,
+  CreditCard,
+  Ban,
+  ArrowUpCircle,
+  ArrowDownCircle,
 } from 'lucide-react'
 
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { createSupabaseAdminRepository } from '@/features/admin/repositories/admin.repository'
-import type { Profile, EffectivePlan, PassportCollectionVisibility } from '@/features/profile/types'
+import type { Profile, EffectivePlan, OwnSubscription, PassportCollectionVisibility } from '@/features/profile/types'
 import type { Country } from '@/features/collection/types'
 import type { AdminRole } from '@/features/admin/types'
 import type { CollectionStats } from '@/lib/stats/collection-stats'
@@ -88,11 +105,34 @@ const DELETE_CONFIRMATION_WORD = 'EXCLUIR'
 
 const currencyFormatter = new Intl.NumberFormat('pt-BR', { style: 'currency', currency: 'BRL' })
 
+/** Etapa "Stripe 5.6" — `ownSubscription.currency` pode ser BRL ou USD (nunca outra, Stripe 5.5/5.6). */
+function formatSubscriptionAmount(amount: number, currency: string): string {
+  return new Intl.NumberFormat(currency === 'USD' ? 'en-US' : 'pt-BR', { style: 'currency', currency }).format(amount)
+}
+
+const INTERVAL_LABELS: Record<string, string> = { month: 'mês', year: 'ano' }
+
+/** Rótulo/tom de badge do status da assinatura — nunca a mesma coisa que o plano efetivo (que já tem seu próprio `planBadgeTone`). */
+const SUBSCRIPTION_STATUS_LABELS: Record<string, { label: string; tone: 'neutral' | 'accent' | 'success' | 'danger' }> = {
+  trialing: { label: 'Em teste', tone: 'accent' },
+  active: { label: 'Ativa', tone: 'success' },
+  past_due: { label: 'Pagamento pendente', tone: 'danger' },
+  canceled: { label: 'Cancelada', tone: 'neutral' },
+  incomplete: { label: 'Pagamento incompleto', tone: 'danger' },
+  incomplete_expired: { label: 'Expirada', tone: 'neutral' },
+  unpaid: { label: 'Não paga', tone: 'danger' },
+  paused: { label: 'Pausada', tone: 'neutral' },
+}
+
+const ELIGIBLE_SUBSCRIPTION_STATUSES = ['trialing', 'active', 'past_due']
+
 export default function ProfilePage() {
   const router = useRouter()
 
   const [profile, setProfile] = useState<Profile | null>(null)
   const [effectivePlan, setEffectivePlan] = useState<EffectivePlan | null>(null)
+  /** Etapa "Stripe 5.6" — nunca a mesma coisa que `effectivePlan` (ver comentário do topo do arquivo). */
+  const [ownSubscription, setOwnSubscription] = useState<OwnSubscription | null>(null)
   const [stats, setStats] = useState<CollectionStats | null>(null)
   const [countries, setCountries] = useState<Country[]>([])
   /** Etapa 15.10.18 — mesma fonte de verdade já usada pela Sidebar (`adminRepository.getOwnRole()`), nunca uma segunda definição de owner. Só decide o que a UI mostra; a proteção real continua no servidor (route.ts + RPC). */
@@ -130,6 +170,25 @@ export default function ProfilePage() {
   const [isDeleting, setIsDeleting] = useState(false)
   const [deleteError, setDeleteError] = useState<string | null>(null)
 
+  /** Etapa "Stripe 5.6" — Gerenciar pagamento (Customer Portal). */
+  const [isOpeningPortal, setIsOpeningPortal] = useState(false)
+  const [portalError, setPortalError] = useState<string | null>(null)
+
+  /** Etapa "Stripe 5.6" — cancelamento (cancel_at_period_end, nunca imediato). */
+  const [isCancelDialogOpen, setIsCancelDialogOpen] = useState(false)
+  const [isCanceling, setIsCanceling] = useState(false)
+  const [cancelError, setCancelError] = useState<string | null>(null)
+
+  /** Etapa "Stripe 5.6" — upgrade Pro→Premium (imediato, com proration). */
+  const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
+  const [isUpgrading, setIsUpgrading] = useState(false)
+  const [upgradeError, setUpgradeError] = useState<string | null>(null)
+
+  /** Etapa "Stripe 5.6" — downgrade Premium→Pro (agendado via Subscription Schedule). */
+  const [isDowngradeDialogOpen, setIsDowngradeDialogOpen] = useState(false)
+  const [isDowngrading, setIsDowngrading] = useState(false)
+  const [downgradeError, setDowngradeError] = useState<string | null>(null)
+
   // `isLoading`/`loadError` não são resetados no início de propósito
   // (evita setState síncrono dentro do efeito de montagem abaixo —
   // react-hooks/set-state-in-effect); ver mesmo comentário em
@@ -138,13 +197,15 @@ export default function ProfilePage() {
     return Promise.all([
       profileRepository.getOwnProfile(),
       profileRepository.getOwnEffectivePlan(),
+      profileRepository.getOwnSubscription(),
       profileRepository.getOwnStats(),
       referenceRepository.listResidenceCountries(),
       adminRepository.getOwnRole(),
     ])
-      .then(([profileResult, effectivePlanResult, statsResult, countriesResult, roleResult]) => {
+      .then(([profileResult, effectivePlanResult, ownSubscriptionResult, statsResult, countriesResult, roleResult]) => {
         setProfile(profileResult)
         setEffectivePlan(effectivePlanResult)
+        setOwnSubscription(ownSubscriptionResult)
         setStats(statsResult)
         setCountries(countriesResult)
         setOwnRole(roleResult)
@@ -335,6 +396,117 @@ export default function ProfilePage() {
     router.refresh()
   }
 
+  /**
+   * Etapa "Stripe 5.6" FASE 13 — nunca confia na resposta de uma rota de
+   * billing para declarar o estado local: toda ação recarrega
+   * `effectivePlan`/`ownSubscription` do zero via as mesmas RPCs do
+   * carregamento inicial (que por sua vez sempre refletem o que o
+   * Subscription Sync/webhook já persistiu, chamado de forma eager pela
+   * própria rota antes de responder — ver relatório da etapa).
+   */
+  async function reloadSubscriptionState() {
+    const [effectivePlanResult, ownSubscriptionResult] = await Promise.all([profileRepository.getOwnEffectivePlan(), profileRepository.getOwnSubscription()])
+    setEffectivePlan(effectivePlanResult)
+    setOwnSubscription(ownSubscriptionResult)
+  }
+
+  async function handleOpenPortal() {
+    setPortalError(null)
+    setIsOpeningPortal(true)
+
+    try {
+      const response = await fetch('/api/billing/portal', { method: 'POST' })
+      const body: { url?: string; error?: string } | null = await response.json().catch(() => null)
+
+      if (!response.ok || !body?.url) {
+        setPortalError(body?.error ?? 'Não foi possível abrir o portal de cobrança agora. Tente novamente.')
+        return
+      }
+
+      window.location.href = body.url
+    } catch {
+      setPortalError('Não foi possível abrir o portal de cobrança agora. Tente novamente.')
+    } finally {
+      setIsOpeningPortal(false)
+    }
+  }
+
+  async function handleCancelSubscription() {
+    setCancelError(null)
+    setIsCanceling(true)
+
+    try {
+      const response = await fetch('/api/billing/subscription/cancel', { method: 'POST' })
+      const body: { success?: boolean; error?: string } | null = await response.json().catch(() => null)
+
+      if (!response.ok || !body?.success) {
+        setCancelError(body?.error ?? 'Não foi possível cancelar sua assinatura agora. Tente novamente.')
+        return
+      }
+
+      await reloadSubscriptionState()
+      setIsCancelDialogOpen(false)
+    } catch {
+      setCancelError('Não foi possível cancelar sua assinatura agora. Tente novamente.')
+    } finally {
+      setIsCanceling(false)
+    }
+  }
+
+  async function handleUpgradeToPremium() {
+    if (!ownSubscription) return
+    setUpgradeError(null)
+    setIsUpgrading(true)
+
+    try {
+      const response = await fetch('/api/billing/subscription/change-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planSlug: 'premium', interval: ownSubscription.interval, currency: ownSubscription.currency }),
+      })
+      const body: { kind?: string; error?: string } | null = await response.json().catch(() => null)
+
+      if (!response.ok || !body?.kind) {
+        setUpgradeError(body?.error ?? 'Não foi possível concluir o upgrade agora. Tente novamente.')
+        return
+      }
+
+      await reloadSubscriptionState()
+      setIsUpgradeDialogOpen(false)
+    } catch {
+      setUpgradeError('Não foi possível concluir o upgrade agora. Tente novamente.')
+    } finally {
+      setIsUpgrading(false)
+    }
+  }
+
+  async function handleDowngradeToPro() {
+    if (!ownSubscription) return
+    setDowngradeError(null)
+    setIsDowngrading(true)
+
+    try {
+      const response = await fetch('/api/billing/subscription/change-plan', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ planSlug: 'pro', interval: ownSubscription.interval, currency: ownSubscription.currency }),
+      })
+      const body: { kind?: string; error?: string } | null = await response.json().catch(() => null)
+
+      if (!response.ok || !body?.kind) {
+        setDowngradeError(body?.error ?? 'Não foi possível agendar o downgrade agora. Tente novamente.')
+        return
+      }
+
+      await reloadSubscriptionState()
+      setIsDowngradeDialogOpen(false)
+    } catch {
+      setDowngradeError('Não foi possível agendar o downgrade agora. Tente novamente.')
+    } finally {
+      setIsDowngrading(false)
+    }
+  }
+
   if (isLoading) {
     return (
       <div className="flex flex-1 items-center justify-center">
@@ -440,6 +612,88 @@ export default function ProfilePage() {
                 </div>
               </div>
             </Card>
+
+            {ownSubscription && (
+              <Card className="p-6">
+                <div className="flex items-center justify-between gap-2">
+                  <h2 className="text-base font-semibold text-text-primary">Assinatura</h2>
+                  <Badge tone={SUBSCRIPTION_STATUS_LABELS[ownSubscription.status]?.tone ?? 'neutral'}>
+                    {SUBSCRIPTION_STATUS_LABELS[ownSubscription.status]?.label ?? ownSubscription.status}
+                  </Badge>
+                </div>
+
+                <div className="mt-4 flex flex-col gap-3">
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-text-secondary">Plano</p>
+                    <p className="text-sm font-medium text-text-primary">{ownSubscription.planName}</p>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <p className="text-sm text-text-secondary">Valor</p>
+                    <p className="text-sm text-text-primary">
+                      {formatSubscriptionAmount(ownSubscription.amount, ownSubscription.currency)} / {INTERVAL_LABELS[ownSubscription.interval] ?? ownSubscription.interval}
+                    </p>
+                  </div>
+                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) && ownSubscription.currentPeriodEnd && (
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-text-secondary">{ownSubscription.cancelAtPeriodEnd ? 'Acesso até' : 'Próxima cobrança'}</p>
+                      <p className="text-sm text-text-primary">{formatTimestampDate(ownSubscription.currentPeriodEnd)}</p>
+                    </div>
+                  )}
+                  {ownSubscription.status === 'canceled' && ownSubscription.canceledAt && (
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm text-text-secondary">Cancelada em</p>
+                      <p className="text-sm text-text-primary">{formatTimestampDate(ownSubscription.canceledAt)}</p>
+                    </div>
+                  )}
+                </div>
+
+                {ownSubscription.cancelAtPeriodEnd && (
+                  <p className="mt-4 flex items-start gap-2 rounded-lg bg-danger/10 p-3 text-sm text-danger">
+                    <TriangleAlert className="mt-0.5 size-4 shrink-0" aria-hidden />
+                    Sua assinatura foi cancelada e não será renovada — você mantém acesso ao plano {ownSubscription.planName} até{' '}
+                    {ownSubscription.currentPeriodEnd ? formatTimestampDate(ownSubscription.currentPeriodEnd) : 'o fim do período já pago'}.
+                  </p>
+                )}
+
+                {ownSubscription.scheduledPlanSlug && (
+                  <p className="mt-4 flex items-start gap-2 rounded-lg bg-accent/10 p-3 text-sm text-accent">
+                    <ArrowDownCircle className="mt-0.5 size-4 shrink-0" aria-hidden />
+                    Downgrade agendado: você passa para o plano {ownSubscription.scheduledPlanName} a partir de{' '}
+                    {ownSubscription.currentPeriodEnd ? formatTimestampDate(ownSubscription.currentPeriodEnd) : 'o fim do período atual'}. Até lá, continua com {ownSubscription.planName}.
+                  </p>
+                )}
+
+                {portalError && <p className="mt-4 text-sm text-danger">{portalError}</p>}
+
+                <div className="mt-4 flex flex-wrap gap-2">
+                  <Button type="button" variant="secondary" onClick={handleOpenPortal} isLoading={isOpeningPortal}>
+                    <CreditCard className="size-4" aria-hidden />
+                    Gerenciar pagamento
+                  </Button>
+
+                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) && !ownSubscription.cancelAtPeriodEnd && (
+                    <Button type="button" variant="secondary" onClick={() => setIsCancelDialogOpen(true)}>
+                      <Ban className="size-4" aria-hidden />
+                      Cancelar assinatura
+                    </Button>
+                  )}
+
+                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) && !ownSubscription.scheduledPlanSlug && ownSubscription.planSlug === 'pro' && (
+                    <Button type="button" variant="secondary" onClick={() => setIsUpgradeDialogOpen(true)}>
+                      <ArrowUpCircle className="size-4" aria-hidden />
+                      Fazer upgrade para Premium
+                    </Button>
+                  )}
+
+                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) && !ownSubscription.scheduledPlanSlug && ownSubscription.planSlug === 'premium' && (
+                    <Button type="button" variant="secondary" onClick={() => setIsDowngradeDialogOpen(true)}>
+                      <ArrowDownCircle className="size-4" aria-hidden />
+                      Fazer downgrade para Pro
+                    </Button>
+                  )}
+                </div>
+              </Card>
+            )}
 
             <Card className="p-6">
               <div className="flex items-center justify-between gap-4">
@@ -602,6 +856,62 @@ export default function ProfilePage() {
           restrita a qualquer momento.
         </p>
       </ConfirmDialog>
+
+      {/* Etapa "Stripe 5.6" — cancelamento agenda cancel_at_period_end, nunca cancela imediatamente; por isso `isDestructive={false}` (o acesso continua até o fim do período já pago). */}
+      {ownSubscription && (
+        <ConfirmDialog
+          isOpen={isCancelDialogOpen}
+          onClose={() => {
+            if (isCanceling) return
+            setIsCancelDialogOpen(false)
+            setCancelError(null)
+          }}
+          onConfirm={handleCancelSubscription}
+          title="Cancelar assinatura?"
+          description={`Você continua com acesso ao plano ${ownSubscription.planName} até ${ownSubscription.currentPeriodEnd ? formatTimestampDate(ownSubscription.currentPeriodEnd) : 'o fim do período já pago'}. Depois disso, sua conta volta para o plano Free.`}
+          icon={Ban}
+          confirmLabel="Cancelar assinatura"
+          cancelLabel="Manter assinatura"
+          isLoading={isCanceling}
+          error={cancelError}
+        />
+      )}
+
+      {ownSubscription && (
+        <ConfirmDialog
+          isOpen={isUpgradeDialogOpen}
+          onClose={() => {
+            if (isUpgrading) return
+            setIsUpgradeDialogOpen(false)
+            setUpgradeError(null)
+          }}
+          onConfirm={handleUpgradeToPremium}
+          title="Fazer upgrade para Premium?"
+          description="O upgrade é imediato — você é cobrado agora pela diferença proporcional ao tempo restante do ciclo atual, e passa a ter acesso ao Premium na hora."
+          icon={ArrowUpCircle}
+          confirmLabel="Confirmar upgrade"
+          isLoading={isUpgrading}
+          error={upgradeError}
+        />
+      )}
+
+      {ownSubscription && (
+        <ConfirmDialog
+          isOpen={isDowngradeDialogOpen}
+          onClose={() => {
+            if (isDowngrading) return
+            setIsDowngradeDialogOpen(false)
+            setDowngradeError(null)
+          }}
+          onConfirm={handleDowngradeToPro}
+          title="Fazer downgrade para Pro?"
+          description={`Você continua com todos os benefícios do Premium até ${ownSubscription.currentPeriodEnd ? formatTimestampDate(ownSubscription.currentPeriodEnd) : 'o fim do período atual'} — a troca para o Pro só acontece depois disso, sem nenhuma cobrança adicional agora.`}
+          icon={ArrowDownCircle}
+          confirmLabel="Agendar downgrade"
+          isLoading={isDowngrading}
+          error={downgradeError}
+        />
+      )}
 
       <section className="flex flex-col gap-4">
         <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">Estatísticas</p>

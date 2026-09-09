@@ -50,7 +50,7 @@
  * regra de prioridade é reimplementada aqui.
  */
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
-import type { Profile, ProfileUpdateInput, EffectivePlan, PassportCollectionVisibility } from '@/features/profile/types'
+import type { Profile, ProfileUpdateInput, EffectivePlan, OwnSubscription, PassportCollectionVisibility } from '@/features/profile/types'
 import { normalizeUsername, validateUsernameFormat } from '@/features/profile/username'
 import { computeCollectionStats, type CollectionItemStatsRow, type PurchaseStatsRow, type CollectionStats } from '@/lib/stats/collection-stats'
 
@@ -69,6 +69,8 @@ export interface ProfileRepository {
    */
   setPassportCollectionVisibility(value: PassportCollectionVisibility): Promise<Profile>
   getOwnEffectivePlan(): Promise<EffectivePlan>
+  /** Etapa "Stripe 5.6" — a subscription Stripe REAL do usuário (`null` se nunca teve nenhuma). Nunca confundir com `getOwnEffectivePlan()` (ver comentário de `OwnSubscription`). */
+  getOwnSubscription(): Promise<OwnSubscription | null>
 }
 
 const PASSPORT_REQUIRES_USERNAME_MESSAGE = 'Defina um nome de usuário antes de ativar seu Passport público.'
@@ -273,6 +275,49 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     return toEffectivePlan(data as EffectivePlanRow)
   }
 
+  async function getOwnSubscription(): Promise<OwnSubscription | null> {
+    const { data, error } = await supabase.rpc('get_my_subscription').maybeSingle()
+
+    if (error) {
+      throw new Error(`[ProfileRepository] Falha ao buscar a assinatura: ${error.message}`)
+    }
+    if (!data) return null
+
+    const row = data as {
+      subscription_id: string
+      plan_slug: string
+      plan_name: string
+      status: string
+      interval: string
+      currency: string
+      amount: number | string
+      current_period_start: string | null
+      current_period_end: string | null
+      cancel_at_period_end: boolean
+      canceled_at: string | null
+      trial_end: string | null
+      scheduled_plan_slug: string | null
+      scheduled_plan_name: string | null
+    }
+
+    return {
+      subscriptionId: row.subscription_id,
+      planSlug: row.plan_slug,
+      planName: row.plan_name,
+      status: row.status,
+      interval: row.interval,
+      currency: row.currency,
+      amount: Number(row.amount),
+      currentPeriodStart: row.current_period_start,
+      currentPeriodEnd: row.current_period_end,
+      cancelAtPeriodEnd: row.cancel_at_period_end,
+      canceledAt: row.canceled_at,
+      trialEnd: row.trial_end,
+      scheduledPlanSlug: row.scheduled_plan_slug,
+      scheduledPlanName: row.scheduled_plan_name,
+    }
+  }
+
   return {
     getOwnProfile,
     updateOwnProfile,
@@ -280,5 +325,6 @@ export function createSupabaseProfileRepository(): ProfileRepository {
     setPassportPublic,
     setPassportCollectionVisibility,
     getOwnEffectivePlan,
+    getOwnSubscription,
   }
 }
