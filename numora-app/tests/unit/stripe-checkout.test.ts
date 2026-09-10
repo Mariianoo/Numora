@@ -9,7 +9,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import type Stripe from 'stripe'
 
-import { checkoutRequestSchema, createCheckoutSession, resolveSellablePrice } from '@/lib/stripe/checkout'
+import { checkoutRequestSchema, createCheckoutSession, resolveAnalyticsConsentSnapshot, resolveSellablePrice } from '@/lib/stripe/checkout'
 import { buildCreationIdempotencyKey } from '@/lib/stripe/idempotency'
 import type { CommercialPlanPrice } from '@/lib/stripe/catalog'
 
@@ -76,6 +76,29 @@ describe('checkoutRequestSchema — validação de payload', () => {
   })
 })
 
+describe('resolveAnalyticsConsentSnapshot — Etapa 5.9G, fail-closed', () => {
+  it('boolean true literal → true', () => {
+    expect(resolveAnalyticsConsentSnapshot(true)).toBe(true)
+  })
+
+  it('boolean false literal → false', () => {
+    expect(resolveAnalyticsConsentSnapshot(false)).toBe(false)
+  })
+
+  it('ausente (undefined) → false', () => {
+    expect(resolveAnalyticsConsentSnapshot(undefined)).toBe(false)
+  })
+
+  it('null → false', () => {
+    expect(resolveAnalyticsConsentSnapshot(null)).toBe(false)
+  })
+
+  it.each(['true', '1', 1, {}, [], 'yes'])('valor inválido (%o, tipo errado) → false, nunca lança', (value) => {
+    expect(() => resolveAnalyticsConsentSnapshot(value)).not.toThrow()
+    expect(resolveAnalyticsConsentSnapshot(value)).toBe(false)
+  })
+})
+
 describe('resolveSellablePrice', () => {
   it('encontra a combinação exata quando active=true', () => {
     const catalog = [makePrice(), makePrice({ planSlug: 'premium', stripePriceId: 'price_premium_brl_month' })]
@@ -116,6 +139,15 @@ function makeMockStripe(sessionId = 'cs_test_abc', url: string | null = 'https:/
   return { client: { checkout: { sessions: { create } } } as unknown as Stripe, create }
 }
 
+/** Etapa 5.9G — os 4 novos parâmetros obrigatórios, com valores neutros/válidos, reutilizados por todo teste que não é especificamente SOBRE eles. */
+const ANALYTICS_PARAMS = {
+  funnelId: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+  analyticsConsentSnapshot: false,
+  planSlug: 'pro',
+  interval: 'month',
+  currency: 'BRL',
+}
+
 describe('createCheckoutSession', () => {
   it('cria com mode=subscription, quantity=1, client_reference_id e metadata corretos', async () => {
     const { client: stripe, create } = makeMockStripe()
@@ -126,6 +158,7 @@ describe('createCheckoutSession', () => {
       userId: 'user-1',
       successUrl: 'https://app.numora.test/dashboard?checkout=success',
       cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+      ...ANALYTICS_PARAMS,
     })
 
     expect(create).toHaveBeenCalledTimes(1)
@@ -134,12 +167,37 @@ describe('createCheckoutSession', () => {
       mode: 'subscription',
       customer: 'cus_abc',
       client_reference_id: 'user-1',
-      metadata: { numora_user_id: 'user-1' },
+      metadata: {
+        numora_user_id: 'user-1',
+        numora_funnel_id: 'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11',
+        numora_analytics_consent: 'false',
+        numora_plan_slug: 'pro',
+        numora_interval: 'month',
+        numora_currency: 'BRL',
+      },
       line_items: [{ price: 'price_pro_brl_month', quantity: 1 }],
       success_url: 'https://app.numora.test/dashboard?checkout=success',
       cancel_url: 'https://app.numora.test/dashboard?checkout=cancel',
     })
     expect(options.idempotencyKey).toMatch(/^numora:create-checkout-session:/)
+  })
+
+  it('Etapa 5.9G — numora_analytics_consent é sempre a STRING "true"/"false" (formato nativo de metadata do Stripe), nunca um boolean', async () => {
+    const { client: stripe, create } = makeMockStripe()
+
+    await createCheckoutSession(stripe, {
+      stripePriceId: 'price_pro_brl_month',
+      stripeCustomerId: 'cus_abc',
+      userId: 'user-1',
+      successUrl: 'https://app.numora.test/dashboard?checkout=success',
+      cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+      ...ANALYTICS_PARAMS,
+      analyticsConsentSnapshot: true,
+    })
+
+    const [payload] = create.mock.calls[0]
+    expect(payload.metadata.numora_analytics_consent).toBe('true')
+    expect(typeof payload.metadata.numora_analytics_consent).toBe('string')
   })
 
   it('gera uma Idempotency-Key DIFERENTE a cada chamada (nunca determinística por userId) — 2 tentativas legítimas nunca colidem', async () => {
@@ -151,6 +209,7 @@ describe('createCheckoutSession', () => {
       userId: 'user-1',
       successUrl: 'https://app.numora.test/dashboard?checkout=success',
       cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+      ...ANALYTICS_PARAMS,
     })
     await createCheckoutSession(stripe, {
       stripePriceId: 'price_pro_brl_month',
@@ -158,6 +217,8 @@ describe('createCheckoutSession', () => {
       userId: 'user-1',
       successUrl: 'https://app.numora.test/dashboard?checkout=success',
       cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+      ...ANALYTICS_PARAMS,
+      funnelId: 'b1ffcd88-8b1a-4df7-aa5c-5aa8ac270b22',
     })
 
     const keyA = create.mock.calls[0][1].idempotencyKey
@@ -176,6 +237,7 @@ describe('createCheckoutSession', () => {
       userId: 'user-1',
       successUrl: 'https://app.numora.test/dashboard?checkout=success',
       cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+      ...ANALYTICS_PARAMS,
     })
 
     const [payload] = create.mock.calls[0]
@@ -194,6 +256,7 @@ describe('createCheckoutSession', () => {
         userId: 'user-1',
         successUrl: 'https://app.numora.test/dashboard?checkout=success',
         cancelUrl: 'https://app.numora.test/dashboard?checkout=cancel',
+        ...ANALYTICS_PARAMS,
       }),
     ).rejects.toThrow(/No such customer/)
   })

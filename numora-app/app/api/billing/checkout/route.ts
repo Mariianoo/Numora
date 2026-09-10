@@ -39,7 +39,7 @@ import { clientEnv } from '@/lib/env.server'
 import { getStripeClient } from '@/lib/stripe/client'
 import { getCommercialPlanPricesCatalog } from '@/lib/stripe/catalog'
 import { getOrCreateBillingCustomer } from '@/lib/stripe/customer'
-import { checkoutRequestSchema, createCheckoutSession, resolveSellablePrice } from '@/lib/stripe/checkout'
+import { checkoutRequestSchema, createCheckoutSession, resolveAnalyticsConsentSnapshot, resolveSellablePrice } from '@/lib/stripe/checkout'
 
 function resolveAppOrigin(request: Request): string {
   if (clientEnv.NEXT_PUBLIC_SITE_URL) {
@@ -80,6 +80,13 @@ export async function POST(request: Request) {
   }
 
   const { planSlug, interval, currency } = parsed.data
+
+  // Etapa "5.9G — First-Party Analytics Outbox" — o ÚNICO campo de
+  // analytics que o cliente pode informar (nunca metadata arbitrário, ver
+  // lib/stripe/analytics-outbox.ts). Ver resolveAnalyticsConsentSnapshot
+  // para a regra fail-closed completa.
+  const rawAnalyticsConsent = (rawBody as Record<string, unknown> | null)?.analyticsConsent
+  const analyticsConsentSnapshot = resolveAnalyticsConsentSnapshot(rawAnalyticsConsent)
 
   if (planSlug === 'free') {
     return NextResponse.json({ error: 'O plano Free não possui Checkout — não há Stripe Product/Price associado.' }, { status: 400 })
@@ -135,6 +142,12 @@ export async function POST(request: Request) {
 
   const origin = resolveAppOrigin(request)
 
+  // Etapa 5.9G — gerado aqui (nunca no cliente): não deriva de
+  // user_id/nenhum ID do Stripe, uma nova tentativa de Checkout sempre
+  // ganha um funnel_id novo (mesmo espírito da idempotency key abaixo —
+  // nunca reutilizado entre tentativas).
+  const funnelId = crypto.randomUUID()
+
   try {
     const session = await createCheckoutSession(stripe, {
       stripePriceId,
@@ -142,13 +155,22 @@ export async function POST(request: Request) {
       userId: user.id,
       successUrl: `${origin}/dashboard?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
       cancelUrl: `${origin}/dashboard?checkout=cancel`,
+      funnelId,
+      analyticsConsentSnapshot,
+      planSlug,
+      interval,
+      currency,
     })
 
     if (!session.url) {
       throw new Error('Stripe Checkout Session criada sem url.')
     }
 
-    return NextResponse.json({ url: session.url, sessionId: session.id })
+    // `sessionId` preservado por compatibilidade interna (nunca foi usado
+    // pelo client) — o client analytics (UpgradeToProDialog) usa
+    // exclusivamente `funnelId`; o Stripe Checkout Session ID nunca deve
+    // ser lido para fins de analytics no lado do cliente.
+    return NextResponse.json({ url: session.url, sessionId: session.id, funnelId })
   } catch (err) {
     Sentry.captureException(err)
     return NextResponse.json({ error: 'Falha ao criar a sessão de Checkout.' }, { status: 500 })

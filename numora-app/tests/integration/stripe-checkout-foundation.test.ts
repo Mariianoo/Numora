@@ -29,7 +29,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
 import { getCommercialPlanPricesCatalog } from '@/lib/stripe/catalog'
-import { checkoutRequestSchema, createCheckoutSession, resolveSellablePrice } from '@/lib/stripe/checkout'
+import { checkoutRequestSchema, createCheckoutSession, resolveAnalyticsConsentSnapshot, resolveSellablePrice } from '@/lib/stripe/checkout'
 import { getOrCreateBillingCustomer } from '@/lib/stripe/customer'
 import { getStripeClient } from '@/lib/stripe/client'
 import {
@@ -106,12 +106,20 @@ describe.skipIf(!hasTestEnv())('Checkout foundation (DEV real + Stripe TEST real
     await deleteDisposableUser(admin, user.id)
   }
 
-  /** Mesma sequência de app/api/billing/checkout/route.ts, sem servidor HTTP. */
+  /**
+   * Mesma sequência de app/api/billing/checkout/route.ts, sem servidor
+   * HTTP. Etapa 5.9G: `analyticsConsent` opcional no body (mesmo campo que
+   * o Route Handler lê fora do schema, fail-closed) — gera um `funnelId`
+   * novo a cada chamada, exatamente como o Route Handler faz.
+   */
   async function runCheckoutPipeline(userClient: SupabaseClient, user: DisposableUser, body: unknown) {
     const parsed = checkoutRequestSchema.parse(body)
     if (parsed.planSlug === 'free') {
       throw new Error('FREE_HAS_NO_CHECKOUT')
     }
+    const rawAnalyticsConsent = (body as Record<string, unknown> | null)?.analyticsConsent
+    const analyticsConsentSnapshot = resolveAnalyticsConsentSnapshot(rawAnalyticsConsent)
+
     const catalog = await getCommercialPlanPricesCatalog(userClient)
     const resolution = resolveSellablePrice(catalog, { planSlug: parsed.planSlug, interval: parsed.interval, currency: parsed.currency })
     if (resolution.status !== 'ok') {
@@ -120,29 +128,54 @@ describe.skipIf(!hasTestEnv())('Checkout foundation (DEV real + Stripe TEST real
     const billingCustomer = await getOrCreateBillingCustomer(admin, stripe, { userId: user.id, email: user.email })
     createdStripeCustomerIds.add(billingCustomer.stripeCustomerId)
 
+    const funnelId = crypto.randomUUID()
+
     const session = await createCheckoutSession(stripe, {
       stripePriceId: resolution.price.stripePriceId!,
       stripeCustomerId: billingCustomer.stripeCustomerId,
       userId: user.id,
       successUrl: TEST_SUCCESS_URL,
       cancelUrl: TEST_CANCEL_URL,
+      funnelId,
+      analyticsConsentSnapshot,
+      planSlug: parsed.planSlug,
+      interval: parsed.interval,
+      currency: parsed.currency,
     })
     createdCheckoutSessionIds.add(session.id)
 
-    return { session, resolution, billingCustomer }
+    return { session, resolution, billingCustomer, funnelId, analyticsConsentSnapshot }
   }
 
   describe('FASE 14 — as 8 combinações comerciais', () => {
     it.each(COMBINATIONS)('$planSlug $interval $currency', async ({ planSlug, interval, currency, expectedAmount }) => {
       const { user, userClient } = await setupUser(`checkout-${planSlug}-${interval}-${currency}`)
       try {
-        const { session, resolution, billingCustomer } = await runCheckoutPipeline(userClient, user, { planSlug, interval, currency })
+        const { session, resolution, billingCustomer, funnelId, analyticsConsentSnapshot } = await runCheckoutPipeline(userClient, user, {
+          planSlug,
+          interval,
+          currency,
+          analyticsConsent: true,
+        })
 
         expect(session.object).toBe('checkout.session')
         expect(session.mode).toBe('subscription')
         expect(session.customer).toBe(billingCustomer.stripeCustomerId)
         expect(session.client_reference_id).toBe(user.id)
         expect(session.metadata?.numora_user_id).toBe(user.id)
+
+        // Etapa 5.9G — funnel_id/consent/plan_slug/interval/currency
+        // realmente persistidos na Checkout Session Stripe REAL (não só no
+        // objeto local retornado por createCheckoutSession).
+        expect(session.metadata?.numora_funnel_id).toBe(funnelId)
+        expect(funnelId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i)
+        expect(session.metadata?.numora_analytics_consent).toBe('true')
+        expect(analyticsConsentSnapshot).toBe(true)
+        expect(session.metadata?.numora_plan_slug).toBe(planSlug)
+        expect(session.metadata?.numora_interval).toBe(interval)
+        expect(session.metadata?.numora_currency).toBe(currency)
+        // NUNCA aparece nos metadata — nunca deve ser confundido com o funnel_id.
+        expect(session.metadata).not.toHaveProperty('numora_stripe_session_id')
 
         const fullSession = await stripe.checkout.sessions.retrieve(session.id, { expand: ['line_items'] })
         expect(fullSession.line_items?.data).toHaveLength(1)
@@ -180,6 +213,8 @@ describe.skipIf(!hasTestEnv())('Checkout foundation (DEV real + Stripe TEST real
 
         expect(resultA.session.id).not.toBe(resultB.session.id) // 2 tentativas distintas, nunca deduplicadas
         expect(resultA.billingCustomer.stripeCustomerId).toBe(resultB.billingCustomer.stripeCustomerId) // mesmo Customer (Stripe 5.2)
+        // Etapa 5.9G (item 2) — cada tentativa de Checkout ganha um funnel_id NOVO, nunca reaproveitado.
+        expect(resultA.funnelId).not.toBe(resultB.funnelId)
 
         const { data: rows } = await admin.from('billing_customers').select('id').eq('user_id', user.id)
         expect(rows).toHaveLength(1)

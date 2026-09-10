@@ -127,6 +127,22 @@ export function decideWebhookAction(record: RecordWebhookEventResult): WebhookAc
  * (5.4A) só são RECONHECIDOS — nenhuma lógica de negócio, nenhuma
  * subscription/entitlement é tocada. `dispatchWebhookEvent` nem recebe um
  * client Supabase: estruturalmente não tem como escrever em nada.
+ *
+ * Etapa "5.9G — First-Party Analytics Outbox": `checkout.session.completed`
+ * também alimenta `checkout_completed` (lib/stripe/analytics-outbox.ts),
+ * só quando `payment_status === 'paid'` — correto hoje porque o Stripe
+ * TEST desta conta tem só `card` habilitado (Boleto/PIX confirmados OFF
+ * via auditoria real da API nesta etapa, nenhum método assíncrono). SE um
+ * método assíncrono for habilitado no futuro (Boleto/PIX/outro), Sessions
+ * podem completar com `payment_status !== 'paid'` e o pagamento real só
+ * se confirma depois via `checkout.session.async_payment_succeeded`
+ * (ou falha via `async_payment_failed`) — NENHUM dos dois está nesta
+ * lista, e uma etapa específica precisará: (1) adicioná-los aqui, (2)
+ * ensinar `dispatchWebhookEvent`/`syncFromRecognizedWebhookEvent` a
+ * reconhecê-los, e (3) estender `resolveCheckoutCompletedOutboxInput` para
+ * também aceitar `async_payment_succeeded` como fonte canônica. Não
+ * implementado agora porque não há método assíncrono habilitado para
+ * testar contra o Stripe TEST real.
  */
 export const RECOGNIZED_WEBHOOK_EVENT_TYPES = [
   'checkout.session.completed',

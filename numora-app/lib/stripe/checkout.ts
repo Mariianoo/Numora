@@ -43,6 +43,20 @@ export const checkoutRequestSchema = z.object({
 
 export type CheckoutRequest = z.infer<typeof checkoutRequestSchema>
 
+/**
+ * Etapa "5.9G — First-Party Analytics Outbox" — o ÚNICO campo de analytics
+ * que o cliente pode enviar a este endpoint (nunca metadata arbitrário).
+ * Deliberadamente FORA de `checkoutRequestSchema`/nunca lançando: um valor
+ * malformado aqui nunca deve rejeitar a criação do Checkout (isso seria
+ * analytics quebrando um fluxo de negócio crítico) — fail-closed manual em
+ * vez de validação estrita. Só o boolean `true` literal vira `true`;
+ * QUALQUER outra coisa (ausente, `false`, string, número, objeto, `null`)
+ * vira `false`. Nunca assume consentimento.
+ */
+export function resolveAnalyticsConsentSnapshot(rawValue: unknown): boolean {
+  return rawValue === true
+}
+
 export interface ResolveSellablePriceParams {
   planSlug: PaidPlanSlug
   interval: PriceInterval
@@ -76,6 +90,28 @@ export interface CreateCheckoutSessionParams {
   userId: string
   successUrl: string
   cancelUrl: string
+  /**
+   * Etapa "5.9G — First-Party Analytics Outbox" — UUID gerado pelo
+   * servidor (`crypto.randomUUID()`), sem relação com `userId`/nenhum ID
+   * do Stripe. Único identificador que um futuro forwarder poderia enviar
+   * a um vendor externo — o Session ID em si NUNCA é enviado para fora
+   * (ver `lib/stripe/analytics-outbox.ts`). Persistido em
+   * `metadata.numora_funnel_id` para o webhook conseguir lê-lo de volta.
+   */
+  funnelId: string
+  /**
+   * Snapshot de `consent.analytics` do browser no momento em que o
+   * Checkout foi iniciado — nunca revisitado depois. Persistido como
+   * string ('true'/'false', formato nativo de metadata do Stripe) em
+   * `metadata.numora_analytics_consent`. Resolvido pelo Route Handler de
+   * forma fail-closed (ver app/api/billing/checkout/route.ts) — este
+   * módulo só grava o que recebe, nunca decide o valor.
+   */
+  analyticsConsentSnapshot: boolean
+  /** Mesmos valores já validados por `resolveSellablePrice` para esta Session — espelhados em metadata só para o outbox conseguir montar `checkout_completed` sem uma segunda consulta ao catálogo. */
+  planSlug: string
+  interval: string
+  currency: string
 }
 
 /**
@@ -100,7 +136,14 @@ export async function createCheckoutSession(stripe: Stripe, params: CreateChecko
       mode: 'subscription',
       customer: params.stripeCustomerId,
       client_reference_id: params.userId,
-      metadata: { numora_user_id: params.userId },
+      metadata: {
+        numora_user_id: params.userId,
+        numora_funnel_id: params.funnelId,
+        numora_analytics_consent: String(params.analyticsConsentSnapshot),
+        numora_plan_slug: params.planSlug,
+        numora_interval: params.interval,
+        numora_currency: params.currency,
+      },
       line_items: [{ price: params.stripePriceId, quantity: 1 }],
       success_url: params.successUrl,
       cancel_url: params.cancelUrl,

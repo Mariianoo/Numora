@@ -34,6 +34,7 @@ import { getStripeWebhookSecret } from '@/lib/env.stripe.server'
 import { getStripeClient } from '@/lib/stripe/client'
 import { decideWebhookAction, markWebhookEventFailed, markWebhookEventProcessed, recordWebhookEvent, verifyStripeWebhookEvent } from '@/lib/stripe/webhook'
 import { dispatchWebhookEvent, syncFromRecognizedWebhookEvent } from '@/lib/stripe/subscription-sync'
+import { recordCheckoutCompletedOutboxEvent, resolveCheckoutCompletedOutboxInput } from '@/lib/stripe/analytics-outbox'
 
 export async function POST(request: Request) {
   try {
@@ -102,6 +103,20 @@ export async function POST(request: Request) {
       const syncResult = await syncFromRecognizedWebhookEvent(adminClient, stripe, event)
       if (syncResult.outcome === 'skipped') {
         Sentry.captureMessage(`[stripe-webhook] evento ${event.id} (${event.type}) reconhecido mas sem subscription para sincronizar: ${syncResult.reason}`, 'info')
+      }
+
+      // Etapa "5.9G — First-Party Analytics Outbox" — SEMPRE depois do
+      // billing sync ter sucesso (nunca antes, nunca em paralelo) e SEMPRE
+      // best-effort: uma falha aqui nunca deve derrubar o webhook, desfazer
+      // o billing sync, ou impedir markWebhookEventProcessed abaixo. Nenhum
+      // vendor externo é chamado — só grava localmente em analytics_outbox.
+      try {
+        const outboxInput = resolveCheckoutCompletedOutboxInput(event)
+        if (outboxInput) {
+          await recordCheckoutCompletedOutboxEvent(adminClient, outboxInput)
+        }
+      } catch (analyticsErr) {
+        Sentry.captureException(analyticsErr)
       }
     }
     await markWebhookEventProcessed(adminClient, record.id)
