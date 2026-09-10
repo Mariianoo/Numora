@@ -64,7 +64,9 @@ import type { SetCoinCompositionInput } from '@/features/coin-composition/types'
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import type { PassportCollectionVisibility } from '@/features/profile/types'
 import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
-import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { trackCollectionLimitReached } from '@/lib/analytics/events/paywall-events'
+import { getUserFriendlyErrorMessage, isPermissionError } from '@/lib/errors/get-user-friendly-error-message'
+import { UpgradeToProDialog } from '@/components/billing/UpgradeToProDialog'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
 import {
   canPublishPhoto,
@@ -82,6 +84,7 @@ import type {
   CatalogReference,
   CollectionItem,
   CollectionItemEnrichmentInput,
+  CollectionItemLimit,
   CollectionItemUnit,
   Country,
   Grade,
@@ -915,6 +918,15 @@ function CoinImageSlot({
 
 export default function CollectionPage() {
   const [items, setItems] = useState<CollectionItem[]>([])
+  /**
+   * Etapa "5.9D — Paywall UX" — `check_collection_item_limit()`, PURAMENTE
+   * informativo (ver comentário de `CollectionItemLimit`). `null` enquanto
+   * ainda não carregou — nesse estado, `openAddModal`/o progresso "X de Y"
+   * tratam como "sem informação ainda" (nunca abre o Paywall por engano
+   * antes do primeiro carregamento real).
+   */
+  const [itemLimit, setItemLimit] = useState<CollectionItemLimit | null>(null)
+  const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
   const [countries, setCountries] = useState<Country[]>([])
   const [metals, setMetals] = useState<Metal[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
@@ -976,6 +988,37 @@ export default function CollectionPage() {
     collectionViewedFiredRef.current = true
     trackCollectionViewed()
   }, [])
+
+  /**
+   * Etapa "5.9E — Analytics" — sinal de "usuário Free já está no teto",
+   * independente de ele tentar adicionar algo agora (contexto
+   * `collection_page`, distinto de `new_item`/`restore`, que cobrem uma
+   * TENTATIVA bloqueada). Dispara na TRANSIÇÃO para o estado bloqueado
+   * (`collectionLimitAtCapRef` só reseta quando o limite deixa de estar
+   * atingido), nunca a cada render/atualização de `itemLimit` que ainda
+   * está bloqueado — evita reenviar o mesmo evento a cada
+   * `refreshItemLimit()` best-effort chamado por outras ações da página.
+   */
+  const collectionLimitAtCapRef = useRef(false)
+  useEffect(() => {
+    if (!itemLimit || itemLimit.isUnlimited || itemLimit.allowed) {
+      collectionLimitAtCapRef.current = false
+      return
+    }
+    if (collectionLimitAtCapRef.current) return
+    collectionLimitAtCapRef.current = true
+
+    try {
+      trackCollectionLimitReached({
+        current_count: itemLimit.currentCount,
+        limit: itemLimit.limit ?? itemLimit.currentCount,
+        plan_slug: itemLimit.planSlug,
+        context: 'collection_page',
+      })
+    } catch (err) {
+      Sentry.captureException(err)
+    }
+  }, [itemLimit])
 
   /**
    * Signed URLs das miniaturas dos cards — só do exemplar PRINCIPAL de
@@ -1423,14 +1466,20 @@ export default function CollectionPage() {
       referenceRepository.listMetals(),
       referenceRepository.listGrades(),
       profileRepository.getOwnProfile(),
+      // Etapa 5.9D — informativo, nunca bloqueia o carregamento da coleção
+      // se falhar (ver .catch abaixo): melhor mostrar a coleção sem o
+      // progresso "X de Y" do que esconder a coleção inteira por causa de
+      // uma consulta que não é a fonte de verdade de nada.
+      collectionRepository.getItemLimit().catch(() => null),
     ])
-      .then(([itemsResult, countriesResult, metalsResult, gradesResult, profileResult]) => {
+      .then(([itemsResult, countriesResult, metalsResult, gradesResult, profileResult, itemLimitResult]) => {
         setItems(itemsResult)
         setCountries(countriesResult)
         setMetals(metalsResult)
         setGrades(gradesResult)
         setPassportVisibilityMode(profileResult.passportCollectionVisibility)
         setOwnUsername(profileResult.username)
+        setItemLimit(itemLimitResult)
         setLoadError(null)
       })
       .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
@@ -1610,9 +1659,51 @@ export default function CollectionPage() {
     setNotes('')
   }
 
-  function openAddModal() {
+  /**
+   * Etapa "5.9D — Paywall UX" — releitura best-effort de
+   * `check_collection_item_limit()`. Chamada (a) antes de abrir o
+   * formulário de nova moeda (para decidir Paywall vs. formulário com o
+   * estado mais fresco possível) e (b) depois de criar/restaurar com
+   * sucesso, ou depois de um INSERT/RESTORE bloqueado pelo banco (para a
+   * UI refletir o estado real, nunca o anterior). Falha aqui nunca deve
+   * impedir a operação principal — por isso sempre `.catch(() => null)`
+   * no chamador quando usada de forma best-effort.
+   */
+  async function refreshItemLimit(): Promise<CollectionItemLimit | null> {
+    try {
+      const fresh = await collectionRepository.getItemLimit()
+      setItemLimit(fresh)
+      return fresh
+    } catch {
+      return null
+    }
+  }
+
+  async function openAddModal() {
     setError(null)
     setSuccessMessage(null)
+
+    // Etapa 5.9D — checagem PROATIVA (só UX): revalida o limite bem no
+    // momento do clique, não confia no valor carregado há minutos. A
+    // barreira real (RLS/trigger) continua intacta mesmo que esta
+    // releitura falhe ou fique desatualizada por uma fração de segundo —
+    // ver o catch de `handleSubmit` para o caso de concorrência genuína.
+    const fresh = await refreshItemLimit()
+    if (fresh && !fresh.isUnlimited && !fresh.allowed) {
+      try {
+        trackCollectionLimitReached({
+          current_count: fresh.currentCount,
+          limit: fresh.limit ?? fresh.currentCount,
+          plan_slug: fresh.planSlug,
+          context: 'new_item',
+        })
+      } catch (err) {
+        Sentry.captureException(err)
+      }
+      setIsUpgradeDialogOpen(true)
+      return
+    }
+
     setEditingItemId(null)
     resetForm()
     setCompositionEditorDefaultMode('simples')
@@ -1752,12 +1843,44 @@ export default function CollectionPage() {
         // composição falhar abaixo, um novo clique em "Salvar" precisa
         // ATUALIZAR este item, nunca criar outro.
         setEditingItemId(itemId)
+        // Etapa 5.9D — a contagem mudou; mantém "X de Y moedas" correto
+        // sem esperar o próximo carregamento completo da página.
+        void refreshItemLimit()
       } else {
         itemId = editingItemId
         const updatedItem = await collectionRepository.update(editingItemId, input)
         setItems((current) => current.map((item) => (item.id === updatedItem.id ? updatedItem : item)))
       }
     } catch (err) {
+      // Etapa "5.9D — Paywall UX" (§6, UI desatualizada/stale): a RLS/
+      // trigger do banco é sempre a autoridade final — o valor de
+      // `itemLimit` carregado antes pode já estar errado (outra aba criou
+      // a moeda que faltava, por exemplo). Só ao CRIAR (nunca ao editar
+      // um item que já existe) e só quando o erro tem a forma de uma
+      // violação de RLS, reconsulta o limite: se o banco confirmar que
+      // não há mais vaga, isto NUNCA foi um erro técnico — é o Paywall.
+      // Qualquer outro caso (rede, ownership genuína, RLS mas com vaga
+      // disponível) continua caindo na mensagem genérica de sempre.
+      if (wasCreate && isPermissionError(err)) {
+        const fresh = await refreshItemLimit()
+        if (fresh && !fresh.isUnlimited && !fresh.allowed) {
+          try {
+            trackCollectionLimitReached({
+              current_count: fresh.currentCount,
+              limit: fresh.limit ?? fresh.currentCount,
+              plan_slug: fresh.planSlug,
+              context: 'new_item',
+            })
+          } catch (trackErr) {
+            Sentry.captureException(trackErr)
+          }
+          closeModal()
+          setIsSaving(false)
+          setIsUpgradeDialogOpen(true)
+          return
+        }
+      }
+
       setError(getUserFriendlyErrorMessage(err))
       setIsSaving(false)
       return
@@ -2102,7 +2225,20 @@ export default function CollectionPage() {
       {items.length > 0 && (
         <>
           <p className="text-sm text-text-secondary">
-            <span className="font-medium text-text-primary">{items.length}</span> moeda{items.length === 1 ? '' : 's'}{' '}
+            {/* Etapa "5.9D — Paywall UX" (§10) — "X de Y moedas" só para quem
+                tem teto (Free); Pro/Premium/courtesy continuam vendo só a
+                contagem, sem número de limite nenhum (nunca inventado no
+                frontend — vem de `itemLimit.limit`, resolvido pelo banco). */}
+            {itemLimit && !itemLimit.isUnlimited && itemLimit.limit !== null ? (
+              <>
+                <span className="font-medium text-text-primary">{items.length}</span> de{' '}
+                <span className="font-medium text-text-primary">{itemLimit.limit}</span> moedas{' '}
+              </>
+            ) : (
+              <>
+                <span className="font-medium text-text-primary">{items.length}</span> moeda{items.length === 1 ? '' : 's'}{' '}
+              </>
+            )}
             <span className="text-text-secondary/50">·</span> <span className="font-medium text-text-primary">{totalUnits}</span>{' '}
             exemplar{totalUnits === 1 ? '' : 'es'} <span className="text-text-secondary/50">·</span>{' '}
             <span className="font-medium text-text-primary">{countryCount}</span> país{countryCount === 1 ? '' : 'es'}{' '}
@@ -3290,6 +3426,16 @@ export default function CollectionPage() {
       </Modal>
 
       <LabelGeneratorModal items={labelItems} onClose={() => setLabelItems([])} />
+
+      <UpgradeToProDialog
+        isOpen={isUpgradeDialogOpen}
+        onClose={() => setIsUpgradeDialogOpen(false)}
+        title="Você atingiu o limite de moedas do plano Free"
+        limitValue={itemLimit?.limit ?? null}
+        trigger="collection_limit"
+        planSlug={itemLimit?.planSlug ?? 'free'}
+        currentCount={itemLimit?.currentCount}
+      />
     </div>
   )
 }

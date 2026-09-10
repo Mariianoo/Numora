@@ -225,3 +225,24 @@ export interface Grade {
   label: string
   sortOrder: number
 }
+
+/**
+ * Etapa "5.9D — Paywall UX" — espelha `check_collection_item_limit()`
+ * (RPC self-scoped, `auth.uid()` interno). PURAMENTE informativo: decide
+ * quando a UI mostra o progresso ("49 de 50 moedas") ou abre o Paywall
+ * PROATIVAMENTE, antes de tentar a operação — nunca é a barreira real.
+ * A barreira real continua sendo a RLS/trigger no Postgres
+ * (`collection_item_insert_allowed()`, Etapa 5.9A/B); mesmo que este
+ * objeto diga `allowed: true`, um INSERT/RESTORE real ainda pode ser
+ * rejeitado sob concorrência (ver `isPermissionError` em
+ * lib/errors/get-user-friendly-error-message.ts, usado para reconciliar
+ * esse caso de "UI desatualizada").
+ */
+export interface CollectionItemLimit {
+  allowed: boolean
+  currentCount: number
+  /** `null` = sem teto (Pro/Premium/courtesy) — nunca inventar um número aqui. */
+  limit: number | null
+  planSlug: string
+  isUnlimited: boolean
+}

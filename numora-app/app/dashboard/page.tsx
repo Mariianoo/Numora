@@ -58,6 +58,20 @@
  * exemplares, então essas funções não precisaram mudar. Distribuições
  * (país/metal/conservação/status) inalteradas — seguem 100% de
  * `collection_items`/`collection_units`, sem relação com `purchases`.
+ *
+ * Etapa "5.9C — Dashboard Gate": as seções "Distribuição da coleção" e
+ * "Histórico de aquisições" (DistributionCard×4, StatCards de Número de
+ * compras/Ticket médio, MonthlySeriesChart×2, AcquisitionsList) passam a
+ * exigir `get_my_entitlement('dashboard_advanced')` — Free vê um card
+ * "recurso Pro" no lugar; Pro/Premium veem tudo exatamente como antes,
+ * pixel a pixel. "Resumo da coleção" e "Atividade recente" continuam
+ * 100% Free, sem nenhuma alteração. Quando não avançado, a query de
+ * `historyUnitsResult` (usada SÓ pela seção avançada) nem chega a ser
+ * disparada — economia real de servidor, não só uma UI escondida. Isso é
+ * FEATURE GATING, não segurança de dado: os dados por trás continuam
+ * sendo só do próprio usuário, protegidos pela mesma RLS de sempre —
+ * esconder o componente não é (e nunca foi tratado como) uma barreira
+ * contra acesso indevido a dado alheio.
  */
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
@@ -76,6 +90,7 @@ import {
   Gem,
   Award,
   Tag,
+  Lock,
 } from 'lucide-react'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
@@ -103,6 +118,8 @@ import {
 import { formatDateOnly } from '@/lib/format/date'
 import { DashboardViewTracker } from '@/components/analytics/DashboardViewTracker'
 import { DashboardErrorState } from './DashboardErrorState'
+import { DashboardUpgradeButton } from './DashboardUpgradeButton'
+import { DashboardAdvancedLockedTracker } from './DashboardAdvancedLockedTracker'
 import { DistributionCard } from './DistributionCard'
 import { AcquisitionsList } from './AcquisitionsList'
 import { MonthlySeriesChart } from './MonthlySeriesChart'
@@ -139,6 +156,40 @@ interface DashboardActiveUnitRow {
   } | null
 }
 
+/**
+ * Etapa "5.9C — Dashboard Gate" — estado de "recurso Pro" para as 2 seções
+ * avançadas (Distribuição/Histórico). Reaproveita `EmptyState` (nenhum
+ * componente novo inventado) — só um ícone/título/descrição diferentes do
+ * caso "coleção vazia".
+ *
+ * Etapa "5.9D — Paywall UX": o CTA agora abre o Paywall real
+ * (`DashboardUpgradeButton` → `UpgradeToProDialog`, mesmo componente usado
+ * pela Coleção/Lixeira ao atingir o limite de 50 moedas) — nunca mais um
+ * link provisório para `/dashboard/profile`.
+ *
+ * Etapa "5.9E — Analytics": `planSlug` só alimenta o Paywall (`upgrade_viewed`/
+ * `checkout_started`) — o evento `feature_locked` desta seção é disparado
+ * uma única vez para a página inteira por `DashboardAdvancedLockedTracker`,
+ * não aqui (ver comentário daquele arquivo).
+ */
+function DashboardAdvancedLockedState({
+  description,
+  planSlug,
+}: {
+  description: string
+  planSlug: string
+}) {
+  return (
+    <EmptyState
+      icon={Lock}
+      title="Recurso do plano Pro"
+      description={description}
+      className="border-none px-0 py-10"
+      action={<DashboardUpgradeButton planSlug={planSlug} />}
+    />
+  )
+}
+
 function getGreeting(): string {
   const hour = new Date().getHours()
   if (hour < 12) return 'Bom dia'
@@ -156,7 +207,7 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
-  const [itemsResult, activeUnitsResult, historyUnitsResult, profileResult] = await Promise.all([
+  const [itemsResult, activeUnitsResult, profileResult, dashboardAdvancedEntitlement, effectivePlanResult] = await Promise.all([
     // Etapa 13.1: embeds de `countries`/`metals`/`collection_units(grades)`
     // adicionados para as distribuições — mesma query única de sempre,
     // sem N+1 (PostgREST resolve os embeds no próprio Postgres).
@@ -179,22 +230,45 @@ export default async function DashboardPage() {
         'unit_cost, purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases ( id, total_price, purchase_date, seller_name, created_at )',
       )
       .is('collection_items.deleted_at', null),
-    // Etapa 15.2 — escopo "Histórico": preserva a regra da Etapa 13.3
-    // (`!inner` SEM filtro de `deleted_at` = "existe pelo menos 1 exemplar",
-    // ativo OU na lixeira), agora a nível de EXEMPLAR em vez de item. Uma
-    // compra sem nenhum `collection_unit` restante (todos os itens
-    // excluídos definitivamente) simplesmente não aparece aqui — sem
-    // precisar de lógica extra de exclusão (auditoria Etapa 13.3, Casos
-    // A/E). `.not('purchase_id', 'is', null)` exclui só exemplares sem
-    // compra vinculada (não representam uma aquisição a listar).
-    supabase
-      .from('collection_units')
-      .select(
-        'purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases!inner ( id, total_price, purchase_date, seller_name, created_at )',
-      )
-      .not('purchase_id', 'is', null),
     supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
+    // Etapa 5.9C — mesmo padrão de LabelsRepository.isEnabled(): só UX,
+    // nunca uma barreira de dado (ver comentário do topo do arquivo).
+    // Falha na RPC nunca é tratada como "erro do Dashboard" — só faz o
+    // usuário ver a versão básica (fail-closed para o lado seguro: nunca
+    // mostrar avançado por engano).
+    supabase.rpc('get_my_entitlement', { p_feature_key: 'dashboard_advanced' }).maybeSingle(),
+    // Etapa 5.9E — só para rotular `feature_locked`/`upgrade_viewed` com o
+    // plano real (nunca `if (plan === 'pro')`); falha aqui não é tratada
+    // como erro do Dashboard, só perde a granularidade do rótulo — ver
+    // fallback abaixo.
+    supabase.rpc('get_effective_plan', { p_user_id: user.id }).maybeSingle(),
   ])
+
+  const isDashboardAdvancedEnabled =
+    (dashboardAdvancedEntitlement.data as { enabled: boolean } | null)?.enabled === true
+  const planSlug = (effectivePlanResult.data as { plan_slug: string } | null)?.plan_slug ?? 'free'
+
+  // Etapa 15.2 — escopo "Histórico": preserva a regra da Etapa 13.3
+  // (`!inner` SEM filtro de `deleted_at` = "existe pelo menos 1 exemplar",
+  // ativo OU na lixeira), agora a nível de EXEMPLAR em vez de item. Uma
+  // compra sem nenhum `collection_unit` restante (todos os itens
+  // excluídos definitivamente) simplesmente não aparece aqui — sem
+  // precisar de lógica extra de exclusão (auditoria Etapa 13.3, Casos
+  // A/E). `.not('purchase_id', 'is', null)` exclui só exemplares sem
+  // compra vinculada (não representam uma aquisição a listar).
+  //
+  // Etapa 5.9C: só disparada quando o entitlement está habilitado — usada
+  // EXCLUSIVAMENTE pela seção avançada "Histórico de aquisições". Para um
+  // usuário Free, essa query nem chega a rodar (economia real de
+  // servidor, não só uma UI escondida).
+  const historyUnitsResult = isDashboardAdvancedEnabled
+    ? await supabase
+        .from('collection_units')
+        .select(
+          'purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases!inner ( id, total_price, purchase_date, seller_name, created_at )',
+        )
+        .not('purchase_id', 'is', null)
+    : { data: [], error: null }
 
   // Etapa 12.4: uma falha de query NUNCA deve virar silenciosamente "0
   // moedas"/"coleção vazia" — a auditoria encontrou exatamente esse
@@ -290,9 +364,17 @@ export default async function DashboardPage() {
   })
   const quantityFormatter = new Intl.NumberFormat('pt-BR')
 
+  // Etapa 5.9E — mesma condição do ternário abaixo (De Morgan de
+  // `!hasStatsError && totalItems === 0`): só quando isto é verdadeiro as
+  // seções avançadas (e, portanto, o cartão bloqueado) chegam a existir na
+  // árvore — um usuário novo sem coleção nunca vê o bloqueio, então nunca
+  // deve gerar `feature_locked`.
+  const sectionsVisible = hasStatsError || totalItems > 0
+
   return (
     <div className="flex flex-col gap-10">
       <DashboardViewTracker />
+      {!isDashboardAdvancedEnabled && sectionsVisible && <DashboardAdvancedLockedTracker planSlug={planSlug} />}
       <PageHeader title={`${getGreeting()}, ${displayName}`} description="Veja como está sua coleção." />
 
       {!hasStatsError && totalItems === 0 ? (
@@ -363,32 +445,38 @@ export default async function DashboardPage() {
           <p className="text-[11px] font-semibold tracking-wider text-text-secondary/60 uppercase">
             Distribuição da coleção
           </p>
-          <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-            <DistributionCard
-              title="Por país"
-              icon={Globe2}
-              entries={countryDistribution}
-              emptyMessage="Nenhum país informado ainda."
-            />
-            <DistributionCard
-              title="Por metal"
-              icon={Gem}
-              entries={metalDistribution}
-              emptyMessage="Nenhum metal informado ainda."
-            />
-            <DistributionCard
-              title="Por conservação"
-              icon={Award}
-              entries={gradeDistribution}
-              emptyMessage="Nenhuma conservação informada ainda."
-            />
-            <DistributionCard
-              title="Por status"
-              icon={Tag}
-              entries={statusDistribution}
-              emptyMessage="Nenhum exemplar cadastrado ainda."
-            />
-          </div>
+          {isDashboardAdvancedEnabled ? (
+            <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+              <DistributionCard
+                title="Por país"
+                icon={Globe2}
+                entries={countryDistribution}
+                emptyMessage="Nenhum país informado ainda."
+              />
+              <DistributionCard
+                title="Por metal"
+                icon={Gem}
+                entries={metalDistribution}
+                emptyMessage="Nenhum metal informado ainda."
+              />
+              <DistributionCard
+                title="Por conservação"
+                icon={Award}
+                entries={gradeDistribution}
+                emptyMessage="Nenhuma conservação informada ainda."
+              />
+              <DistributionCard
+                title="Por status"
+                icon={Tag}
+                entries={statusDistribution}
+                emptyMessage="Nenhum exemplar cadastrado ainda."
+              />
+            </div>
+          ) : (
+            <Card className="p-6">
+              <DashboardAdvancedLockedState description="Veja como sua coleção se distribui por país, metal, conservação e status." planSlug={planSlug} />
+            </Card>
+          )}
         </section>
       )}
 
@@ -405,7 +493,11 @@ export default async function DashboardPage() {
             Inclui compras de itens que posteriormente foram para a lixeira.
           </p>
         </div>
-        {hasAcquisitionsError ? (
+        {!isDashboardAdvancedEnabled ? (
+          <Card className="p-6">
+            <DashboardAdvancedLockedState description="Veja o número de compras, ticket médio e a evolução mensal das suas aquisições." planSlug={planSlug} />
+          </Card>
+        ) : hasAcquisitionsError ? (
           <DashboardErrorState
             title="Não foi possível carregar suas aquisições"
             description="Ocorreu um problema ao carregar o histórico de compras."

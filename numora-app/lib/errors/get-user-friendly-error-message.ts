@@ -34,6 +34,34 @@ const POSTGRES_TECHNICAL_PATTERN =
 const INTERNAL_PREFIX_PATTERN = /^\[[\w.-]+\]\s*/
 
 /**
+ * Etapa "5.9D — Paywall UX" — exportada para que um caller (ex.: a tela de
+ * Coleção, ao criar/restaurar) possa reconhecer "isto foi um bloqueio de
+ * permissão" ANTES de decidir a mensagem final — especificamente para o
+ * caso em que esse bloqueio pode ser o limite de 50 moedas (Etapa 5.9A/B),
+ * que merece um Paywall em vez da mensagem genérica de permissão abaixo.
+ *
+ * Duas formas de detecção, deliberadamente combinadas (nunca só uma):
+ * 1) `PERMISSION_PATTERN` no texto — cobre violações de RLS geradas
+ *    nativamente pelo Postgres ("new row violates row-level security...").
+ * 2) `error.code === '42501'` — cobre o `RAISE EXCEPTION ... USING ERRCODE
+ *    '42501'` do trigger `enforce_collection_item_restore_limit()` (Etapa
+ *    5.9A), cuja mensagem é customizada e NUNCA contém o texto acima. Só
+ *    funciona se o repository preservar `.code` no `Error` lançado (ver
+ *    `throwRepositoryError`, features/collection/repositories/collection.repository.ts)
+ *    — sem isso o código original do Postgres se perde na hora de embrulhar
+ *    o erro. Checar o SQLSTATE é a forma robusta pedida explicitamente
+ *    (Fase 5.9D §12): nunca depender só de heurística de texto quando o
+ *    código de erro está disponível.
+ */
+export function isPermissionError(error: unknown): boolean {
+  const rawMessage = error instanceof Error ? error.message : typeof error === 'string' ? error : ''
+  if (PERMISSION_PATTERN.test(rawMessage)) return true
+
+  const code = (error as { code?: string } | null | undefined)?.code
+  return code === '42501'
+}
+
+/**
  * Traduz um erro para uma mensagem segura de exibir ao usuário.
  * `fallback` é usado quando a mensagem original não é reconhecida como seguro
  * nem como um dos padrões técnicos conhecidos — por padrão, uma mensagem

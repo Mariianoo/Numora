@@ -44,6 +44,7 @@ import type {
   CollectionItem,
   CollectionItemEnrichmentInput,
   CollectionItemInput,
+  CollectionItemLimit,
   CollectionItemUnit,
 } from '@/features/collection/types'
 
@@ -115,6 +116,14 @@ export interface CollectionRepository {
    * "mover para a lixeira", para avisar quando a compra é compartilhada.
    */
   countOtherItemsForPurchases(purchaseIds: string[], excludeItemId: string): Promise<number>
+  /**
+   * Etapa "5.9D — Paywall UX" — `check_collection_item_limit()`,
+   * PURAMENTE informativo (ver comentário de `CollectionItemLimit`). Usado
+   * para decidir quando mostrar o progresso "X de Y moedas" e quando abrir
+   * o Paywall proativamente — NUNCA a barreira real, que continua sendo a
+   * RLS/trigger no Postgres.
+   */
+  getItemLimit(): Promise<CollectionItemLimit>
 }
 
 /**
@@ -263,6 +272,24 @@ function toCollectionItem(row: CollectionItemRow): CollectionItem {
   }
 }
 
+/**
+ * Etapa "5.9D — Paywall UX" — `create()`/`restore()` são as duas únicas
+ * operações sujeitas ao enforcement do limite de 50 moedas (Etapas 5.9A/B:
+ * RLS `collection_items_insert_own` e o trigger `enforce_restore_limit`,
+ * que sinaliza com `errcode 42501`, mesma família de "violação de
+ * permissão" já usada pelo Postgres para RLS). O `Error` simples lançado
+ * abaixo SEMPRE preservava só `.message` — a UI precisa também do
+ * `.code` original para distinguir "isto foi bloqueado por permissão"
+ * (self.42501) de qualquer outra falha, de forma robusta (nunca por
+ * heurística de texto sozinha — ver `isPermissionError`,
+ * lib/errors/get-user-friendly-error-message.ts).
+ */
+function throwRepositoryError(prefix: string, error: { message: string; code?: string }): never {
+  const wrapped = new Error(`[CollectionRepository] ${prefix}: ${error.message}`) as Error & { code?: string }
+  wrapped.code = error.code
+  throw wrapped
+}
+
 export function createSupabaseCollectionRepository(): CollectionRepository {
   const supabase = getSupabaseBrowserClient()
   const purchasesRepository = createSupabasePurchasesRepository()
@@ -340,7 +367,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
         .single()
 
       if (error) {
-        throw new Error(`[CollectionRepository] Falha ao adicionar item: ${error.message}`)
+        throwRepositoryError('Falha ao adicionar item', error)
       }
 
       const created = toCollectionItem(data as unknown as CollectionItemRow)
@@ -581,7 +608,7 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       const { error } = await supabase.from('collection_items').update({ deleted_at: null }).eq('id', id)
 
       if (error) {
-        throw new Error(`[CollectionRepository] Falha ao restaurar item: ${error.message}`)
+        throwRepositoryError('Falha ao restaurar item', error)
       }
     },
 
@@ -625,6 +652,38 @@ export function createSupabaseCollectionRepository(): CollectionRepository {
       distinctItemIds.delete(excludeItemId)
 
       return distinctItemIds.size
+    },
+
+    async getItemLimit() {
+      const { data, error } = await supabase.rpc('check_collection_item_limit').maybeSingle()
+
+      if (error) {
+        throw new Error(`[CollectionRepository] Falha ao consultar o limite de moedas: ${error.message}`)
+      }
+
+      const row = data as {
+        allowed: boolean
+        current_count: number
+        limit: number | null
+        plan_slug: string
+        is_unlimited: boolean
+      } | null
+
+      // Sem sessão/linha (não deveria acontecer para um usuário autenticado
+      // normal) — nunca inventa "ilimitado" por omissão; fail-closed do
+      // lado da UX (mostra o pior caso, nunca libera visualmente algo que
+      // o banco talvez não permita).
+      if (!row) {
+        return { allowed: false, currentCount: 0, limit: 0, planSlug: 'free', isUnlimited: false }
+      }
+
+      return {
+        allowed: row.allowed,
+        currentCount: row.current_count,
+        limit: row.limit,
+        planSlug: row.plan_slug,
+        isUnlimited: row.is_unlimited,
+      }
     },
   }
 }

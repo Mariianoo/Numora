@@ -6,10 +6,18 @@
  * duplicar UI). Fluxo: entitlement (UX, não é a barreira real) → aviso de
  * Passport privado (não-bloqueante) → escolha de valor financeiro →
  * pré-visualização → `ensure_label_codes` (a barreira real) → PDF.
+ *
+ * Etapa "5.9E — Analytics": dispara `feature_locked` (feature_key/context
+ * `labels`) quando `state` transiciona para `'blocked'` — `planSlug` vem de
+ * `ProfileRepository.getOwnEffectivePlan()` (mesma RPC `get_effective_plan`
+ * usada pelo Dashboard), nunca de uma comparação de string aqui. Este fluxo
+ * não abre `UpgradeToProDialog` (CTA é `mailto:`, decisão de produto de
+ * outra etapa) — por isso não dispara `upgrade_viewed`.
  */
 'use client'
 
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
+import * as Sentry from '@sentry/nextjs'
 import { AlertTriangle, FileDown, Sparkles } from 'lucide-react'
 
 import type { CollectionItem } from '@/features/collection/types'
@@ -19,6 +27,7 @@ import { buildLabelData } from '@/features/labels/label-layout'
 import { generateLabelsPdf } from '@/features/labels/pdf'
 import type { FinancialDisplayOption } from '@/features/labels/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { trackFeatureLocked } from '@/lib/analytics/events/paywall-events'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
@@ -67,8 +76,17 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
   // dashboard (evita react-hooks/set-state-in-effect: o `setState` só é
   // reconhecido como assíncrono quando fica dentro de um callback `.then()`,
   // nunca no corpo síncrono do efeito).
+  // Etapa 5.9E — guarda "1 abertura real = no máximo 1 `feature_locked`",
+  // mesmo padrão de `upgradeViewedFiredRef` em UpgradeToProDialog: reseta
+  // quando o modal fecha (`isOpen` volta a `false`), então reabrir é uma
+  // nova tentativa legítima do usuário.
+  const featureLockedFiredRef = useRef(false)
+
   useEffect(() => {
-    if (!isOpen) return
+    if (!isOpen) {
+      featureLockedFiredRef.current = false
+      return
+    }
 
     Promise.resolve()
       .then(() => {
@@ -80,6 +98,22 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
         setOwnerUsername(profile.username)
         setPassportPublic(profile.passportPublic)
         setState(enabled ? 'ready' : 'blocked')
+
+        // Etapa 5.9E — busca do plano ISOLADA do Promise.all crítico acima
+        // de propósito: uma falha aqui nunca deve fazer um usuário Pro ver
+        // `state: 'blocked'` por engano (analytics é sempre best-effort,
+        // nunca pode degradar o fluxo real).
+        if (!enabled && !featureLockedFiredRef.current) {
+          featureLockedFiredRef.current = true
+          profileRepository
+            .getOwnEffectivePlan()
+            .then((effectivePlan) => {
+              trackFeatureLocked({ feature_key: 'labels', plan_slug: effectivePlan.planSlug, context: 'labels' })
+            })
+            .catch((err) => {
+              Sentry.captureException(err)
+            })
+        }
       })
       .catch((err) => {
         setError(getUserFriendlyErrorMessage(err))

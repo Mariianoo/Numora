@@ -21,6 +21,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
+import * as Sentry from '@sentry/nextjs'
 import { ArrowLeft, Award, Bookmark, Layers, Loader2, PackageOpen, RotateCcw, Trash2 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
@@ -30,7 +31,9 @@ import type { CollectionUnit } from '@/features/collection-units/types'
 import { getItemAcquisitionSummary } from '@/features/collection/aggregate'
 import type { CoinImageKind } from '@/features/coin-images/types'
 import { formatTimestampDate } from '@/lib/format/date'
-import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { getUserFriendlyErrorMessage, isPermissionError } from '@/lib/errors/get-user-friendly-error-message'
+import { trackCollectionLimitReached } from '@/lib/analytics/events/paywall-events'
+import { UpgradeToProDialog } from '@/components/billing/UpgradeToProDialog'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Button } from '@/components/ui/Button'
@@ -55,6 +58,12 @@ export default function TrashPage() {
   const [restoringId, setRestoringId] = useState<string | null>(null)
   /** Erro de "Restaurar" — separado de `loadError` para uma falha aqui nunca esconder a lista já carregada atrás de um ErrorState. */
   const [restoreError, setRestoreError] = useState<string | null>(null)
+  /** Etapa "5.9D — Paywall UX" — mesmo Paywall da Coleção, aberto quando uma restauração seria bloqueada pelo limite de 50 moedas do plano Free. */
+  const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
+  const [restoreLimitValue, setRestoreLimitValue] = useState<number | null>(null)
+  /** Etapa "5.9E — Analytics" — só para rotular o Paywall/`collection_limit_reached` com o plano/contagem reais, nunca uma barreira. */
+  const [restorePlanSlug, setRestorePlanSlug] = useState('free')
+  const [restoreCurrentCount, setRestoreCurrentCount] = useState<number | undefined>(undefined)
   const [itemPendingPermanentDelete, setItemPendingPermanentDelete] = useState<CollectionItem | null>(null)
   const [isDeletingPermanently, setIsDeletingPermanently] = useState(false)
   const [permanentDeleteError, setPermanentDeleteError] = useState<string | null>(null)
@@ -132,6 +141,37 @@ export default function TrashPage() {
       await collectionRepository.restore(item.id)
       setItems((current) => current.filter((i) => i.id !== item.id))
     } catch (err) {
+      // Etapa "5.9D — Paywall UX" (§8) — mesmo raciocínio da Coleção: a
+      // RLS/trigger no Postgres é a autoridade final sobre o limite de 50
+      // moedas, inclusive para restauração. Se o erro tem a forma de uma
+      // violação de RLS, confirma via `check_collection_item_limit()`
+      // (informativo) antes de decidir entre Paywall e mensagem genérica —
+      // nunca assume que TODO 42501 aqui é o limite (poderia ser outra
+      // violação de ownership em tese).
+      if (isPermissionError(err)) {
+        try {
+          const limit = await collectionRepository.getItemLimit()
+          if (!limit.isUnlimited && !limit.allowed) {
+            setRestoreLimitValue(limit.limit)
+            setRestorePlanSlug(limit.planSlug)
+            setRestoreCurrentCount(limit.currentCount)
+            try {
+              trackCollectionLimitReached({
+                current_count: limit.currentCount,
+                limit: limit.limit ?? limit.currentCount,
+                plan_slug: limit.planSlug,
+                context: 'restore',
+              })
+            } catch (trackErr) {
+              Sentry.captureException(trackErr)
+            }
+            setIsUpgradeDialogOpen(true)
+            return
+          }
+        } catch {
+          // Falha ao reconsultar o limite — cai para a mensagem genérica abaixo.
+        }
+      }
       setRestoreError(getUserFriendlyErrorMessage(err))
     } finally {
       setRestoringId(null)
@@ -331,6 +371,16 @@ export default function TrashPage() {
         initialUnitId={viewerState?.unitId ?? ''}
         initialKind={viewerState?.kind ?? 'front'}
         onClose={() => setViewerState(null)}
+      />
+
+      <UpgradeToProDialog
+        isOpen={isUpgradeDialogOpen}
+        onClose={() => setIsUpgradeDialogOpen(false)}
+        title="Restaurar esta moeda excederia o limite do plano Free"
+        limitValue={restoreLimitValue}
+        trigger="restore_limit"
+        planSlug={restorePlanSlug}
+        currentCount={restoreCurrentCount}
       />
     </div>
   )
