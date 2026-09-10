@@ -119,6 +119,8 @@ import { formatDateOnly } from '@/lib/format/date'
 import { DashboardViewTracker } from '@/components/analytics/DashboardViewTracker'
 import { DashboardErrorState } from './DashboardErrorState'
 import { DashboardUpgradeButton } from './DashboardUpgradeButton'
+import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
+import type { PriceCurrency } from '@/lib/stripe/catalog'
 import { DashboardAdvancedLockedTracker } from './DashboardAdvancedLockedTracker'
 import { DistributionCard } from './DistributionCard'
 import { AcquisitionsList } from './AcquisitionsList'
@@ -175,9 +177,11 @@ interface DashboardActiveUnitRow {
 function DashboardAdvancedLockedState({
   description,
   planSlug,
+  currency,
 }: {
   description: string
   planSlug: string
+  currency: PriceCurrency
 }) {
   return (
     <EmptyState
@@ -185,7 +189,7 @@ function DashboardAdvancedLockedState({
       title="Recurso do plano Pro"
       description={description}
       className="border-none px-0 py-10"
-      action={<DashboardUpgradeButton planSlug={planSlug} />}
+      action={<DashboardUpgradeButton planSlug={planSlug} currency={currency} />}
     />
   )
 }
@@ -230,7 +234,7 @@ export default async function DashboardPage() {
         'unit_cost, purchase_id, collection_item_id, collection_items!inner ( id, denomination, deleted_at ), purchases ( id, total_price, purchase_date, seller_name, created_at )',
       )
       .is('collection_items.deleted_at', null),
-    supabase.from('profiles').select('name').eq('id', user.id).maybeSingle(),
+    supabase.from('profiles').select('name, country_code').eq('id', user.id).maybeSingle(),
     // Etapa 5.9C — mesmo padrão de LabelsRepository.isEnabled(): só UX,
     // nunca uma barreira de dado (ver comentário do topo do arquivo).
     // Falha na RPC nunca é tratada como "erro do Dashboard" — só faz o
@@ -247,6 +251,12 @@ export default async function DashboardPage() {
   const isDashboardAdvancedEnabled =
     (dashboardAdvancedEntitlement.data as { enabled: boolean } | null)?.enabled === true
   const planSlug = (effectivePlanResult.data as { plan_slug: string } | null)?.plan_slug ?? 'free'
+  // Etapa "5.10D — Billing Commercial Foundation": mesma query que já
+  // buscava o perfil (linha acima) — nenhuma consulta nova, só um campo a
+  // mais no SELECT já existente.
+  const checkoutCurrency = resolveCurrencyFromCountryCode(
+    (profileResult.data as { country_code: string | null } | null)?.country_code ?? null,
+  )
 
   // Etapa 15.2 — escopo "Histórico": preserva a regra da Etapa 13.3
   // (`!inner` SEM filtro de `deleted_at` = "existe pelo menos 1 exemplar",
@@ -474,7 +484,7 @@ export default async function DashboardPage() {
             </div>
           ) : (
             <Card className="p-6">
-              <DashboardAdvancedLockedState description="Veja como sua coleção se distribui por país, metal, conservação e status." planSlug={planSlug} />
+              <DashboardAdvancedLockedState description="Veja como sua coleção se distribui por país, metal, conservação e status." planSlug={planSlug} currency={checkoutCurrency} />
             </Card>
           )}
         </section>
@@ -495,7 +505,7 @@ export default async function DashboardPage() {
         </div>
         {!isDashboardAdvancedEnabled ? (
           <Card className="p-6">
-            <DashboardAdvancedLockedState description="Veja o número de compras, ticket médio e a evolução mensal das suas aquisições." planSlug={planSlug} />
+            <DashboardAdvancedLockedState description="Veja o número de compras, ticket médio e a evolução mensal das suas aquisições." planSlug={planSlug} currency={checkoutCurrency} />
           </Card>
         ) : hasAcquisitionsError ? (
           <DashboardErrorState

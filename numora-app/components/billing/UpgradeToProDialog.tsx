@@ -31,6 +31,17 @@
  * falha em `trackUpgradeViewed`/`trackCheckoutStarted` nunca impede o
  * Paywall de abrir nem o upgrade de prosseguir (try/catch → Sentry, mesmo
  * padrão de `CollectionRepository.create()`).
+ *
+ * Etapa "5.10D — Billing Commercial Foundation": `targetPlanSlug`/
+ * `interval`/`currency` (o que efetivamente é comprado) deixam de ser
+ * constantes fixas (`UPGRADE_PLAN_SLUG`/`UPGRADE_INTERVAL`/`UPGRADE_CURRENCY`)
+ * e passam a ser props — resolvidas pelo caller (`resolveCurrencyFromCountryCode`
+ * para moeda; intervalo/plano-alvo continuam 'month'/'pro' nos 3 pontos de
+ * entrada contextuais já existentes, que nunca ofereciam Premium/anual —
+ * ver relatório da etapa). `planSlug` (prop já existente) continua
+ * representando o PLANO ATUAL do usuário, usado só por `upgrade_viewed` —
+ * nunca confundir com `targetPlanSlug` (o plano sendo comprado, usado no
+ * request de Checkout e em `checkout_started`).
  */
 'use client'
 
@@ -42,7 +53,7 @@ import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { getConsent } from '@/lib/analytics/consent'
 import { trackCheckoutStarted, trackUpgradeViewed, type UpgradeViewedTrigger } from '@/lib/analytics/events/paywall-events'
-import type { PriceCurrency, PriceInterval } from '@/lib/stripe/catalog'
+import type { PaidPlanSlug, PriceCurrency, PriceInterval } from '@/lib/stripe/catalog'
 
 export interface UpgradeToProDialogProps {
   isOpen: boolean
@@ -53,16 +64,19 @@ export interface UpgradeToProDialogProps {
   limitValue?: number | null
   /** Etapa 5.9E — de qual ponto do produto este Paywall foi aberto (propriedade `trigger` de `upgrade_viewed`). */
   trigger: UpgradeViewedTrigger
-  /** Etapa 5.9E — plano ATUAL do usuário, resolvido pelo caller a partir de uma fonte de entitlement real (nunca decidido aqui). */
+  /** Etapa 5.9E — plano ATUAL do usuário, resolvido pelo caller a partir de uma fonte de entitlement real (nunca decidido aqui). Usado só em `upgrade_viewed` — nunca confundir com `targetPlanSlug`. */
   planSlug: string
   /** Etapa 5.9E — contagem atual, só quando o trigger é de limite de coleção (`collection_limit`/`restore_limit`); omitido nos demais. */
   currentCount?: number
+  /** Etapa 5.10D — plano sendo COMPRADO (nunca o atual) — vai literalmente no request de Checkout. */
+  targetPlanSlug: PaidPlanSlug
+  /** Etapa 5.10D — resolvido pelo caller (mesmo padrão de `targetPlanSlug`). */
+  interval: PriceInterval
+  /** Etapa 5.10D — resolvido pelo caller via `resolveCurrencyFromCountryCode(profile.countryCode)` — nunca geolocalização, nunca escolhido pelo usuário neste componente. */
+  currency: PriceCurrency
 }
 
 const DEFAULT_TITLE = 'Desbloqueie o plano Pro'
-const UPGRADE_PLAN_SLUG = 'pro'
-const UPGRADE_INTERVAL: PriceInterval = 'month'
-const UPGRADE_CURRENCY: PriceCurrency = 'BRL'
 
 export function UpgradeToProDialog({
   isOpen,
@@ -72,6 +86,9 @@ export function UpgradeToProDialog({
   trigger,
   planSlug,
   currentCount,
+  targetPlanSlug,
+  interval,
+  currency,
 }: UpgradeToProDialogProps) {
   const [isRedirecting, setIsRedirecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -122,7 +139,7 @@ export function UpgradeToProDialog({
       const response = await fetch('/api/billing/checkout', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ planSlug: UPGRADE_PLAN_SLUG, interval: UPGRADE_INTERVAL, currency: UPGRADE_CURRENCY, analyticsConsent }),
+        body: JSON.stringify({ planSlug: targetPlanSlug, interval, currency, analyticsConsent }),
       })
       const body: { url?: string; funnelId?: string; error?: string } | null = await response.json().catch(() => null)
 
@@ -141,7 +158,7 @@ export function UpgradeToProDialog({
       // duplicamos essa checagem aqui.
       if (body.funnelId) {
         try {
-          trackCheckoutStarted({ plan_slug: UPGRADE_PLAN_SLUG, interval: UPGRADE_INTERVAL, currency: UPGRADE_CURRENCY, funnel_id: body.funnelId })
+          trackCheckoutStarted({ plan_slug: targetPlanSlug, interval, currency, funnel_id: body.funnelId })
         } catch (err) {
           Sentry.captureException(err)
         }

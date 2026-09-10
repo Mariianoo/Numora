@@ -11,18 +11,27 @@
  * (`dashboard/page.tsx`, via RPC `get_effective_plan()` — mesma fonte que
  * `ProfileRepository.getOwnEffectivePlan()` usa no client) — nunca
  * resolvido aqui por comparação de string.
+ *
+ * Etapa "5.10D — Billing Commercial Foundation": `currency` também vem do
+ * Server Component pai (`resolveCurrencyFromCountryCode(profile.country_code)`,
+ * lido na mesma query que já buscava o perfil) — este componente nunca
+ * decide moeda sozinho. `targetPlanSlug`/`interval` continuam 'pro'/'month'
+ * (este ponto de entrada nunca ofereceu Premium/anual — só remove o
+ * bloqueio do Dashboard avançado).
  */
 'use client'
 
 import { useState } from 'react'
 
 import { UpgradeToProDialog } from '@/components/billing/UpgradeToProDialog'
+import type { PriceCurrency } from '@/lib/stripe/catalog'
 
 export interface DashboardUpgradeButtonProps {
   planSlug: string
+  currency: PriceCurrency
 }
 
-export function DashboardUpgradeButton({ planSlug }: DashboardUpgradeButtonProps) {
+export function DashboardUpgradeButton({ planSlug, currency }: DashboardUpgradeButtonProps) {
   const [isOpen, setIsOpen] = useState(false)
 
   return (
@@ -40,6 +49,9 @@ export function DashboardUpgradeButton({ planSlug }: DashboardUpgradeButtonProps
         title="Desbloqueie o Dashboard avançado"
         trigger="dashboard"
         planSlug={planSlug}
+        targetPlanSlug="pro"
+        interval="month"
+        currency={currency}
       />
     </>
   )

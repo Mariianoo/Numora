@@ -60,8 +60,14 @@ export function trackFeatureLocked(properties: FeatureLockedProperties): void {
   pushToDataLayer({ event: 'feature_locked', ...properties })
 }
 
-/** Únicos triggers válidos — nunca inventar um novo sem atualizar este tipo. */
-export type UpgradeViewedTrigger = 'collection_limit' | 'restore_limit' | 'dashboard' | 'labels' | 'future_feature'
+/**
+ * Únicos triggers válidos — nunca inventar um novo sem atualizar este tipo.
+ * `pricing_page` (Etapa "5.10D — Billing Commercial Foundation"): abertura
+ * do Checkout a partir da nova página de seleção de plano (`PricingSelector`)
+ * — distinto de `future_feature`, que continua reservado para gates de
+ * feature ainda não específicos.
+ */
+export type UpgradeViewedTrigger = 'collection_limit' | 'restore_limit' | 'dashboard' | 'labels' | 'future_feature' | 'pricing_page'
 
 export interface UpgradeViewedProperties {
   trigger: UpgradeViewedTrigger

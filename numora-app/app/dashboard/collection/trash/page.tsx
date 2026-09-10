@@ -26,6 +26,9 @@ import { ArrowLeft, Award, Bookmark, Layers, Loader2, PackageOpen, RotateCcw, Tr
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseCoinImagesRepository } from '@/features/coin-images/repositories/coin-images.repository'
+import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
+import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
+import type { PriceCurrency } from '@/lib/stripe/catalog'
 import type { CollectionItem, CollectionItemUnit } from '@/features/collection/types'
 import type { CollectionUnit } from '@/features/collection-units/types'
 import { getItemAcquisitionSummary } from '@/features/collection/aggregate'
@@ -44,6 +47,7 @@ import { CoinImageViewer } from '@/components/ui/CoinImageViewer'
 
 const collectionRepository = createSupabaseCollectionRepository()
 const coinImagesRepository = createSupabaseCoinImagesRepository()
+const profileRepository = createSupabaseProfileRepository()
 
 function getPrimaryUnit(item: CollectionItem): CollectionItemUnit | null {
   return item.units.find((u) => u.isPrimary) ?? item.units[0] ?? null
@@ -61,6 +65,9 @@ export default function TrashPage() {
   /** Etapa "5.9D — Paywall UX" — mesmo Paywall da Coleção, aberto quando uma restauração seria bloqueada pelo limite de 50 moedas do plano Free. */
   const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
   const [restoreLimitValue, setRestoreLimitValue] = useState<number | null>(null)
+  // Etapa "5.10D — Billing Commercial Foundation": 'USD' até o perfil
+  // carregar (fail-safe — nunca assume BRL sem confirmar country_code='BR').
+  const [checkoutCurrency, setCheckoutCurrency] = useState<PriceCurrency>('USD')
   /** Etapa "5.9E — Analytics" — só para rotular o Paywall/`collection_limit_reached` com o plano/contagem reais, nunca uma barreira. */
   const [restorePlanSlug, setRestorePlanSlug] = useState('free')
   const [restoreCurrentCount, setRestoreCurrentCount] = useState<number | undefined>(undefined)
@@ -109,6 +116,18 @@ export default function TrashPage() {
   useEffect(() => {
     loadTrash()
   }, [loadTrash])
+
+  // Etapa "5.10D — Billing Commercial Foundation": puramente informativo
+  // para o Paywall de restauração (ver <UpgradeToProDialog> abaixo) — uma
+  // falha aqui nunca deve impedir a lixeira de carregar/funcionar, por
+  // isso é um efeito totalmente separado de `loadTrash` (mesmo espírito de
+  // `itemLimit` em app/dashboard/collection/page.tsx).
+  useEffect(() => {
+    profileRepository
+      .getOwnProfile()
+      .then((profile) => setCheckoutCurrency(resolveCurrencyFromCountryCode(profile.countryCode)))
+      .catch((err) => Sentry.captureException(err))
+  }, [])
 
   // Mesmo padrão da Grid ativa: um único lote de signed URLs para todas as
   // miniaturas visíveis (imagem de frente do exemplar principal de cada
@@ -381,6 +400,9 @@ export default function TrashPage() {
         trigger="restore_limit"
         planSlug={restorePlanSlug}
         currentCount={restoreCurrentCount}
+        targetPlanSlug="pro"
+        interval="month"
+        currency={checkoutCurrency}
       />
     </div>
   )

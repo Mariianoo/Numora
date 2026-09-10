@@ -65,6 +65,8 @@ import { createSupabaseProfileRepository } from '@/features/profile/repositories
 import type { PassportCollectionVisibility } from '@/features/profile/types'
 import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
 import { trackCollectionLimitReached } from '@/lib/analytics/events/paywall-events'
+import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
+import type { PriceCurrency } from '@/lib/stripe/catalog'
 import { getUserFriendlyErrorMessage, isPermissionError } from '@/lib/errors/get-user-friendly-error-message'
 import { UpgradeToProDialog } from '@/components/billing/UpgradeToProDialog'
 import { createSupabaseReferenceRepository } from '@/features/collection/repositories/reference.repository'
@@ -927,6 +929,9 @@ export default function CollectionPage() {
    */
   const [itemLimit, setItemLimit] = useState<CollectionItemLimit | null>(null)
   const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
+  // Etapa "5.10D — Billing Commercial Foundation": 'USD' até o perfil
+  // carregar (fail-safe — nunca assume BRL sem confirmar country_code='BR').
+  const [checkoutCurrency, setCheckoutCurrency] = useState<PriceCurrency>('USD')
   const [countries, setCountries] = useState<Country[]>([])
   const [metals, setMetals] = useState<Metal[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
@@ -1480,6 +1485,9 @@ export default function CollectionPage() {
         setPassportVisibilityMode(profileResult.passportCollectionVisibility)
         setOwnUsername(profileResult.username)
         setItemLimit(itemLimitResult)
+        // Etapa "5.10D — Billing Commercial Foundation": mesmo `getOwnProfile()`
+        // já buscado acima — nenhuma consulta nova.
+        setCheckoutCurrency(resolveCurrencyFromCountryCode(profileResult.countryCode))
         setLoadError(null)
       })
       .catch((err) => setLoadError(getUserFriendlyErrorMessage(err)))
@@ -3435,6 +3443,9 @@ export default function CollectionPage() {
         trigger="collection_limit"
         planSlug={itemLimit?.planSlug ?? 'free'}
         currentCount={itemLimit?.currentCount}
+        targetPlanSlug="pro"
+        interval="month"
+        currency={checkoutCurrency}
       />
     </div>
   )
