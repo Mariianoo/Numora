@@ -1,0 +1,31 @@
+-- ============================================================================
+-- Etapa "5.9K — Security Hardening" (item 3) — remove a tabela legada
+-- `public.coins`, substituída por `collection_items`/`collection_units`
+-- desde a migração para o schema numismático real (uma migration anterior,
+-- 20260817140300_seed_plan_entitlements.sql, já a descrevia como "tabela
+-- morta `coins`... sem uso").
+--
+-- Auditoria "5.9K Security Hardening Audit" (Fase 1) + revalidação
+-- read-only imediatamente antes desta migration confirmaram:
+--   - zero import de `features/coins` em qualquer página/componente (.tsx);
+--   - zero API route / Server Action referenciando `coins`;
+--   - zero teste (unit ou integration) tocando `coins`;
+--   - zero RPC/function do schema public referenciando `public.coins`;
+--   - zero view referenciando `coins`;
+--   - nenhuma FK externa apontando para `coins` (só a própria
+--     `coins_user_id_fkey -> auth.users`, que desaparece com a tabela);
+--   - as 3 outras ocorrências da palavra "coins" no diretório de migrations
+--     (`20260817140300`, `20260901160200`, `20260905100000`) são a chave
+--     JSON `'coins'` devolvida por `get_public_passport()`/comentário de
+--     texto — nunca uma referência à tabela.
+--
+-- `DROP TABLE` remove automaticamente as policies de RLS, triggers e
+-- índices que pertencem só a esta tabela — nenhum objeto órfão fica para
+-- trás. As migrations históricas que criaram/alteraram `coins`
+-- (20260808170934, 20260808172629, 20260812082413, 20260812082512) NÃO
+-- são apagadas nem editadas — permanecem como histórico imutável; esta
+-- migration nova é só o próximo passo lógico (a remoção), nunca uma
+-- reescrita do passado.
+-- ============================================================================
+
+drop table public.coins;
