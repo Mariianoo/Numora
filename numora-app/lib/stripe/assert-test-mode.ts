@@ -1,16 +1,29 @@
 /**
  * lib/stripe/assert-test-mode.ts
  * Etapa "Stripe 4.1A" — trava explícita contra rodar a futura sincronização
- * de preços (Stripe 4.1B) contra o Stripe LIVE por engano. Chamada por
- * `getStripeClient()` ANTES de qualquer instância do SDK ser criada — uma
- * chave `sk_live_` nunca chega perto de uma chamada real.
+ * de preços (Stripe 4.1B) contra o Stripe LIVE por engano.
+ *
+ * Etapa "5.10Q-A — Live Billing Guards": esta função NÃO é mais chamada por
+ * `getStripeClient()` — foi substituída pelo guard central
+ * `assertBillingEnvironment` (`lib/billing/assert-billing-environment.ts`),
+ * que sabe distinguir "LIVE nunca permitido" (Development/Preview) de
+ * "LIVE permitido sob condição explícita" (Production + flag habilitada) —
+ * distinção que esta função, sozinha, nunca teve como fazer (ela só olha
+ * para a chave, nunca para o ambiente). Mantida aqui inalterada, ainda
+ * exportada e testada (`tests/unit/stripe-assert-test-mode.test.ts`), para
+ * não quebrar cobertura existente — mas hoje é código morto do ponto de
+ * vista do app (nenhum caminho de produção a chama mais). Candidata a
+ * remoção numa etapa futura de limpeza, fora do escopo desta.
+ *
+ * `STRIPE_TEST_KEY_PATTERN` é exportado para `lib/stripe/key-mode.ts`
+ * reaproveitar — nunca uma segunda cópia divergente do mesmo regex.
  *
  * Formato real de uma chave secreta do Stripe: `sk_test_` ou `sk_live_`
  * seguido de uma string alfanumérica não-trivial (dezenas de caracteres).
  * Esta função nunca loga a chave em nenhuma mensagem de erro — só o
  * prefixo (`sk_test_`/`sk_live_`/nenhum) é seguro de mencionar.
  */
-const STRIPE_TEST_KEY_PATTERN = /^sk_test_[A-Za-z0-9]{16,}$/
+export const STRIPE_TEST_KEY_PATTERN = /^sk_test_[A-Za-z0-9]{16,}$/
 
 export function assertStripeTestMode(secretKey: string): void {
   if (!secretKey || secretKey.trim().length === 0) {

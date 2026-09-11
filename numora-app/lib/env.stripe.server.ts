@@ -34,6 +34,7 @@
 import { z } from 'zod'
 
 import { assertStripeWebhookSecretFormat } from './stripe/assert-webhook-secret-format'
+import { resolveExpectedWebhookSecret } from './stripe/webhook-secret-resolution'
 
 const stripeEnvSchema = z.object({
   STRIPE_SECRET_KEY: z.string().min(1),
@@ -82,6 +83,37 @@ export function getStripeEnv(): StripeEnv {
  */
 export function getStripeWebhookSecret(): string {
   const secret = process.env.STRIPE_WEBHOOK_SECRET
+  assertStripeWebhookSecretFormat(secret)
+  return secret
+}
+
+/**
+ * Etapa "5.10Q-A — Live Billing Guards" — substitui `getStripeWebhookSecret()`
+ * como o ponto de leitura usado pelo webhook: escolhe explicitamente entre
+ * `STRIPE_WEBHOOK_SECRET` (mantido como o secret de TEST — ver nota abaixo)
+ * e `STRIPE_LIVE_WEBHOOK_SECRET` (novo, ainda não configurado em nenhum
+ * ambiente nesta etapa), nunca com fallback silencioso entre os dois
+ * (`resolveExpectedWebhookSecret`, 5.10O §7).
+ *
+ * NOTA DE NOMENCLATURA (decisão desta etapa, não uma migração de secret):
+ * `STRIPE_WEBHOOK_SECRET` já é hoje o secret do endpoint TEST persistente
+ * criado no 5.10N.1 (`.env.local`). Renomear essa variável para
+ * `STRIPE_TEST_WEBHOOK_SECRET` exigiria alterar `.env.local` — proibido
+ * nesta etapa ("não alterar secrets/env"). Por isso `STRIPE_WEBHOOK_SECRET`
+ * continua sendo, na prática, "o secret de TEST" — uma renomeação futura
+ * (puramente de configuração) fica registrada como pendência separada.
+ *
+ * `getStripeEnv()`/`getStripeWebhookSecret()` (acima) continuam existindo
+ * inalteradas — `getStripeWebhookSecret()` não é mais chamada pelo webhook
+ * depois desta etapa, mas nada a remove (mesma decisão já tomada para
+ * `assertStripeTestMode`, ver `lib/stripe/assert-test-mode.ts`).
+ */
+export function getExpectedStripeWebhookSecret(mode: 'test' | 'live'): string {
+  const secret = resolveExpectedWebhookSecret({
+    mode,
+    testSecret: process.env.STRIPE_WEBHOOK_SECRET,
+    liveSecret: process.env.STRIPE_LIVE_WEBHOOK_SECRET,
+  })
   assertStripeWebhookSecretFormat(secret)
   return secret
 }

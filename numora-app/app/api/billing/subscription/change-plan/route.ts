@@ -23,8 +23,7 @@ import { z } from 'zod'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
-import { assertDevProject } from '@/lib/supabase/assert-dev-project'
-import { clientEnv } from '@/lib/env.server'
+import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
 import { getStripeClient } from '@/lib/stripe/client'
 import { VALID_CURRENCIES, VALID_INTERVALS } from '@/lib/stripe/catalog'
 import { changeOwnPlan } from '@/lib/stripe/subscription-management'
@@ -38,7 +37,7 @@ const changePlanRequestSchema = z.object({
 
 export async function POST(request: Request) {
   try {
-    assertDevProject(clientEnv.NEXT_PUBLIC_SUPABASE_URL)
+    assertBillingEnvironment(gatherBillingEnvironmentContext())
   } catch (err) {
     Sentry.captureException(err)
     return NextResponse.json({ error: 'Operação indisponível neste ambiente.' }, { status: 500 })

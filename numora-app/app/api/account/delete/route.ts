@@ -51,12 +51,32 @@
  * etapa). O Stripe Customer NUNCA é deletado (`customers.del`) — só a
  * capacidade de gerar nova cobrança é removida; o histórico de invoices
  * permanece no Stripe para auditoria/contabilidade.
+ *
+ * Etapa "5.10Q-A — Live Billing Guards" — achado crítico do 5.10O/5.10M:
+ * esta é a ÚNICA rota billing-adjacent que nunca teve nenhum guard de
+ * ambiente (as 6 rotas de `/api/billing/*` sempre tiveram `assertDevProject`,
+ * hoje `assertBillingEnvironment`). Como esta rota PRECISA continuar
+ * funcionando em Production para usuários Free/courtesy (que nunca tocam
+ * Stripe — `cancelAllStripeSubscriptionsForAccountDeletion` só chama
+ * `getStripe()` quando existe de fato um `billing_customers.stripe_customer_id`),
+ * um guard incondicional no topo da rota quebraria a exclusão de conta
+ * para TODO usuário em Production hoje (billing LIVE ainda não habilitado)
+ * — regressão real, não hipotética. Por isso o guard é chamado
+ * explicitamente aqui, mas só quando o usuário realmente tem um
+ * `stripe_customer_id` vinculado — exatamente o único caso em que uma
+ * operação Stripe de verdade está prestes a acontecer. Defesa em
+ * profundidade: `getStripeClient()` (chamado dentro de
+ * `cancelAllStripeSubscriptionsForAccountDeletion`) TAMBÉM valida o mesmo
+ * guard internamente — nenhum caminho de código pode obter um client
+ * Stripe sem passar por `assertBillingEnvironment`, mesmo que esta
+ * chamada explícita fosse removida por engano no futuro.
  */
 import { NextResponse } from 'next/server'
 import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
 import { getStripeClient } from '@/lib/stripe/client'
 import { cancelAllStripeSubscriptionsForAccountDeletion } from '@/lib/stripe/subscription-management'
 import { PUBLIC_COIN_IMAGE_BUCKET } from '@/features/coin-images/types'
@@ -149,6 +169,16 @@ export async function POST() {
   // subscription não-terminal foi cancelada, a exclusão para AQUI. Nada
   // abaixo desta linha (ban, Storage, RPC, deleteUser) é executado.
   try {
+    // Etapa "5.10Q-A" — só chama o guard quando existe de fato um Stripe
+    // Customer vinculado (nunca incondicional — ver comentário do
+    // cabeçalho do arquivo). Usuário Free/courtesy nunca chega a esta
+    // checagem, exatamente como nunca chegava a instanciar o client
+    // Stripe antes desta etapa.
+    const { data: billingCustomer } = await adminClient.from('billing_customers').select('stripe_customer_id').eq('user_id', userId).maybeSingle()
+    if (billingCustomer?.stripe_customer_id) {
+      assertBillingEnvironment(gatherBillingEnvironmentContext())
+    }
+
     await cancelAllStripeSubscriptionsForAccountDeletion(adminClient, getStripeClient, userId)
   } catch (err) {
     Sentry.captureException(err)

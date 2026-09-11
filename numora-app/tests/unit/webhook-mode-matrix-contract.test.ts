@@ -3,11 +3,8 @@
  * Etapa "5.10P — Live Billing Guards: Tests First" — matriz combinada da
  * seção 8 do relatório 5.10O: environment esperado + `event.livemode` +
  * resolução de secret, compostos (nunca uma quarta implementação
- * paralela — reaproveita as mesmas 3 funções futuras já contratadas nos
- * outros arquivos desta etapa).
- *
- * RESULTADO ESPERADO: RED (`Cannot find module`) — os 3 imports abaixo
- * apontam para módulos futuros (Etapa 5.10Q).
+ * paralela — reaproveita as mesmas 3 funções já contratadas/implementadas
+ * nos outros arquivos desta etapa, Etapa "5.10Q-A").
  *
  * LIMITAÇÃO DOCUMENTADA (linha "secret TEST usado em ambiente LIVE" da
  * tabela do prompt): a defesa PRIMÁRIA contra um secret do modo errado é
@@ -23,11 +20,8 @@
 import { describe, expect, it } from 'vitest'
 
 import { DEV_PROJECT_REF, PRODUCTION_PROJECT_REF } from '@/lib/supabase/project-ref'
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { assertBillingEnvironment } from '@/lib/billing/assert-billing-environment'
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { assertWebhookLivemodeMatchesExpectedMode } from '@/lib/stripe/webhook-mode'
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { resolveExpectedWebhookSecret } from '@/lib/stripe/webhook-secret-resolution'
 
 const SYNTHETIC_TEST_SECRET = `whsec_test_${'a'.repeat(24)}`

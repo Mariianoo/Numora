@@ -1,11 +1,10 @@
 /**
  * tests/unit/webhook-livemode-contract.test.ts
  * Etapa "5.10P — Live Billing Guards: Tests First" — contrato para a
- * futura validação de `event.livemode` (5.10O, seções 8/9 — gap
- * confirmado: hoje NENHUM código lê esse campo). Ainda NÃO implementada.
- * Importa de `@/lib/stripe/webhook-mode` — caminho FUTURO.
- *
- * RESULTADO ESPERADO: RED (`Cannot find module`).
+ * validação de `event.livemode` (5.10O, seções 8/9 — gap confirmado: até
+ * então nenhum código lia esse campo), escrito ANTES da função existir.
+ * Implementada na Etapa "5.10Q-A" em `lib/stripe/webhook-mode.ts`,
+ * satisfazendo este contrato sem nenhuma alteração de asserção aqui.
  *
  * NÃO chama `verifyStripeWebhookEvent` nem qualquer coisa do SDK real do
  * Stripe — só exercita a função pura de comparação de modo, com um objeto
@@ -13,7 +12,6 @@
  */
 import { describe, expect, it } from 'vitest'
 
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { assertWebhookLivemodeMatchesExpectedMode } from '@/lib/stripe/webhook-mode'
 
 function syntheticEvent(livemode: unknown): { livemode: unknown } {

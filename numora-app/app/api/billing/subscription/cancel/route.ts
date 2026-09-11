@@ -21,15 +21,14 @@ import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
-import { assertDevProject } from '@/lib/supabase/assert-dev-project'
-import { clientEnv } from '@/lib/env.server'
+import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
 import { getStripeClient } from '@/lib/stripe/client'
 import { cancelOwnSubscription } from '@/lib/stripe/subscription-management'
 import { syncSubscriptionFromStripe } from '@/lib/stripe/subscription-sync'
 
 export async function POST() {
   try {
-    assertDevProject(clientEnv.NEXT_PUBLIC_SUPABASE_URL)
+    assertBillingEnvironment(gatherBillingEnvironmentContext())
   } catch (err) {
     Sentry.captureException(err)
     return NextResponse.json({ error: 'Operação indisponível neste ambiente.' }, { status: 500 })

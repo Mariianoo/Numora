@@ -1,16 +1,17 @@
 /**
  * tests/unit/webhook-secret-resolution-contract.test.ts
  * Etapa "5.10P — Live Billing Guards: Tests First" — contrato para a
- * futura separação de `STRIPE_TEST_WEBHOOK_SECRET`/`STRIPE_LIVE_WEBHOOK_SECRET`
- * (5.10O, seção 7), ainda NÃO implementada. Importa de
- * `@/lib/stripe/webhook-secret-resolution` — caminho FUTURO.
+ * separação entre secret de TEST e de LIVE (5.10O, seção 7), escrito
+ * ANTES da função existir. Implementada na Etapa "5.10Q-A" em
+ * `lib/stripe/webhook-secret-resolution.ts`, satisfazendo este contrato
+ * sem nenhuma alteração de asserção aqui — `getExpectedStripeWebhookSecret`
+ * (`lib/env.stripe.server.ts`) é quem lê `process.env` de verdade e chama
+ * esta função pura.
  *
- * RESULTADO ESPERADO: RED (`Cannot find module`).
- *
- * Design PURO por contrato: a futura função recebe os dois valores de
- * secret já lidos (nunca lê `process.env` sozinha) — mesma razão de design
- * dos outros contratos desta etapa, elimina qualquer necessidade de mock
- * de ambiente global. `lib/env.stripe.server.ts` NÃO foi alterado.
+ * Design PURO por contrato: a função recebe os dois valores de secret já
+ * lidos (nunca lê `process.env` sozinha) — mesma razão de design dos
+ * outros contratos desta etapa, elimina qualquer necessidade de mock de
+ * ambiente global.
  *
  * Requisito central (5.10O): NUNCA um fallback silencioso entre modos —
  * testado explicitamente abaixo (mode='live' sem liveSecret nunca deve
@@ -18,7 +19,6 @@
  */
 import { describe, expect, it } from 'vitest'
 
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { resolveExpectedWebhookSecret } from '@/lib/stripe/webhook-secret-resolution'
 
 const SYNTHETIC_TEST_SECRET = `whsec_test_${'a'.repeat(24)}`

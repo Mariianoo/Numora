@@ -1,16 +1,13 @@
 /**
  * tests/unit/billing-environment-contract.test.ts
- * Etapa "5.10P — Live Billing Guards: Tests First" — contrato TDD para o
- * futuro `assertBillingEnvironment(...)` (desenhado na auditoria 5.10O),
- * ainda NÃO implementado. Importa de `@/lib/billing/assert-billing-environment`
- * — caminho FUTURO, que não existe nesta etapa de propósito.
- *
- * RESULTADO ESPERADO desta etapa: este arquivo FALHA ao rodar
- * (`Cannot find module '@/lib/billing/assert-billing-environment'`) — é o
- * estado RED correto de um teste contract-first contra uma função que
- * ainda não foi escrita. Não é um bug deste arquivo; é o objetivo dele.
- * Ver "5.10P — TEST-FIRST VERDICT" para a distinção entre RED esperado e
- * falha inesperada.
+ * Etapa "5.10P — Live Billing Guards: Tests First" — contrato TDD escrito
+ * ANTES de `assertBillingEnvironment(...)` existir (desenhado na auditoria
+ * 5.10O). Nesta etapa (5.10P) o arquivo falhava com
+ * `Cannot find module '@/lib/billing/assert-billing-environment'` — o
+ * estado RED correto de um teste contract-first. A Etapa "5.10Q-A —
+ * Live Billing Guards" implementou a função em
+ * `lib/billing/assert-billing-environment.ts` satisfazendo este contrato
+ * sem alterar nenhuma asserção aqui — este arquivo agora fica GREEN.
  *
  * Design da função (herdado do 5.10O, nunca inventado aqui): PURA — recebe
  * todos os 4 sinais já resolvidos como parâmetros, nunca lê `process.env`
@@ -27,7 +24,6 @@
 import { describe, expect, it } from 'vitest'
 
 import { DEV_PROJECT_REF, PRODUCTION_PROJECT_REF } from '@/lib/supabase/project-ref'
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { assertBillingEnvironment } from '@/lib/billing/assert-billing-environment'
 
 const UNKNOWN_REF = 'some-unknown-ref-38xk291'

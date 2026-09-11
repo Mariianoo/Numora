@@ -1,13 +1,10 @@
 /**
  * tests/unit/stripe-key-mode-contract.test.ts
  * Etapa "5.10P — Live Billing Guards: Tests First" — contrato para a
- * futura `resolveStripeKeyMode(secretKey)` (generalização de
- * `assertStripeTestMode`, 5.10O seção 6), ainda NÃO implementada.
- * Importa de `@/lib/stripe/key-mode` — caminho FUTURO.
- *
- * RESULTADO ESPERADO: RED (`Cannot find module`) — ver o cabeçalho de
- * `billing-environment-contract.test.ts` para a explicação completa desse
- * padrão nesta etapa.
+ * `resolveStripeKeyMode(secretKey)` (generalização de `assertStripeTestMode`,
+ * 5.10O seção 6), escrito ANTES da função existir. Implementada na Etapa
+ * "5.10Q-A" em `lib/stripe/key-mode.ts`, satisfazendo este contrato sem
+ * nenhuma alteração de asserção aqui.
  *
  * Nenhum regex é duplicado aqui: os literais de teste abaixo são só
  * strings sintéticas de exemplo (nunca chaves reais), não uma reimplementação
@@ -18,7 +15,6 @@
  */
 import { describe, expect, it } from 'vitest'
 
-// @ts-expect-error — módulo futuro (Etapa 5.10Q), ainda não implementado de propósito.
 import { resolveStripeKeyMode } from '@/lib/stripe/key-mode'
 
 const SYNTHETIC_TEST_KEY = `sk_test_${'a'.repeat(24)}`
