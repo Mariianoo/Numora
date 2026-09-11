@@ -45,6 +45,8 @@ function makeStripeSubscription(overrides: Partial<Stripe.Subscription> = {}): S
 
 interface MockSupabaseOptions {
   billingCustomer?: { data: { id: string; user_id: string } | null; error: { message: string } | null }
+  /** Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix" — só consultada quando billingCustomer não encontra nada. Default: nenhum tombstone (fail-closed preservado). */
+  deletedBillingCustomer?: { data: { stripe_customer_id: string; user_id: string; deleted_at: string } | null; error: { message: string } | null }
   planPrice?: { data: { plan_id: string } | null; error: { message: string } | null }
   rpcResult?: { data: { subscription_id: string; previous_status: string | null; new_status: string; transition_recorded: boolean } | null; error: { code?: string; message: string } | null }
 }
@@ -56,6 +58,12 @@ function makeMockSupabase(opts: MockSupabaseOptions) {
     fromCalls.push(table)
     if (table === 'billing_customers') {
       const maybeSingle = vi.fn().mockResolvedValue(opts.billingCustomer ?? { data: BILLING_CUSTOMER, error: null })
+      const eq = vi.fn().mockReturnValue({ maybeSingle })
+      const select = vi.fn().mockReturnValue({ eq })
+      return { select }
+    }
+    if (table === 'deleted_billing_customers') {
+      const maybeSingle = vi.fn().mockResolvedValue(opts.deletedBillingCustomer ?? { data: null, error: null })
       const eq = vi.fn().mockReturnValue({ maybeSingle })
       const select = vi.fn().mockReturnValue({ eq })
       return { select }
@@ -192,13 +200,30 @@ describe('syncSubscriptionFromStripe — resolução e mapeamento', () => {
     expect(rpc).toHaveBeenCalledWith('sync_subscription_from_stripe', expect.objectContaining({ p_status: 'canceled' }))
   })
 
-  it('customer desconhecido: billing_customers não encontrado → falha explícita, nunca cria vínculo novo', async () => {
+  it('customer desconhecido: billing_customers não encontrado (nem tombstone) → falha explícita, nunca cria vínculo novo', async () => {
     const subscription = makeStripeSubscription()
     const { client: stripe } = makeMockStripe(subscription)
     const { client: supabase, from } = makeMockSupabase({ billingCustomer: { data: null, error: null } })
 
     await expect(syncSubscriptionFromStripe(supabase, stripe, 'sub_test_123', 'evt_1')).rejects.toThrow(/não tem billing_customer local vinculado/)
     expect(from).not.toHaveBeenCalledWith('plan_prices') // nunca chega a resolver o preço se o Customer já falhou
+  })
+
+  it('Etapa "5.10F" — customer tombstoned (conta excluída): outcome "skipped", nunca lança, nunca chega a resolver plan_prices', async () => {
+    const subscription = makeStripeSubscription()
+    const { client: stripe } = makeMockStripe(subscription)
+    const { client: supabase, from } = makeMockSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: { stripe_customer_id: 'cus_test_abc', user_id: 'user-uuid-1', deleted_at: '2026-09-11T00:00:00.000Z' }, error: null },
+    })
+
+    const result = await syncSubscriptionFromStripe(supabase, stripe, 'sub_test_123', 'evt_1')
+
+    expect(result).toEqual({
+      outcome: 'skipped',
+      reason: expect.stringContaining('cus_test_abc'),
+    })
+    expect(from).not.toHaveBeenCalledWith('plan_prices') // nunca tenta resolver plano para uma conta já excluída
   })
 
   it('price desconhecido: plan_prices não encontrado → falha explícita', async () => {

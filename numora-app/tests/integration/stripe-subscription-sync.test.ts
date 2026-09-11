@@ -34,7 +34,7 @@ import Stripe from 'stripe'
 
 import { getStripeClient } from '@/lib/stripe/client'
 import { getOrCreateBillingCustomer } from '@/lib/stripe/customer'
-import { syncSubscriptionFromStripe } from '@/lib/stripe/subscription-sync'
+import { syncSubscriptionFromStripe, type SyncSubscriptionResult } from '@/lib/stripe/subscription-sync'
 import {
   createAdminClient,
   createDisposableUser,
@@ -196,7 +196,7 @@ describe.skipIf(!hasTestEnv())('Subscription sync (DEV real + Stripe TEST real) 
         // Simula a entrega tardia de um evento "customer.subscription.updated"
         // antigo (de antes do cancelamento) chegando só agora — sync sempre
         // busca o estado canônico ATUAL, nunca confia em payload de evento.
-        const lateResult = await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_late_update')
+        const lateResult = (await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_late_update')) as SyncSubscriptionResult
 
         expect(lateResult.newStatus).toBe('canceled')
         const { data: row } = await admin.from('subscriptions').select('status').eq('stripe_subscription_id', subscription.id).single()
@@ -213,8 +213,8 @@ describe.skipIf(!hasTestEnv())('Subscription sync (DEV real + Stripe TEST real) 
       try {
         const subscription = await createRealSubscription(stripeCustomerId, proMonthBrlPriceId)
 
-        const first = await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_replay')
-        const second = await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_replay')
+        const first = (await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_replay')) as SyncSubscriptionResult
+        const second = (await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_replay')) as SyncSubscriptionResult
 
         expect(first.transitionRecorded).toBe(true)
         expect(second.transitionRecorded).toBe(false) // status não mudou entre as duas chamadas

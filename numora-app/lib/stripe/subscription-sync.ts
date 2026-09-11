@@ -144,11 +144,26 @@ export async function syncSubscriptionFromStripe(
   stripe: Stripe,
   stripeSubscriptionId: string,
   stripeEventId: string | null,
-): Promise<SyncSubscriptionResult> {
+): Promise<SyncSubscriptionResult | SkippedSyncResult> {
   const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId)
 
   const stripeCustomerId = typeof subscription.customer === 'string' ? subscription.customer : subscription.customer.id
-  const billingCustomer = await resolveBillingCustomerByStripeCustomerId(supabase, stripeCustomerId)
+  const resolution = await resolveBillingCustomerByStripeCustomerId(supabase, stripeCustomerId)
+
+  // Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix": este
+  // evento (tipicamente customer.subscription.deleted, chegando depois do
+  // cancelamento síncrono já feito por cancelAllStripeSubscriptionsForAccountDeletion)
+  // se refere a um Customer cuja conta já foi legitimamente excluída — nada
+  // local resta para atualizar. Skip explícito, nunca uma exceção nem uma
+  // tentativa de recriar/reassociar o vínculo.
+  if (resolution.kind === 'tombstoned') {
+    return {
+      outcome: 'skipped',
+      reason: `Stripe Customer ${stripeCustomerId} pertence a uma conta já excluída (tombstone em ${resolution.tombstone.deletedAt}) — evento de subscription tardio ignorado, nunca reassociado.`,
+    }
+  }
+
+  const billingCustomer = resolution.customer
 
   // FASE 10 — validação adicional: se a subscription/Customer carregar
   // numora_user_id em metadata, precisa ser consistente com o que

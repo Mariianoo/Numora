@@ -29,6 +29,7 @@ import type Stripe from 'stripe'
 
 import { resolveBillingCustomerByStripeCustomerId } from './customer'
 import { fromStripeMinorUnits } from './minor-units'
+import type { SkippedSyncResult } from './subscription-sync'
 
 const SUPPORTED_CURRENCIES = ['BRL', 'USD'] as const
 type SupportedCurrency = (typeof SUPPORTED_CURRENCIES)[number]
@@ -103,13 +104,27 @@ interface SyncBillingTransactionRpcRow {
   new_status: string
 }
 
-async function syncInvoiceTransaction(supabase: SupabaseClient, invoice: Stripe.Invoice, status: 'paid' | 'failed', amountMinorUnits: number, paidAtUnix: number | null): Promise<SyncInvoiceResult> {
+async function syncInvoiceTransaction(supabase: SupabaseClient, invoice: Stripe.Invoice, status: 'paid' | 'failed', amountMinorUnits: number, paidAtUnix: number | null): Promise<SyncInvoiceResult | SkippedSyncResult> {
   const stripeCustomerId = typeof invoice.customer === 'string' ? invoice.customer : (invoice.customer?.id ?? null)
   if (!stripeCustomerId) {
     throw new Error(`[invoice-sync] invoice ${invoice.id} não tem customer associado — não é possível resolver o usuário.`)
   }
 
-  const billingCustomer = await resolveBillingCustomerByStripeCustomerId(supabase, stripeCustomerId)
+  const resolution = await resolveBillingCustomerByStripeCustomerId(supabase, stripeCustomerId)
+
+  // Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix": um
+  // invoice tardio (ex.: invoice.payment_failed de uma tentativa em voo no
+  // momento da exclusão) referente a um Customer cuja conta já foi
+  // legitimamente removida — nada local resta para registrar contra. Skip
+  // explícito, nunca uma exceção nem uma tentativa de reassociar.
+  if (resolution.kind === 'tombstoned') {
+    return {
+      outcome: 'skipped',
+      reason: `Stripe Customer ${stripeCustomerId} pertence a uma conta já excluída (tombstone em ${resolution.tombstone.deletedAt}) — invoice tardio ignorado, nunca reassociado.`,
+    }
+  }
+
+  const billingCustomer = resolution.customer
 
   // FASE 7 — mesma regra de segurança do Subscription Sync (Stripe 5.4B):
   // metadata só valida, nunca decide sozinha; divergência é falha explícita.
@@ -155,7 +170,7 @@ async function syncInvoiceTransaction(supabase: SupabaseClient, invoice: Stripe.
  * `status_transitions.paid_at` (quando o Stripe realmente marcou como
  * pago) — nunca `new Date()` do servidor, nunca um timestamp inventado.
  */
-export async function syncInvoicePaid(supabase: SupabaseClient, stripe: Stripe, stripeInvoiceId: string): Promise<SyncInvoiceResult> {
+export async function syncInvoicePaid(supabase: SupabaseClient, stripe: Stripe, stripeInvoiceId: string): Promise<SyncInvoiceResult | SkippedSyncResult> {
   const invoice = await stripe.invoices.retrieve(stripeInvoiceId, { expand: ['payments'] })
   return syncInvoiceTransaction(supabase, invoice, 'paid', invoice.amount_paid, invoice.status_transitions?.paid_at ?? null)
 }
@@ -167,7 +182,7 @@ export async function syncInvoicePaid(supabase: SupabaseClient, stripe: Stripe, 
  * `subscriptions.status` aqui, isso continua 100% a cargo do Subscription
  * Sync/estado canônico do Stripe.
  */
-export async function syncInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stripe, stripeInvoiceId: string): Promise<SyncInvoiceResult> {
+export async function syncInvoicePaymentFailed(supabase: SupabaseClient, stripe: Stripe, stripeInvoiceId: string): Promise<SyncInvoiceResult | SkippedSyncResult> {
   const invoice = await stripe.invoices.retrieve(stripeInvoiceId, { expand: ['payments'] })
   return syncInvoiceTransaction(supabase, invoice, 'failed', invoice.amount_due, null)
 }

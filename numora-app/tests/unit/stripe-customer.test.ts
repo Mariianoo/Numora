@@ -15,7 +15,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
-import { getOrCreateBillingCustomer } from '@/lib/stripe/customer'
+import { getOrCreateBillingCustomer, resolveBillingCustomerByStripeCustomerId } from '@/lib/stripe/customer'
 import { buildCreationIdempotencyKey } from '@/lib/stripe/idempotency'
 
 interface MockSupabaseOptions {
@@ -154,5 +154,87 @@ describe('getOrCreateBillingCustomer', () => {
     const { client: stripe } = makeMockStripe(() => ({ id: 'cus_abc' }))
 
     await expect(getOrCreateBillingCustomer(supabase, stripe, { userId: 'user-1', email: null })).rejects.toThrow(/Conflito de unicidade/)
+  })
+})
+
+/**
+ * Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix" —
+ * `resolveBillingCustomerByStripeCustomerId` com Supabase MOCKADO (a prova
+ * contra DEV real está em tests/integration/stripe-customer-foundation.test.ts).
+ * Cobre exatamente os 3 caminhos do resultado discriminado: `found` (igual
+ * a sempre), `tombstoned` (novo — só com prova positiva em
+ * deleted_billing_customers) e o erro fail-closed inalterado quando nenhuma
+ * das duas tabelas tem o Customer.
+ */
+interface MockResolveSupabaseOptions {
+  billingCustomer?: { data: { id: string; user_id: string } | null; error: { message: string } | null }
+  deletedBillingCustomer?: { data: { stripe_customer_id: string; user_id: string; deleted_at: string } | null; error: { message: string } | null }
+}
+
+function makeMockResolveSupabase(opts: MockResolveSupabaseOptions) {
+  const fromCalls: string[] = []
+  const from = vi.fn((table: string) => {
+    fromCalls.push(table)
+    if (table === 'billing_customers') {
+      const maybeSingle = vi.fn().mockResolvedValue(opts.billingCustomer ?? { data: null, error: null })
+      const eq = vi.fn().mockReturnValue({ maybeSingle })
+      const select = vi.fn().mockReturnValue({ eq })
+      return { select }
+    }
+    if (table === 'deleted_billing_customers') {
+      const maybeSingle = vi.fn().mockResolvedValue(opts.deletedBillingCustomer ?? { data: null, error: null })
+      const eq = vi.fn().mockReturnValue({ maybeSingle })
+      const select = vi.fn().mockReturnValue({ eq })
+      return { select }
+    }
+    throw new Error(`tabela inesperada nesta suíte: ${table}`)
+  })
+  return { client: { from } as unknown as SupabaseClient, from, fromCalls }
+}
+
+describe('resolveBillingCustomerByStripeCustomerId — Etapa 5.10F', () => {
+  it('customer encontrado em billing_customers → kind "found", nunca consulta o tombstone', async () => {
+    const { client: supabase, fromCalls } = makeMockResolveSupabase({
+      billingCustomer: { data: { id: 'bc-1', user_id: 'user-1' }, error: null },
+    })
+
+    const result = await resolveBillingCustomerByStripeCustomerId(supabase, 'cus_abc')
+
+    expect(result).toEqual({ kind: 'found', customer: { id: 'bc-1', userId: 'user-1' } })
+    expect(fromCalls).toEqual(['billing_customers']) // curto-circuita — nunca olha o tombstone se já achou
+  })
+
+  it('customer ausente de billing_customers mas presente em deleted_billing_customers → kind "tombstoned"', async () => {
+    const { client: supabase } = makeMockResolveSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: { stripe_customer_id: 'cus_abc', user_id: 'user-1', deleted_at: '2026-09-11T00:00:00.000Z' }, error: null },
+    })
+
+    const result = await resolveBillingCustomerByStripeCustomerId(supabase, 'cus_abc')
+
+    expect(result).toEqual({
+      kind: 'tombstoned',
+      tombstone: { stripeCustomerId: 'cus_abc', userId: 'user-1', deletedAt: '2026-09-11T00:00:00.000Z' },
+    })
+  })
+
+  it('customer ausente das DUAS tabelas → erro fail-closed inalterado, nunca sucesso silencioso', async () => {
+    const { client: supabase } = makeMockResolveSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: null, error: null },
+    })
+
+    await expect(resolveBillingCustomerByStripeCustomerId(supabase, 'cus_desconhecido')).rejects.toThrow(
+      /não tem billing_customer local vinculado \(nem tombstone de exclusão\)/,
+    )
+  })
+
+  it('erro do Supabase ao consultar o tombstone propaga com contexto, nunca é engolido', async () => {
+    const { client: supabase } = makeMockResolveSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: null, error: { message: 'falha de leitura simulada' } },
+    })
+
+    await expect(resolveBillingCustomerByStripeCustomerId(supabase, 'cus_abc')).rejects.toThrow(/falha de leitura simulada/)
   })
 })

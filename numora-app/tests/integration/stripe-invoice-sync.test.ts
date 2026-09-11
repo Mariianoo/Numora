@@ -25,8 +25,8 @@ import Stripe from 'stripe'
 
 import { getStripeClient } from '@/lib/stripe/client'
 import { getOrCreateBillingCustomer } from '@/lib/stripe/customer'
-import { syncInvoicePaid, syncInvoicePaymentFailed } from '@/lib/stripe/invoice-sync'
-import { syncSubscriptionFromStripe } from '@/lib/stripe/subscription-sync'
+import { syncInvoicePaid, syncInvoicePaymentFailed, type SyncInvoiceResult } from '@/lib/stripe/invoice-sync'
+import { syncSubscriptionFromStripe, type SyncSubscriptionResult } from '@/lib/stripe/subscription-sync'
 import {
   createAdminClient,
   createDisposableUser,
@@ -122,7 +122,7 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createSuccessfulSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const result = await syncInvoicePaid(admin, stripe, invoiceId)
+        const result = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(result.outcome).toBe('synced')
         expect(result.newStatus).toBe('paid')
 
@@ -147,7 +147,7 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
       const { user, stripeCustomerId } = await setupUserWithRealCustomer('invoice-paid-with-sub')
       try {
         const subscription = await createSuccessfulSubscription(stripeCustomerId)
-        const syncedSub = await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_invoice_with_sub')
+        const syncedSub = (await syncSubscriptionFromStripe(admin, stripe, subscription.id, 'evt_test_invoice_with_sub')) as SyncSubscriptionResult
         const invoiceId = await latestInvoiceId(subscription.id)
 
         await syncInvoicePaid(admin, stripe, invoiceId)
@@ -166,7 +166,7 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         // Nunca chama syncSubscriptionFromStripe aqui de propósito.
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const result = await syncInvoicePaid(admin, stripe, invoiceId)
+        const result = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(result.outcome).toBe('synced')
 
         const { data: row } = await admin.from('billing_transactions').select('subscription_id').eq('stripe_invoice_id', invoiceId).single()
@@ -182,8 +182,8 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createSuccessfulSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const first = await syncInvoicePaid(admin, stripe, invoiceId)
-        const second = await syncInvoicePaid(admin, stripe, invoiceId)
+        const first = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
+        const second = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
 
         expect(second.transactionId).toBe(first.transactionId)
         const { data: rows } = await admin.from('billing_transactions').select('id').eq('stripe_invoice_id', invoiceId)
@@ -199,7 +199,7 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createSuccessfulSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const [a, b] = await Promise.all([syncInvoicePaid(admin, stripe, invoiceId), syncInvoicePaid(admin, stripe, invoiceId)])
+        const [a, b] = (await Promise.all([syncInvoicePaid(admin, stripe, invoiceId), syncInvoicePaid(admin, stripe, invoiceId)])) as [SyncInvoiceResult, SyncInvoiceResult]
         expect(a.transactionId).toBe(b.transactionId)
 
         const { data: rows } = await admin.from('billing_transactions').select('id').eq('stripe_invoice_id', invoiceId)
@@ -245,7 +245,7 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createFailingSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const result = await syncInvoicePaymentFailed(admin, stripe, invoiceId)
+        const result = (await syncInvoicePaymentFailed(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(result.newStatus).toBe('failed')
 
         const { data: row } = await admin.from('billing_transactions').select('status, paid_at, user_id, amount').eq('stripe_invoice_id', invoiceId).single()
@@ -268,8 +268,8 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createFailingSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const first = await syncInvoicePaymentFailed(admin, stripe, invoiceId)
-        const second = await syncInvoicePaymentFailed(admin, stripe, invoiceId)
+        const first = (await syncInvoicePaymentFailed(admin, stripe, invoiceId)) as SyncInvoiceResult
+        const second = (await syncInvoicePaymentFailed(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(second.transactionId).toBe(first.transactionId)
 
         const { data: rows } = await admin.from('billing_transactions').select('id').eq('stripe_invoice_id', invoiceId)
@@ -287,14 +287,14 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createFailingSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const failedResult = await syncInvoicePaymentFailed(admin, stripe, invoiceId)
+        const failedResult = (await syncInvoicePaymentFailed(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(failedResult.newStatus).toBe('failed')
 
         // Corrige o payment method para um que funciona e reprocessa o pagamento do MESMO invoice.
         const goodPm = await stripe.paymentMethods.attach('pm_card_visa', { customer: stripeCustomerId })
         await stripe.invoices.pay(invoiceId, { payment_method: goodPm.id })
 
-        const paidResult = await syncInvoicePaid(admin, stripe, invoiceId)
+        const paidResult = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(paidResult.transactionId).toBe(failedResult.transactionId) // MESMA linha
         expect(paidResult.previousStatus).toBe('failed')
         expect(paidResult.newStatus).toBe('paid')
@@ -314,11 +314,11 @@ describe.skipIf(!hasTestEnv())('Invoice & Payment sync (DEV real + Stripe TEST r
         const subscription = await createSuccessfulSubscription(stripeCustomerId)
         const invoiceId = await latestInvoiceId(subscription.id)
 
-        const paidResult = await syncInvoicePaid(admin, stripe, invoiceId)
+        const paidResult = (await syncInvoicePaid(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(paidResult.newStatus).toBe('paid')
 
         // Simula uma entrega tardia/fora de ordem de invoice.payment_failed para o MESMO invoice já pago.
-        const lateFailedResult = await syncInvoicePaymentFailed(admin, stripe, invoiceId)
+        const lateFailedResult = (await syncInvoicePaymentFailed(admin, stripe, invoiceId)) as SyncInvoiceResult
         expect(lateFailedResult.newStatus).toBe('paid') // protegido — nunca rebaixado
 
         const { data: row } = await admin.from('billing_transactions').select('status, paid_at').eq('stripe_invoice_id', invoiceId).single()

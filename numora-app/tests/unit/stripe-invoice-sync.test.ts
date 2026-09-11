@@ -9,7 +9,7 @@ import { describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
-import { syncInvoicePaid, syncInvoicePaymentFailed } from '@/lib/stripe/invoice-sync'
+import { syncInvoicePaid, syncInvoicePaymentFailed, type SyncInvoiceResult } from '@/lib/stripe/invoice-sync'
 import { fromStripeMinorUnits } from '@/lib/stripe/minor-units'
 
 const BILLING_CUSTOMER = { id: 'bc-uuid-1', user_id: 'user-uuid-1' }
@@ -32,6 +32,8 @@ function makeInvoice(overrides: Partial<Record<string, unknown>> = {}): Stripe.I
 
 interface MockSupabaseOptions {
   billingCustomer?: { data: { id: string; user_id: string } | null; error: { message: string } | null }
+  /** Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix" — só consultada quando billingCustomer não encontra nada. Default: nenhum tombstone (fail-closed preservado). */
+  deletedBillingCustomer?: { data: { stripe_customer_id: string; user_id: string; deleted_at: string } | null; error: { message: string } | null }
   subscriptionRow?: { data: { id: string } | null; error: { message: string } | null }
   rpcResult?: { data: { transaction_id: string; previous_status: string | null; new_status: string } | null; error: { code?: string; message: string } | null }
 }
@@ -44,6 +46,12 @@ function makeMockSupabase(opts: MockSupabaseOptions) {
     fromCalls.push(table)
     if (table === 'billing_customers') {
       const maybeSingle = vi.fn().mockResolvedValue(opts.billingCustomer ?? { data: BILLING_CUSTOMER, error: null })
+      const eq = vi.fn().mockReturnValue({ maybeSingle })
+      const select = vi.fn().mockReturnValue({ eq })
+      return { select }
+    }
+    if (table === 'deleted_billing_customers') {
+      const maybeSingle = vi.fn().mockResolvedValue(opts.deletedBillingCustomer ?? { data: null, error: null })
       const eq = vi.fn().mockReturnValue({ maybeSingle })
       const select = vi.fn().mockReturnValue({ eq })
       return { select }
@@ -179,12 +187,25 @@ describe('syncInvoicePaid', () => {
     expect(rpcCalls[0].params).toMatchObject({ p_stripe_payment_intent_id: null })
   })
 
-  it('6) Customer inexistente localmente: falha explícita, nunca associa a outro usuário', async () => {
+  it('6) Customer inexistente localmente (nem tombstone): falha explícita, nunca associa a outro usuário', async () => {
     const invoice = makeInvoice()
     const { client: stripe } = makeMockStripe(invoice)
     const { client: supabase } = makeMockSupabase({ billingCustomer: { data: null, error: null } })
 
     await expect(syncInvoicePaid(supabase, stripe, 'in_test_123')).rejects.toThrow(/não tem billing_customer local vinculado/)
+  })
+
+  it('Etapa "5.10F" — customer tombstoned (conta excluída): outcome "skipped", nunca lança', async () => {
+    const invoice = makeInvoice()
+    const { client: stripe } = makeMockStripe(invoice)
+    const { client: supabase } = makeMockSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: { stripe_customer_id: 'cus_test_abc', user_id: 'user-uuid-1', deleted_at: '2026-09-11T00:00:00.000Z' }, error: null },
+    })
+
+    const result = await syncInvoicePaid(supabase, stripe, 'in_test_123')
+
+    expect(result).toEqual({ outcome: 'skipped', reason: expect.stringContaining('cus_test_abc') })
   })
 
   it('invoice sem customer algum: falha explícita', async () => {
@@ -236,7 +257,7 @@ describe('syncInvoicePaymentFailed', () => {
     const { client: stripe, retrieve } = makeMockStripe(invoice)
     const { client: supabase, rpcCalls } = makeMockSupabase({ rpcResult: { data: { transaction_id: 'tx-uuid-2', previous_status: null, new_status: 'failed' }, error: null } })
 
-    const result = await syncInvoicePaymentFailed(supabase, stripe, 'in_test_123')
+    const result = (await syncInvoicePaymentFailed(supabase, stripe, 'in_test_123')) as SyncInvoiceResult
 
     expect(retrieve).toHaveBeenCalledWith('in_test_123', { expand: ['payments'] })
     expect(result.newStatus).toBe('failed')
@@ -254,12 +275,25 @@ describe('syncInvoicePaymentFailed', () => {
     expect(rpc).not.toHaveBeenCalledWith('sync_subscription_from_stripe', expect.anything())
   })
 
-  it('6) Customer inexistente localmente: falha explícita', async () => {
+  it('6) Customer inexistente localmente (nem tombstone): falha explícita', async () => {
     const invoice = makeInvoice()
     const { client: stripe } = makeMockStripe(invoice)
     const { client: supabase } = makeMockSupabase({ billingCustomer: { data: null, error: null } })
 
     await expect(syncInvoicePaymentFailed(supabase, stripe, 'in_test_123')).rejects.toThrow(/não tem billing_customer local vinculado/)
+  })
+
+  it('Etapa "5.10F" — customer tombstoned (conta excluída): outcome "skipped", nunca lança (invoice.payment_failed tardio)', async () => {
+    const invoice = makeInvoice()
+    const { client: stripe } = makeMockStripe(invoice)
+    const { client: supabase } = makeMockSupabase({
+      billingCustomer: { data: null, error: null },
+      deletedBillingCustomer: { data: { stripe_customer_id: 'cus_test_abc', user_id: 'user-uuid-1', deleted_at: '2026-09-11T00:00:00.000Z' }, error: null },
+    })
+
+    const result = await syncInvoicePaymentFailed(supabase, stripe, 'in_test_123')
+
+    expect(result).toEqual({ outcome: 'skipped', reason: expect.stringContaining('cus_test_abc') })
   })
 
   it('3) failed é idempotente na camada de aplicação: sempre a mesma chamada de RPC para o mesmo invoice (dedup é responsabilidade do banco)', async () => {

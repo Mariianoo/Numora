@@ -91,6 +91,25 @@ export interface BillingCustomerByStripeIdResult {
   userId: string
 }
 
+export interface TombstonedBillingCustomer {
+  stripeCustomerId: string
+  userId: string
+  deletedAt: string
+}
+
+/**
+ * Etapa "5.10F — Account Deletion x Async Stripe Webhook Race Fix":
+ * `resolveBillingCustomerByStripeCustomerId` (abaixo) pode devolver este
+ * resultado discriminado em vez de lançar — `kind: 'found'` é o caminho de
+ * sempre; `kind: 'tombstoned'` só ocorre quando existe PROVA POSITIVA
+ * (`deleted_billing_customers`) de que aquele `stripe_customer_id`
+ * específico pertenceu a uma conta já removida por `delete_own_account_data`
+ * — nunca uma suposição genérica de "não encontrado = ok".
+ */
+export type ResolveBillingCustomerOutcome =
+  | { kind: 'found'; customer: BillingCustomerByStripeIdResult }
+  | { kind: 'tombstoned'; tombstone: TombstonedBillingCustomer }
+
 /**
  * Etapa "Stripe 5.4B/5.5" — resolução na direção OPOSTA de
  * `getOrCreateBillingCustomer` (Stripe Customer → billing_customer/user,
@@ -98,20 +117,46 @@ export interface BillingCustomerByStripeIdResult {
  * `subscription-sync.ts`/`invoice-sync.ts`) porque os DOIS módulos
  * precisam da mesma resolução — evita tanto duplicar a lógica quanto um
  * import circular entre eles.
+ *
+ * Etapa "5.10F": quando `billing_customers` não tem o Customer (mais comum
+ * caso: cancelamento de subscription durante a exclusão de conta, Etapa
+ * 5.7, cujo webhook assíncrono `customer.subscription.deleted` pode chegar
+ * DEPOIS de `delete_own_account_data` já ter removido a linha via cascade),
+ * consulta `deleted_billing_customers` ANTES de lançar. Só quando esse
+ * `stripe_customer_id` EXATO tem um tombstone, devolve `kind: 'tombstoned'`
+ * — nunca uma associação a outro usuário, nunca um "não encontrado = OK"
+ * genérico: qualquer Customer sem tombstone continua lançando exatamente
+ * como antes (fail-closed inalterado para inconsistências reais).
  */
-export async function resolveBillingCustomerByStripeCustomerId(supabase: SupabaseClient, stripeCustomerId: string): Promise<BillingCustomerByStripeIdResult> {
+export async function resolveBillingCustomerByStripeCustomerId(supabase: SupabaseClient, stripeCustomerId: string): Promise<ResolveBillingCustomerOutcome> {
   const { data, error } = await supabase.from('billing_customers').select('id, user_id').eq('stripe_customer_id', stripeCustomerId).maybeSingle()
 
   if (error) {
     throw new Error(`[resolveBillingCustomerByStripeCustomerId] Falha ao consultar billing_customers para stripe_customer_id ${stripeCustomerId}: ${error.message}`)
   }
-  if (!data) {
-    throw new Error(
-      `[resolveBillingCustomerByStripeCustomerId] Stripe Customer ${stripeCustomerId} não tem billing_customer local vinculado — inconsistência real, nunca associada a outro usuário arbitrariamente.`,
-    )
+  if (data) {
+    return { kind: 'found', customer: { id: data.id as string, userId: data.user_id as string } }
   }
 
-  return { id: data.id as string, userId: data.user_id as string }
+  const { data: tombstone, error: tombstoneError } = await supabase
+    .from('deleted_billing_customers')
+    .select('stripe_customer_id, user_id, deleted_at')
+    .eq('stripe_customer_id', stripeCustomerId)
+    .maybeSingle()
+
+  if (tombstoneError) {
+    throw new Error(`[resolveBillingCustomerByStripeCustomerId] Falha ao consultar deleted_billing_customers para stripe_customer_id ${stripeCustomerId}: ${tombstoneError.message}`)
+  }
+  if (tombstone) {
+    return {
+      kind: 'tombstoned',
+      tombstone: { stripeCustomerId: tombstone.stripe_customer_id as string, userId: tombstone.user_id as string, deletedAt: tombstone.deleted_at as string },
+    }
+  }
+
+  throw new Error(
+    `[resolveBillingCustomerByStripeCustomerId] Stripe Customer ${stripeCustomerId} não tem billing_customer local vinculado (nem tombstone de exclusão) — inconsistência real, nunca associada a outro usuário arbitrariamente.`,
+  )
 }
 
 export async function getOrCreateBillingCustomer(
