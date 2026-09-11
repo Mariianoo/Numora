@@ -7,8 +7,16 @@
  *
  * Nenhuma delas usa `service_role`, nenhuma consulta dado de usuário,
  * nenhuma expõe detalhes internos — cada uma devolve só `'ok' | 'fail'`.
+ *
+ * Etapa "5.10L-C — Status Page": `getReadinessSnapshot()` (abaixo) é a
+ * mesma orquestração usada por `GET /api/health/ready` E por `/status` —
+ * nenhuma segunda implementação da lógica "rodar os 3 checks com
+ * segurança" foi criada (ver diagrama da etapa: as duas superfícies
+ * apontam para esta única camada compartilhada).
  */
 import { PostgrestError, type SupabaseClient } from '@supabase/supabase-js'
+
+import { getSupabaseServerClient } from '@/lib/supabase/server'
 
 export type CheckResult = 'ok' | 'fail'
 
@@ -72,4 +80,38 @@ export function checkConfiguration(): CheckResult {
   const hasSupabaseUrl = Boolean(process.env.NEXT_PUBLIC_SUPABASE_URL)
   const hasSupabaseAnonKey = Boolean(process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY)
   return hasSupabaseUrl && hasSupabaseAnonKey ? 'ok' : 'fail'
+}
+
+export interface ReadinessSnapshot {
+  database: CheckResult
+  storage: CheckResult
+  configuration: CheckResult
+}
+
+/**
+ * Etapa "5.10L-C — Status Page": roda os 3 checks com segurança e NUNCA
+ * lança — usada tanto por `GET /api/health/ready` quanto por `/status`.
+ * Constrói o próprio client de sessão (`getSupabaseServerClient()`, anon
+ * key + RLS, nunca `service_role`) para que nenhum dos dois chamadores
+ * precise saber COMO obter um client, só o QUE o snapshot significa. Uma
+ * falha inesperada ao montar o client (nunca observada em teste, mas
+ * nunca vale a pena deixar vazar) vira um snapshot "tudo fail", nunca uma
+ * exceção crua — mesma filosofia de cada check individual.
+ */
+export async function getReadinessSnapshot(): Promise<ReadinessSnapshot> {
+  try {
+    const configuration = checkConfiguration()
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+
+    const supabase = await getSupabaseServerClient()
+    const [database, storage] = await Promise.all([checkDatabase(supabase), checkStorage(supabaseUrl)])
+
+    return { database, storage, configuration }
+  } catch {
+    return { database: 'fail', storage: 'fail', configuration: 'fail' }
+  }
+}
+
+export function isReadySnapshot(snapshot: ReadinessSnapshot): boolean {
+  return snapshot.database === 'ok' && snapshot.storage === 'ok' && snapshot.configuration === 'ok'
 }

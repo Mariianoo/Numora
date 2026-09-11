@@ -1,15 +1,27 @@
 /**
  * tests/unit/health-ready-checks.test.ts
- * Etapa "5.10L-B — Health Check" — cobre `lib/health/ready-checks.ts`
- * isoladamente (nenhuma rede real, nenhum Supabase real). `checkDatabase`
- * recebe um client Supabase FALSO com a mesma cadeia fluente usada pelo
- * código real (`from().select().abortSignal().throwOnError()`); `checkStorage`
- * stuba `global.fetch`; `checkConfiguration` stuba `process.env`.
+ * Etapa "5.10L-B — Health Check" (estendido na Etapa "5.10L-C — Status
+ * Page" com `getReadinessSnapshot`/`isReadySnapshot`) — cobre
+ * `lib/health/ready-checks.ts` isoladamente (nenhuma rede real, nenhum
+ * Supabase real). `checkDatabase` recebe um client Supabase FALSO com a
+ * mesma cadeia fluente usada pelo código real
+ * (`from().select().abortSignal().throwOnError()`); `checkStorage` stuba
+ * `global.fetch`; `checkConfiguration` stuba `process.env`.
+ * `getSupabaseServerClient` (usado internamente por `getReadinessSnapshot`)
+ * é mockado para devolver o mesmo client falso, exercitando a integração
+ * REAL entre a orquestração e os 3 checks (nenhum deles é mockado aqui).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PostgrestError, type SupabaseClient } from '@supabase/supabase-js'
 
-import { checkConfiguration, checkDatabase, checkStorage } from '@/lib/health/ready-checks'
+vi.mock('@/lib/supabase/server', () => ({
+  getSupabaseServerClient: vi.fn(),
+}))
+
+import { getSupabaseServerClient } from '@/lib/supabase/server'
+import { checkConfiguration, checkDatabase, checkStorage, getReadinessSnapshot, isReadySnapshot } from '@/lib/health/ready-checks'
+
+const mockedGetSupabaseServerClient = vi.mocked(getSupabaseServerClient)
 
 function makeSupabaseMock(finalStep: () => Promise<unknown>): SupabaseClient {
   return {
@@ -93,5 +105,49 @@ describe('checkConfiguration', () => {
     vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
     vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', '')
     expect(checkConfiguration()).toBe('fail')
+  })
+})
+
+describe('getReadinessSnapshot / isReadySnapshot', () => {
+  it('database/storage/configuration todos ok → snapshot ok e isReadySnapshot true', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key-value')
+    mockedGetSupabaseServerClient.mockResolvedValue(makeSupabaseMock(() => Promise.resolve({ data: null, error: null, count: 0 })))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+
+    const snapshot = await getReadinessSnapshot()
+
+    expect(snapshot).toEqual({ database: 'ok', storage: 'ok', configuration: 'ok' })
+    expect(isReadySnapshot(snapshot)).toBe(true)
+  })
+
+  it('database falha (erro de transporte real via o client mockado) → snapshot reflete e isReadySnapshot false', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key-value')
+    mockedGetSupabaseServerClient.mockResolvedValue(makeSupabaseMock(() => Promise.reject(new TypeError('fetch failed'))))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: true, status: 200 }))
+
+    const snapshot = await getReadinessSnapshot()
+
+    expect(snapshot).toEqual({ database: 'fail', storage: 'ok', configuration: 'ok' })
+    expect(isReadySnapshot(snapshot)).toBe(false)
+  })
+
+  it('storage falha → snapshot reflete e isReadySnapshot false', async () => {
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_URL', 'https://project.supabase.co')
+    vi.stubEnv('NEXT_PUBLIC_SUPABASE_ANON_KEY', 'anon-key-value')
+    mockedGetSupabaseServerClient.mockResolvedValue(makeSupabaseMock(() => Promise.resolve({ data: null, error: null, count: 0 })))
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 500 }))
+
+    const snapshot = await getReadinessSnapshot()
+
+    expect(snapshot).toEqual({ database: 'ok', storage: 'fail', configuration: 'ok' })
+    expect(isReadySnapshot(snapshot)).toBe(false)
+  })
+
+  it('falha inesperada ao montar o client de sessão → snapshot "tudo fail", nunca lança', async () => {
+    mockedGetSupabaseServerClient.mockRejectedValue(new Error('unexpected'))
+
+    await expect(getReadinessSnapshot()).resolves.toEqual({ database: 'fail', storage: 'fail', configuration: 'fail' })
   })
 })

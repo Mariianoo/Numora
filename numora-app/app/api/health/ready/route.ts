@@ -16,34 +16,25 @@
  *
  * Já liberado pelo Maintenance Mode (`proxy.ts`, Etapa 5.10L-A) via
  * `/api/health/*` — nenhuma alteração necessária ali.
+ *
+ * Etapa "5.10L-C — Status Page": a orquestração dos 3 checks (antes
+ * inline aqui) foi extraída para `getReadinessSnapshot()`
+ * (`lib/health/ready-checks.ts`) — `/status` reaproveita exatamente a
+ * mesma função, nunca uma segunda implementação da lógica de "o que
+ * significa pronto".
  */
 import { NextResponse } from 'next/server'
 
-import { getSupabaseServerClient } from '@/lib/supabase/server'
-import { checkConfiguration, checkDatabase, checkStorage, type CheckResult } from '@/lib/health/ready-checks'
+import { getReadinessSnapshot, isReadySnapshot } from '@/lib/health/ready-checks'
 
 export const dynamic = 'force-dynamic'
 
-function jsonResponse(status: 'ready' | 'not_ready', checks: Record<string, CheckResult>) {
-  return NextResponse.json({ status, checks }, { status: status === 'ready' ? 200 : 503, headers: { 'Cache-Control': 'no-store' } })
-}
-
 export async function GET() {
-  try {
-    const configuration = checkConfiguration()
-    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL ?? ''
+  const checks = await getReadinessSnapshot()
+  const isReady = isReadySnapshot(checks)
 
-    const supabase = await getSupabaseServerClient()
-    const [database, storage] = await Promise.all([checkDatabase(supabase), checkStorage(supabaseUrl)])
-
-    const checks = { database, storage, configuration }
-    const isReady = database === 'ok' && storage === 'ok' && configuration === 'ok'
-
-    return jsonResponse(isReady ? 'ready' : 'not_ready', checks)
-  } catch {
-    // Defesa em profundidade: mesmo uma falha inesperada ao montar o
-    // client de sessão (nunca observada em teste, mas nunca vale a pena
-    // deixar vazar) vira "not_ready" genérico, nunca uma exceção crua.
-    return jsonResponse('not_ready', { database: 'fail', storage: 'fail', configuration: 'fail' })
-  }
+  return NextResponse.json(
+    { status: isReady ? 'ready' : 'not_ready', checks },
+    { status: isReady ? 200 : 503, headers: { 'Cache-Control': 'no-store' } },
+  )
 }

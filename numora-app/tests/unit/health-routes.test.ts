@@ -1,40 +1,32 @@
 /**
  * tests/unit/health-routes.test.ts
- * Etapa "5.10L-B — Health Check" — cobre os Route Handlers
- * `GET /api/health/live` e `GET /api/health/ready` chamando as funções
- * exportadas diretamente (mesmo padrão já usado para `proxy()` no
- * 5.10L-A — Next.js Route Handlers são funções simples, testáveis sem
+ * Etapa "5.10L-B — Health Check" (atualizado na Etapa "5.10L-C — Status
+ * Page" após a extração de `getReadinessSnapshot()`) — cobre os Route
+ * Handlers `GET /api/health/live` e `GET /api/health/ready` chamando as
+ * funções exportadas diretamente (mesmo padrão já usado para `proxy()`
+ * no 5.10L-A — Next.js Route Handlers são funções simples, testáveis sem
  * subir servidor). `lib/health/ready-checks` é mockado aqui: a lógica de
- * cada check já tem cobertura própria em `health-ready-checks.test.ts`
- * — este arquivo testa só a ORQUESTRAÇÃO (status HTTP, payload, headers).
- * `getSupabaseServerClient` é mockado só para nunca precisar de uma
- * sessão/cookie real — o client retornado nunca é usado de verdade
- * porque `checkDatabase` também está mockado.
+ * cada check (e agora de `getReadinessSnapshot`/`isReadySnapshot`) já tem
+ * cobertura própria em `health-ready-checks.test.ts` — este arquivo testa
+ * só a ORQUESTRAÇÃO do Route Handler (status HTTP, payload, headers).
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-vi.mock('@/lib/supabase/server', () => ({
-  getSupabaseServerClient: vi.fn().mockResolvedValue({}),
-}))
-
 vi.mock('@/lib/health/ready-checks', () => ({
-  checkConfiguration: vi.fn(),
-  checkDatabase: vi.fn(),
-  checkStorage: vi.fn(),
+  getReadinessSnapshot: vi.fn(),
+  isReadySnapshot: vi.fn(),
 }))
 
 import { GET as liveGET } from '@/app/api/health/live/route'
 import { GET as readyGET } from '@/app/api/health/ready/route'
-import { checkConfiguration, checkDatabase, checkStorage } from '@/lib/health/ready-checks'
+import { getReadinessSnapshot, isReadySnapshot } from '@/lib/health/ready-checks'
 
-const mockedCheckConfiguration = vi.mocked(checkConfiguration)
-const mockedCheckDatabase = vi.mocked(checkDatabase)
-const mockedCheckStorage = vi.mocked(checkStorage)
+const mockedGetReadinessSnapshot = vi.mocked(getReadinessSnapshot)
+const mockedIsReadySnapshot = vi.mocked(isReadySnapshot)
 
 beforeEach(() => {
-  mockedCheckConfiguration.mockReset()
-  mockedCheckDatabase.mockReset()
-  mockedCheckStorage.mockReset()
+  mockedGetReadinessSnapshot.mockReset()
+  mockedIsReadySnapshot.mockReset()
 })
 
 describe('GET /api/health/live', () => {
@@ -49,9 +41,8 @@ describe('GET /api/health/live', () => {
 
 describe('GET /api/health/ready', () => {
   it('200 "ready" quando database/storage/configuration estão todos ok', async () => {
-    mockedCheckConfiguration.mockReturnValue('ok')
-    mockedCheckDatabase.mockResolvedValue('ok')
-    mockedCheckStorage.mockResolvedValue('ok')
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'ok', storage: 'ok', configuration: 'ok' })
+    mockedIsReadySnapshot.mockReturnValue(true)
 
     const response = await readyGET()
 
@@ -64,9 +55,8 @@ describe('GET /api/health/ready', () => {
   })
 
   it('503 "not_ready" quando database falha (não expõe 42501/mensagem interna)', async () => {
-    mockedCheckConfiguration.mockReturnValue('ok')
-    mockedCheckDatabase.mockResolvedValue('fail')
-    mockedCheckStorage.mockResolvedValue('ok')
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'fail', storage: 'ok', configuration: 'ok' })
+    mockedIsReadySnapshot.mockReturnValue(false)
 
     const response = await readyGET()
     const body = await response.json()
@@ -76,9 +66,8 @@ describe('GET /api/health/ready', () => {
   })
 
   it('503 "not_ready" quando storage falha', async () => {
-    mockedCheckConfiguration.mockReturnValue('ok')
-    mockedCheckDatabase.mockResolvedValue('ok')
-    mockedCheckStorage.mockResolvedValue('fail')
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'ok', storage: 'fail', configuration: 'ok' })
+    mockedIsReadySnapshot.mockReturnValue(false)
 
     const response = await readyGET()
 
@@ -87,9 +76,8 @@ describe('GET /api/health/ready', () => {
   })
 
   it('503 "not_ready" quando configuration falha', async () => {
-    mockedCheckConfiguration.mockReturnValue('fail')
-    mockedCheckDatabase.mockResolvedValue('ok')
-    mockedCheckStorage.mockResolvedValue('ok')
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'ok', storage: 'ok', configuration: 'fail' })
+    mockedIsReadySnapshot.mockReturnValue(false)
 
     const response = await readyGET()
 
@@ -98,9 +86,8 @@ describe('GET /api/health/ready', () => {
   })
 
   it('resposta pública nunca contém detalhes internos, códigos Postgres ou nomes de secrets', async () => {
-    mockedCheckConfiguration.mockReturnValue('fail')
-    mockedCheckDatabase.mockResolvedValue('fail')
-    mockedCheckStorage.mockResolvedValue('fail')
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'fail', storage: 'fail', configuration: 'fail' })
+    mockedIsReadySnapshot.mockReturnValue(false)
 
     const response = await readyGET()
     const text = await response.clone().text()
@@ -110,6 +97,9 @@ describe('GET /api/health/ready', () => {
   })
 
   it('não depende de nenhum argumento de request (não exige sessão/cookie/autenticação)', async () => {
+    mockedGetReadinessSnapshot.mockResolvedValue({ database: 'ok', storage: 'ok', configuration: 'ok' })
+    mockedIsReadySnapshot.mockReturnValue(true)
+
     await expect(readyGET()).resolves.toBeDefined()
   })
 })
