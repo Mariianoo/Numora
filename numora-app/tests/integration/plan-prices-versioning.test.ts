@@ -325,7 +325,13 @@ describe.skipIf(!hasTestEnv())('plan_prices — versionamento (Stripe 3.2)', () 
       .from('plan_entitlements')
       .select('feature_key, plans:plan_id(slug)')
     expect(entitlementsError).toBeNull()
-    expect(entitlements).toHaveLength(9)
+    // 3 planos × 6 feature_keys (collection_basic, public_passport, labels — pré-existentes
+    // — + collection_items e dashboard_advanced, adicionadas na Etapa "5.9 — Paywall
+    // Técnico"/"5.9C — Dashboard Gate" — + exports, adicionada na Etapa "5.10U —
+    // Exportação da Coleção"). O número mudou porque entitlements novos foram
+    // introduzidos, não porque esta etapa (Stripe 3.x) alterou algo — a asserção em si
+    // continua provando que nada aqui mexeu na tabela.
+    expect(entitlements).toHaveLength(18)
 
     // Comportamento ponta-a-ponta: um usuário Free (sem benefit_grants/subscriptions)
     // continua resolvendo entitlements normalmente via get_my_entitlement().

@@ -73,9 +73,11 @@ export function trackFeatureLocked(properties: FeatureLockedProperties): void {
  * `pricing_page` (Etapa "5.10D — Billing Commercial Foundation"): abertura
  * do Checkout a partir da nova página de seleção de plano (`PricingSelector`)
  * — distinto de `future_feature`, que continua reservado para gates de
- * feature ainda não específicos.
+ * feature ainda não específicos. `export` (Etapa "5.10U — Exportação da
+ * Coleção"): clique em "Exportar coleção" na Collection com o entitlement
+ * `exports` desabilitado (Free).
  */
-export type UpgradeViewedTrigger = 'collection_limit' | 'restore_limit' | 'dashboard' | 'labels' | 'future_feature' | 'pricing_page'
+export type UpgradeViewedTrigger = 'collection_limit' | 'restore_limit' | 'dashboard' | 'labels' | 'future_feature' | 'pricing_page' | 'export'
 
 export interface UpgradeViewedProperties {
   trigger: UpgradeViewedTrigger
@@ -126,4 +128,23 @@ export function trackUpgradeInterestRegistered(properties: UpgradeInterestRegist
   const event: Record<string, unknown> = { event: 'upgrade_interest_registered', trigger: properties.trigger, plan_slug: properties.plan_slug }
   if (properties.currency !== undefined) event.currency = properties.currency
   pushToDataLayer(event)
+}
+
+export interface ExportCompletedProperties {
+  plan_slug: string
+  /** `'xlsx'` ainda não existe nesta etapa (ver auditoria 5.10T/5.10U — SheetJS avaliado e não adotado por ora) — união já preparada para não exigir mudança de contrato quando/se for implementado. */
+  format: 'csv'
+}
+
+/**
+ * Etapa "5.10U — Exportação da Coleção" — dispara SÓ depois que o entitlement
+ * `exports` permitiu E o `Blob` do arquivo foi gerado com sucesso E o
+ * download foi iniciado pela aplicação — nunca no clique bruto, nunca
+ * quando a geração falha, nunca para um usuário Free bloqueado (esse caso
+ * já é coberto por `feature_locked`/`upgrade_viewed`, nunca duplicado
+ * aqui). Nunca usa `analytics_outbox` — mesmo transporte client-side
+ * (`pushToDataLayer`) de todo evento deste arquivo.
+ */
+export function trackExportCompleted(properties: ExportCompletedProperties): void {
+  pushToDataLayer({ event: 'export_completed', plan_slug: properties.plan_slug, format: properties.format })
 }

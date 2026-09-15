@@ -30,6 +30,7 @@ import {
   Circle,
   Coins,
   ClipboardList,
+  Download,
   Eye,
   EyeOff,
   FolderTree,
@@ -56,6 +57,8 @@ import {
 } from 'lucide-react'
 
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
+import { createSupabaseExportEntitlementRepository } from '@/features/collection/repositories/export-entitlement.repository'
+import { buildCollectionExportFilename, generateCollectionCsv } from '@/features/collection/export'
 import { createSupabaseCoinCompositionRepository } from '@/features/coin-composition/repositories/coin-composition.repository'
 import { CoinCompositionEditor } from '@/features/coin-composition/components/CoinCompositionEditor'
 import { summarizeDraftComposition } from '@/features/coin-composition/summary'
@@ -64,7 +67,7 @@ import type { SetCoinCompositionInput } from '@/features/coin-composition/types'
 import { createSupabaseProfileRepository } from '@/features/profile/repositories/profile.repository'
 import type { PassportCollectionVisibility } from '@/features/profile/types'
 import { trackCollectionViewed } from '@/lib/analytics/events/product-events'
-import { trackCollectionLimitReached } from '@/lib/analytics/events/paywall-events'
+import { trackCollectionLimitReached, trackExportCompleted } from '@/lib/analytics/events/paywall-events'
 import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
 import type { PriceCurrency } from '@/lib/stripe/catalog'
 import { getUserFriendlyErrorMessage, isPermissionError } from '@/lib/errors/get-user-friendly-error-message'
@@ -124,6 +127,7 @@ const referenceRepository = createSupabaseReferenceRepository()
 const collectionUnitsRepository = createSupabaseCollectionUnitsRepository()
 const coinImagesRepository = createSupabaseCoinImagesRepository()
 const profileRepository = createSupabaseProfileRepository()
+const exportEntitlementRepository = createSupabaseExportEntitlementRepository()
 
 /** Indicador visual rápido por status, usado na lista de exemplares (seção 12/13 da etapa). */
 const GRADE_SCALE_LABELS: Record<string, string> = {
@@ -209,6 +213,27 @@ function getTodayDateString(): string {
   const month = String(now.getMonth() + 1).padStart(2, '0')
   const day = String(now.getDate()).padStart(2, '0')
   return `${year}-${month}-${day}`
+}
+
+/**
+ * Etapa "5.10U — Exportação da Coleção" — dispara o download de um `Blob`
+ * via um `<a download>` real, clicado programaticamente (nunca
+ * `window.open`, que é bloqueado como popup quando chamado depois de um
+ * `await` — mesmo achado já documentado em
+ * `features/labels/components/LabelGeneratorModal.tsx`). Um elemento `<a>`
+ * com `download` clicado via `.click()` NÃO é tratado como popup pelos
+ * navegadores (diferente de `window.open`), então funciona mesmo depois do
+ * `await exportEntitlementRepository.isEnabled()` no chamador.
+ */
+function triggerBrowserDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  document.body.removeChild(anchor)
+  URL.revokeObjectURL(url)
 }
 
 const CURRENT_YEAR = new Date().getFullYear()
@@ -932,6 +957,16 @@ export default function CollectionPage() {
   // Etapa "5.10D — Billing Commercial Foundation": 'USD' até o perfil
   // carregar (fail-safe — nunca assume BRL sem confirmar country_code='BR').
   const [checkoutCurrency, setCheckoutCurrency] = useState<PriceCurrency>('USD')
+  /**
+   * Etapa "5.10U — Exportação da Coleção" — estado do botão "Exportar
+   * coleção", inteiramente separado do Paywall de limite acima (dialog
+   * próprio, `trigger: 'export'`). `isExporting` cobre tanto a checagem de
+   * entitlement quanto a geração do arquivo — um único spinner, um único
+   * clique possível por vez (nenhuma geração concorrente).
+   */
+  const [isExportUpgradeDialogOpen, setIsExportUpgradeDialogOpen] = useState(false)
+  const [isExporting, setIsExporting] = useState(false)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [countries, setCountries] = useState<Country[]>([])
   const [metals, setMetals] = useState<Metal[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
@@ -1687,6 +1722,54 @@ export default function CollectionPage() {
     }
   }
 
+  /**
+   * Etapa "5.10U — Exportação da Coleção" — clique em "Exportar coleção".
+   * Nunca faz uma query nova de coleção: `items` já é o array carregado
+   * por `loadCollectionData()` (mesma tela). Nunca chama Stripe, nunca
+   * escreve no Supabase — `exportEntitlementRepository.isEnabled()` é uma
+   * LEITURA de `get_my_entitlement('exports')`, a única chamada de rede
+   * deste fluxo inteiro.
+   */
+  async function handleExportCollection() {
+    if (isExporting) return
+
+    setExportError(null)
+    setIsExporting(true)
+
+    try {
+      const enabled = await exportEntitlementRepository.isEnabled()
+
+      if (!enabled) {
+        setIsExportUpgradeDialogOpen(true)
+        return
+      }
+
+      if (items.length === 0) {
+        // Nunca gera um arquivo inválido/vazio de propósito (Etapa 5.10U,
+        // seção 8) — estado apropriado, sem tocar `generateCollectionCsv`.
+        setExportError('Sua coleção está vazia — adicione moedas antes de exportar.')
+        return
+      }
+
+      const csvBlob = generateCollectionCsv(items)
+      triggerBrowserDownload(csvBlob, buildCollectionExportFilename())
+
+      // Etapa 5.10U — dispara SÓ depois que o Blob foi gerado com sucesso E
+      // o download foi iniciado logo acima — nunca no clique bruto, nunca
+      // quando a geração falha (ver catch abaixo, que nunca chama isto).
+      try {
+        trackExportCompleted({ plan_slug: itemLimit?.planSlug ?? 'free', format: 'csv' })
+      } catch (err) {
+        Sentry.captureException(err)
+      }
+    } catch (err) {
+      Sentry.captureException(err)
+      setExportError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setIsExporting(false)
+    }
+  }
+
   async function openAddModal() {
     setError(null)
     setSuccessMessage(null)
@@ -2208,6 +2291,10 @@ export default function CollectionPage() {
                 Selecionar moedas
               </Button>
             )}
+            <Button type="button" variant="secondary" onClick={handleExportCollection} isLoading={isExporting}>
+              <Download className="size-4" aria-hidden />
+              Exportar coleção
+            </Button>
             <Button type="button" onClick={openAddModal}>
               <Plus className="size-4" aria-hidden />
               Adicionar moeda
@@ -2218,6 +2305,7 @@ export default function CollectionPage() {
 
       {error && <p className="text-sm text-danger">{error}</p>}
       {successMessage && <p className="text-sm text-success">{successMessage}</p>}
+      {exportError && <p className="text-sm text-danger">{exportError}</p>}
 
       {labelSelection.isSelecting && (
         <LabelSelectionToolbar
@@ -3443,6 +3531,17 @@ export default function CollectionPage() {
         trigger="collection_limit"
         planSlug={itemLimit?.planSlug ?? 'free'}
         currentCount={itemLimit?.currentCount}
+        targetPlanSlug="pro"
+        interval="month"
+        currency={checkoutCurrency}
+      />
+
+      <UpgradeToProDialog
+        isOpen={isExportUpgradeDialogOpen}
+        onClose={() => setIsExportUpgradeDialogOpen(false)}
+        title="Exportação disponível no Pro"
+        trigger="export"
+        planSlug={itemLimit?.planSlug ?? 'free'}
         targetPlanSlug="pro"
         interval="month"
         currency={checkoutCurrency}

@@ -28,9 +28,14 @@ vi.mock('@/lib/analytics/gtm', () => ({
 }))
 
 const { pushToDataLayer } = await import('@/lib/analytics/gtm')
-const { trackCollectionLimitReached, trackFeatureLocked, trackUpgradeViewed, trackCheckoutStarted, trackUpgradeInterestRegistered } = await import(
-  '@/lib/analytics/events/paywall-events'
-)
+const {
+  trackCollectionLimitReached,
+  trackFeatureLocked,
+  trackUpgradeViewed,
+  trackCheckoutStarted,
+  trackUpgradeInterestRegistered,
+  trackExportCompleted,
+} = await import('@/lib/analytics/events/paywall-events')
 
 beforeEach(() => {
   vi.mocked(pushToDataLayer).mockReset()
@@ -167,13 +172,38 @@ describe('trackUpgradeInterestRegistered — Etapa 5.10S', () => {
     expect(payload).not.toHaveProperty('user_id')
   })
 
-  it.each(['collection_limit', 'restore_limit', 'dashboard', 'labels', 'future_feature', 'pricing_page'] as const)(
+  it.each(['collection_limit', 'restore_limit', 'dashboard', 'labels', 'future_feature', 'pricing_page', 'export'] as const)(
     'aceita o trigger válido "%s" (mesma enum de upgrade_viewed — nunca uma taxonomia paralela)',
     (trigger) => {
       trackUpgradeInterestRegistered({ trigger, plan_slug: 'pro' })
       expect(pushToDataLayer).toHaveBeenCalledWith(expect.objectContaining({ trigger }))
     },
   )
+})
+
+describe('trackExportCompleted — Etapa 5.10U', () => {
+  it('dispara "export_completed" com plan_slug/format', () => {
+    trackExportCompleted({ plan_slug: 'pro', format: 'csv' })
+
+    expect(pushToDataLayer).toHaveBeenCalledWith({ event: 'export_completed', plan_slug: 'pro', format: 'csv' })
+  })
+
+  it('aceita plan_slug "premium" (mesmo contrato, nenhuma lógica paralela por plano)', () => {
+    trackExportCompleted({ plan_slug: 'premium', format: 'csv' })
+
+    expect(pushToDataLayer).toHaveBeenCalledWith({ event: 'export_completed', plan_slug: 'premium', format: 'csv' })
+  })
+
+  it('nunca contém priceId/customerId/sessionId/user_id — só o sinal de conclusão', () => {
+    trackExportCompleted({ plan_slug: 'pro', format: 'csv' })
+
+    const [payload] = vi.mocked(pushToDataLayer).mock.calls[0]
+    expect(payload).not.toHaveProperty('priceId')
+    expect(payload).not.toHaveProperty('customerId')
+    expect(payload).not.toHaveProperty('sessionId')
+    expect(payload).not.toHaveProperty('user_id')
+    expect(Object.keys(payload as object).sort()).toEqual(['event', 'format', 'plan_slug'])
+  })
 })
 
 describe('propagação de erro (sustenta o padrão fail-safe dos call sites)', () => {
