@@ -28,7 +28,7 @@ vi.mock('@/lib/analytics/gtm', () => ({
 }))
 
 const { pushToDataLayer } = await import('@/lib/analytics/gtm')
-const { trackCollectionLimitReached, trackFeatureLocked, trackUpgradeViewed, trackCheckoutStarted } = await import(
+const { trackCollectionLimitReached, trackFeatureLocked, trackUpgradeViewed, trackCheckoutStarted, trackUpgradeInterestRegistered } = await import(
   '@/lib/analytics/events/paywall-events'
 )
 
@@ -135,6 +135,45 @@ describe('trackCheckoutStarted', () => {
     expect(payload).not.toHaveProperty('amount')
     expect(Object.keys(payload as object).sort()).toEqual(['currency', 'event', 'funnel_id', 'interval', 'plan_slug'])
   })
+})
+
+describe('trackUpgradeInterestRegistered — Etapa 5.10S', () => {
+  it('dispara "upgrade_interest_registered" com trigger/plan_slug/currency', () => {
+    trackUpgradeInterestRegistered({ trigger: 'collection_limit', plan_slug: 'pro', currency: 'BRL' })
+
+    expect(pushToDataLayer).toHaveBeenCalledWith({
+      event: 'upgrade_interest_registered',
+      trigger: 'collection_limit',
+      plan_slug: 'pro',
+      currency: 'BRL',
+    })
+  })
+
+  it('OMITE currency quando não informada — nunca envia undefined explícito', () => {
+    trackUpgradeInterestRegistered({ trigger: 'dashboard', plan_slug: 'premium' })
+
+    const [payload] = vi.mocked(pushToDataLayer).mock.calls[0]
+    expect(payload).toEqual({ event: 'upgrade_interest_registered', trigger: 'dashboard', plan_slug: 'premium' })
+    expect('currency' in payload).toBe(false)
+  })
+
+  it('nunca contém priceId/customerId/sessionId/qualquer identificador Stripe — só o sinal de intenção', () => {
+    trackUpgradeInterestRegistered({ trigger: 'pricing_page', plan_slug: 'pro', currency: 'BRL' })
+
+    const [payload] = vi.mocked(pushToDataLayer).mock.calls[0]
+    expect(payload).not.toHaveProperty('priceId')
+    expect(payload).not.toHaveProperty('customerId')
+    expect(payload).not.toHaveProperty('sessionId')
+    expect(payload).not.toHaveProperty('user_id')
+  })
+
+  it.each(['collection_limit', 'restore_limit', 'dashboard', 'labels', 'future_feature', 'pricing_page'] as const)(
+    'aceita o trigger válido "%s" (mesma enum de upgrade_viewed — nunca uma taxonomia paralela)',
+    (trigger) => {
+      trackUpgradeInterestRegistered({ trigger, plan_slug: 'pro' })
+      expect(pushToDataLayer).toHaveBeenCalledWith(expect.objectContaining({ trigger }))
+    },
+  )
 })
 
 describe('propagação de erro (sustenta o padrão fail-safe dos call sites)', () => {

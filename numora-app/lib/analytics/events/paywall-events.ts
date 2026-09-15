@@ -20,7 +20,15 @@
  * `get_effective_plan()`) — ver auditoria da Etapa 5.9E, "não duplicar
  * lógica de entitlement".
  *
- * `checkout_completed` (o 5º evento do funil) está DEFERRED — não existe
+ * Etapa "5.10S — Pro Interest": `upgrade_interest_registered` é um evento
+ * PARALELO a `checkout_started`, nunca um substituto — dispara quando o
+ * usuário confirma "Quero ser avisado" no `UpgradeToProDialog` SEM iniciar
+ * Checkout. Só deve ser chamado DEPOIS que o INSERT em `plan_interest`
+ * (features/billing/repositories/plan-interest.repository.ts) resolver
+ * com sucesso — nunca no clique bruto, nunca quando o INSERT falha (mesmo
+ * contrato de "só depois de confirmado" já usado por `checkout_started`).
+ *
+ * `checkout_completed` (o 5º evento do funil original) está DEFERRED — não existe
  * hoje nenhum transporte server-side de analytics no projeto (`pushToDataLayer`
  * é `'use client'`/`window.dataLayer`, inutilizável dentro do Route Handler
  * do webhook). Decisão explícita do OWNER: não introduzir GA4 Measurement
@@ -103,4 +111,19 @@ export interface CheckoutStartedProperties {
 /** Dispara SÓ depois de POST /api/billing/checkout responder com sucesso e uma url válida — nunca no clique bruto. Propriedades sempre derivadas do mesmo valor já enviado no request/devolvido pela resposta, nunca de input do usuário. */
 export function trackCheckoutStarted(properties: CheckoutStartedProperties): void {
   pushToDataLayer({ event: 'checkout_started', ...properties })
+}
+
+export interface UpgradeInterestRegisteredProperties {
+  /** Mesmo `UpgradeViewedTrigger` de `upgrade_viewed`/`checkout_started` — nunca uma taxonomia paralela. */
+  trigger: UpgradeViewedTrigger
+  plan_slug: string
+  /** Só quando já disponível pelo caller (mesma fonte de `checkout_started`) — omitido quando não aplicável. */
+  currency?: string
+}
+
+/** Dispara SÓ depois que o INSERT em `plan_interest` for confirmado pelo banco — nunca no clique bruto, nunca quando o INSERT falha. Nunca inicia Checkout, nunca chama Stripe. */
+export function trackUpgradeInterestRegistered(properties: UpgradeInterestRegisteredProperties): void {
+  const event: Record<string, unknown> = { event: 'upgrade_interest_registered', trigger: properties.trigger, plan_slug: properties.plan_slug }
+  if (properties.currency !== undefined) event.currency = properties.currency
+  pushToDataLayer(event)
 }

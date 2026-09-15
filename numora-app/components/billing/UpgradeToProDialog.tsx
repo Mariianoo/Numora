@@ -42,6 +42,17 @@
  * representando o PLANO ATUAL do usuário, usado só por `upgrade_viewed` —
  * nunca confundir com `targetPlanSlug` (o plano sendo comprado, usado no
  * request de Checkout e em `checkout_started`).
+ *
+ * Etapa "5.10S — Pro Interest / Pré-lançamento": segunda ação, "Quero ser
+ * avisado" — sempre ao lado do CTA de Checkout, nunca o substituindo.
+ * Nunca chama /api/billing/checkout, nunca toca Stripe, nunca altera
+ * estado de billing — só grava em plan_interest
+ * (features/billing/repositories/plan-interest.repository.ts) usando o
+ * mesmo targetPlanSlug sendo apresentado (nunca hardcoded 'pro') e o
+ * mesmo trigger já usado por upgrade_viewed/checkout_started como source
+ * (nenhuma taxonomia paralela). Idempotente e refletido já na abertura do
+ * diálogo (getStatus) — clicar de novo, ou reabrir o diálogo depois de já
+ * ter registrado, nunca duplica nem gera erro visível.
  */
 'use client'
 
@@ -52,8 +63,14 @@ import * as Sentry from '@sentry/nextjs'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { getConsent } from '@/lib/analytics/consent'
-import { trackCheckoutStarted, trackUpgradeViewed, type UpgradeViewedTrigger } from '@/lib/analytics/events/paywall-events'
+import { trackCheckoutStarted, trackUpgradeInterestRegistered, trackUpgradeViewed, type UpgradeViewedTrigger } from '@/lib/analytics/events/paywall-events'
+import { createSupabasePlanInterestRepository } from '@/features/billing/repositories/plan-interest.repository'
 import type { PaidPlanSlug, PriceCurrency, PriceInterval } from '@/lib/stripe/catalog'
+
+// Módulo-escopo (mesmo padrão de createSupabaseFeedbackRepository() em
+// app/dashboard/feedback/page.tsx) — uma única instância para todos os
+// diálogos montados nesta sessão de browser, nunca recriada por render.
+const planInterestRepository = createSupabasePlanInterestRepository()
 
 export interface UpgradeToProDialogProps {
   isOpen: boolean
@@ -93,6 +110,14 @@ export function UpgradeToProDialog({
   const [isRedirecting, setIsRedirecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
+  // Etapa 5.10S — estado do sinal "Quero ser avisado", inteiramente
+  // separado do estado de Checkout acima (nunca compartilha isRedirecting/
+  // error — são duas ações independentes no mesmo diálogo).
+  const [hasInterest, setHasInterest] = useState(false)
+  const [isCheckingInterest, setIsCheckingInterest] = useState(false)
+  const [isRegisteringInterest, setIsRegisteringInterest] = useState(false)
+  const [interestError, setInterestError] = useState<string | null>(null)
+
   // Etapa 5.9E — "uma abertura real = um evento": o ref só reseta quando
   // `isOpen` volta a `false`, então um re-render com `isOpen` continuando
   // `true` (ou o duplo-mount do StrictMode) nunca dispara de novo; fechar e
@@ -118,6 +143,72 @@ export function UpgradeToProDialog({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- só a transição de isOpen deve redisparar; trigger/planSlug/currentCount/limitValue não mudam com o dialog já aberto.
   }, [isOpen])
+
+  // Etapa 5.10S — item 4: "se já houver interesse registrado quando o
+  // diálogo abrir, mostrar imediatamente o estado registrado". Reseta ao
+  // fechar (nunca vaza estado de uma abertura anterior, ex.: Pro depois
+  // Premium, para a próxima abertura). `cancelled` evita setState após
+  // fechar/desmontar (mesmo problema clássico de efeito assíncrono).
+  useEffect(() => {
+    if (!isOpen) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- reset intencional ao fechar: sincroniza o estado local com o ciclo de vida do dialog (mesmo padrão de upgradeViewedFiredRef acima, aqui em state em vez de ref porque afeta o texto/disabled renderizado do botão) — nunca dispara cascata visível, pois o Modal não renderiza conteúdo com isOpen=false.
+      setHasInterest(false)
+      setInterestError(null)
+      setIsCheckingInterest(false)
+      return
+    }
+
+    let cancelled = false
+    setIsCheckingInterest(true)
+
+    planInterestRepository
+      .getStatus(targetPlanSlug)
+      .then((status) => {
+        if (!cancelled) setHasInterest(status.registered)
+      })
+      .catch((err) => {
+        Sentry.captureException(err)
+      })
+      .finally(() => {
+        if (!cancelled) setIsCheckingInterest(false)
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [isOpen, targetPlanSlug])
+
+  async function handleRegisterInterest() {
+    // Idempotência também no client: um clique enquanto já registrado ou
+    // já em voo nunca dispara um segundo INSERT (a UNIQUE do banco já
+    // garante o mesmo no limite, mas evitamos a chamada de rede à toa).
+    if (hasInterest || isRegisteringInterest) return
+
+    setInterestError(null)
+    setIsRegisteringInterest(true)
+
+    try {
+      // Nunca chama /api/billing/checkout, nunca toca Stripe — só grava em
+      // plan_interest. targetPlanSlug é o plano efetivamente apresentado
+      // neste diálogo (nunca hardcoded); trigger é a mesma origem já usada
+      // por upgrade_viewed/checkout_started, reaproveitada como source.
+      await planInterestRepository.register({ planSlug: targetPlanSlug, source: trigger })
+      setHasInterest(true)
+
+      try {
+        trackUpgradeInterestRegistered({ trigger, plan_slug: targetPlanSlug, currency })
+      } catch (err) {
+        Sentry.captureException(err)
+      }
+    } catch (err) {
+      // Etapa 5.10S — item "erro de banco NÃO dispara o evento": o catch
+      // deste bloco externo nunca chama trackUpgradeInterestRegistered.
+      Sentry.captureException(err)
+      setInterestError('Não foi possível registrar seu interesse agora. Tente novamente.')
+    } finally {
+      setIsRegisteringInterest(false)
+    }
+  }
 
   async function handleUpgrade() {
     setError(null)
@@ -180,10 +271,22 @@ export function UpgradeToProDialog({
       }}
       title={title ?? DEFAULT_TITLE}
       footer={
-        <Button type="button" onClick={handleUpgrade} isLoading={isRedirecting}>
-          <Sparkles className="size-4" aria-hidden />
-          Fazer upgrade para Pro
-        </Button>
+        <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleRegisterInterest}
+            isLoading={isRegisteringInterest}
+            disabled={hasInterest || isCheckingInterest}
+            aria-live="polite"
+          >
+            {hasInterest ? 'Você está na lista de interesse' : 'Quero ser avisado'}
+          </Button>
+          <Button type="button" onClick={handleUpgrade} isLoading={isRedirecting}>
+            <Sparkles className="size-4" aria-hidden />
+            Fazer upgrade para Pro
+          </Button>
+        </div>
       }
     >
       <div className="flex flex-col gap-3 text-sm text-text-secondary">
@@ -195,7 +298,12 @@ export function UpgradeToProDialog({
         )}
         <p>Sua coleção continua intacta — nada é apagado ou escondido.</p>
         <p>O plano Pro remove esse limite e libera o Dashboard avançado.</p>
+        <p className="text-xs">
+          Durante o Beta, “Quero ser avisado” não cobra nada agora e não abre o Checkout — só registra seu interesse
+          para quando o plano estiver disponível para contratação.
+        </p>
         {error && <p className="text-sm text-danger">{error}</p>}
+        {interestError && <p className="text-sm text-danger">{interestError}</p>}
       </div>
     </Modal>
   )
