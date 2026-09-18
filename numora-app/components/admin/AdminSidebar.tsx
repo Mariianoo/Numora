@@ -38,6 +38,7 @@ import {
   Settings,
   Activity,
   MessageCircle,
+  FlaskConical,
 } from 'lucide-react'
 
 import { LogoutButton } from '@/features/auth/components/LogoutButton'
@@ -59,6 +60,7 @@ interface AdminNavItem {
 export const ADMIN_NAV: AdminNavItem[] = [
   { href: '/admin', label: 'Visão geral', icon: LayoutDashboard },
   { href: '/admin/members', label: 'Membros', icon: Users },
+  { href: '/admin/analysis-account', label: 'Conta de Análise', icon: FlaskConical },
   { href: '/admin/health', label: 'Numora Health', icon: Activity, ownerOnly: true },
   { href: '/admin/subscriptions', label: 'Assinaturas', icon: CreditCard },
   { href: '/admin/transactions', label: 'Transações', icon: Receipt },
