@@ -8,15 +8,15 @@
  * decidido aqui) — mesmo contrato de `features/labels/pdf.ts`
  * (`generateLabelsPdf`), que também só devolve um `Blob`.
  *
- * Reaproveita a MESMA agregação financeira já usada pela tela de Coleção
- * (`features/collection/aggregate.ts`, Etapa 15.4) — nunca uma segunda
- * lógica paralela de "quanto custou esta moeda". Grão do arquivo: 1 linha
- * por `collection_item` (nunca por exemplar) — os campos "por exemplar"
- * (Grade/Escala/Status/Rating/Principal) refletem sempre o EXEMPLAR
- * PRINCIPAL do item (`getPrimaryUnit`, mesmo conceito já usado em toda a
- * UI de Coleção/Labels/Passport), nunca um exemplar arbitrário — um item
- * com múltiplos exemplares de conservação diferente não gera múltiplas
- * linhas nesta primeira versão.
+ * Etapa "5.10V.1 — Modelo Intermediário": a montagem dos DADOS de cada
+ * linha (agregação financeira, exemplar principal, traduções PT-BR) foi
+ * extraída para `features/collection/export-model.ts`
+ * (`buildCollectionExportModel`) — única fonte de verdade compartilhada
+ * com o futuro XLSX. Este arquivo passou a ser responsável SOMENTE pela
+ * SERIALIZAÇÃO CSV (separador/BOM/CRLF/escaping/formatação numérica
+ * pt-BR) a partir do modelo — comportamento externo (assinatura pública,
+ * colunas, formato do arquivo) permanece IDÊNTICO ao da Etapa 5.10U, só a
+ * implementação interna mudou.
  *
  * NUNCA exporta (auditoria 5.10T, seção 4): `user_id`, qualquer id interno
  * (`collection_items.id`, `purchase_id`, `collection_units.id`), valor de
@@ -43,26 +43,13 @@
  *     vírgula ou ponto-e-vírgula, e listas (tags/referências) unidas por
  *     "; " dentro de um único campo.
  */
-import { getItemAcquisitionSummary, getPrimaryUnit } from './aggregate'
-import { COLLECTION_UNIT_STATUS_LABELS, type CostOrigin, type CostType } from '@/features/collection-units/types'
+import { buildCollectionExportModel, type CollectionExportRow } from './export-model'
 import { formatDateOnly, formatTimestampDate } from '@/lib/format/date'
 import type { CatalogReference, CollectionItem } from './types'
 
 const CSV_SEPARATOR = ';'
 const CSV_LINE_BREAK = '\r\n'
 const CSV_BOM = '﻿'
-
-const COST_ORIGIN_LABELS: Record<CostOrigin, string> = {
-  auto: 'Automático (rateio)',
-  manual: 'Manual',
-}
-
-const COST_TYPE_LABELS: Record<CostType, string> = {
-  purchase: 'Compra',
-  trade: 'Troca',
-  gift: 'Presente',
-  unknown: 'Desconhecido',
-}
 
 const CSV_HEADERS = [
   'País',
@@ -142,73 +129,56 @@ function formatCsvBoolean(value: boolean | null | undefined): string {
   return value ? 'Sim' : 'Não'
 }
 
-function formatTags(tags: string[] | null): string {
-  if (!tags || tags.length === 0) return ''
+function formatTags(tags: string[]): string {
+  if (tags.length === 0) return ''
   return tags.join('; ')
 }
 
-function formatCatalogReferences(refs: CatalogReference[] | null): string {
-  if (!refs || refs.length === 0) return ''
+function formatCatalogReferences(refs: CatalogReference[]): string {
+  if (refs.length === 0) return ''
   return refs.map((ref) => `${ref.catalog} ${ref.code}`).join('; ')
 }
 
-function buildExportRow(item: CollectionItem): string[] {
-  const summary = getItemAcquisitionSummary(item)
-  const primaryUnit = getPrimaryUnit(item)
-  // "Nenhum exemplar tem custo conhecido" (nunca confundir com custo real
-  // R$0) — mesma distinção já usada por `getItemAcquisitionSummary` em
-  // toda a UI de Coleção (ver features/collection/aggregate.ts).
-  const hasKnownCost = !(summary.isUniform && summary.uniformCost === null)
-
+/** Serializa UMA linha do modelo intermediário (já neutro) para o formato de texto CSV — nunca recalcula agregação/tradução, que já veio pronta do modelo. */
+function toCsvRow(row: CollectionExportRow): string[] {
   return [
-    formatCsvText(item.countryDisplayName),
-    formatCsvInteger(item.year),
-    formatCsvText(item.denomination),
-    formatCsvText(item.mint),
-    formatCsvText(item.labelCode),
-    formatCsvInteger(item.quantity),
-    formatCsvText(item.metalName),
-    formatCsvText(item.secondaryMetalName),
-    formatCsvDecimal(item.grossWeightG),
-    formatCsvDecimal(item.purity),
-    formatCsvDecimal(item.faceValue),
-    formatCsvText(item.mintage),
-    formatCsvDateOnly(item.purchase?.purchaseDate ?? null),
-    formatCsvText(item.purchase?.sellerName ?? null),
-    formatCsvText(item.location),
-    formatCsvText(item.purchase?.notes ?? null),
-    hasKnownCost ? formatCsvDecimal(summary.totalInvested, 2) : '',
-    // Etapa 5.10U — achado real ao escrever o teste: `averageCost` só é
-    // `null` quando o item não tem NENHUM exemplar; quando todo exemplar
-    // tem `unitCost = null` (custo desconhecido), `getItemAverageAcquisitionCost`
-    // devolve 0 (trata desconhecido como 0 na soma, mesma regra documentada
-    // em aggregate.ts) — usar `hasKnownCost` aqui (o mesmo gate da coluna
-    // anterior) em vez de `averageCost !== null` evita mostrar "0,00" para
-    // um custo genuinamente desconhecido.
-    hasKnownCost ? formatCsvDecimal(summary.averageCost, 2) : '',
-    // Origem/tipo do custo só fazem sentido como UM valor quando todos os
-    // exemplares do item compartilham o mesmo custo (isUniform) — do
-    // contrário, mostrar a origem só do exemplar principal seria
-    // enganoso (sugeriria que vale para o item inteiro).
-    summary.isUniform && primaryUnit ? COST_ORIGIN_LABELS[primaryUnit.costOrigin] : '',
-    summary.isUniform && primaryUnit ? COST_TYPE_LABELS[primaryUnit.costType] : '',
-    formatCsvText(primaryUnit?.gradeLabel ?? null),
-    formatCsvText(primaryUnit?.gradeScale ?? null),
-    primaryUnit ? COLLECTION_UNIT_STATUS_LABELS[primaryUnit.status] : '',
-    formatCsvInteger(primaryUnit?.rating ?? null),
-    formatCsvBoolean(primaryUnit?.isPrimary ?? null),
-    formatCsvText(item.description),
-    formatTags(item.tags),
-    formatCsvText(item.history),
-    formatCsvText(item.trivia),
-    formatCatalogReferences(item.catalogReferences),
-    formatCsvTimestamp(item.createdAt),
+    formatCsvText(row.country),
+    formatCsvInteger(row.year),
+    formatCsvText(row.denomination),
+    formatCsvText(row.mint),
+    formatCsvText(row.labelCode),
+    formatCsvInteger(row.quantity),
+    formatCsvText(row.metal),
+    formatCsvText(row.secondaryMetal),
+    formatCsvDecimal(row.grossWeightG),
+    formatCsvDecimal(row.purity),
+    formatCsvDecimal(row.faceValue),
+    formatCsvText(row.mintage),
+    formatCsvDateOnly(row.purchaseDate),
+    formatCsvText(row.seller),
+    formatCsvText(row.location),
+    formatCsvText(row.notes),
+    formatCsvDecimal(row.totalCost, 2),
+    formatCsvDecimal(row.costPerUnit, 2),
+    formatCsvText(row.costOrigin),
+    formatCsvText(row.costType),
+    formatCsvText(row.grade),
+    formatCsvText(row.gradeScale),
+    formatCsvText(row.status),
+    formatCsvInteger(row.rating),
+    formatCsvBoolean(row.isPrimary),
+    formatCsvText(row.description),
+    formatTags(row.tags),
+    formatCsvText(row.history),
+    formatCsvText(row.trivia),
+    formatCatalogReferences(row.catalogReferences),
+    formatCsvTimestamp(row.createdAt),
   ]
 }
 
-/** Pura — testável sem fabricar um `Blob`/ambiente de browser. Exportada separadamente de `generateCollectionCsv` para poder ser testada linha a linha. */
+/** Pura — testável sem fabricar um `Blob`/ambiente de browser. Exportada separadamente de `generateCollectionCsv` para poder ser testada linha a linha. Assinatura pública inalterada desde a Etapa 5.10U (continua recebendo `CollectionItem[]`) — internamente passa pelo modelo intermediário. */
 export function buildCollectionExportRows(items: CollectionItem[]): string[][] {
-  return items.map(buildExportRow)
+  return buildCollectionExportModel(items).map(toCsvRow)
 }
 
 /** `items.length === 0` ainda gera um arquivo válido — só o cabeçalho, nunca um Blob vazio/corrompido. A decisão de bloquear a exportação de uma coleção vazia (se houver) é da UI, não deste módulo. */
