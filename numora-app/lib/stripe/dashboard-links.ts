@@ -24,3 +24,12 @@ export function buildStripeCustomerDashboardUrl(stripeCustomerId: string): strin
 export function buildStripeSubscriptionDashboardUrl(stripeSubscriptionId: string): string {
   return `${STRIPE_DASHBOARD_TEST_BASE}/subscriptions/${encodeURIComponent(stripeSubscriptionId)}`
 }
+
+/** Etapa "Admin Transactions V1" — mesmo padrão/mesma ressalva de `/test/` acima, aplicado a Invoice/Payment Intent. */
+export function buildStripeInvoiceDashboardUrl(stripeInvoiceId: string): string {
+  return `${STRIPE_DASHBOARD_TEST_BASE}/invoices/${encodeURIComponent(stripeInvoiceId)}`
+}
+
+export function buildStripePaymentIntentDashboardUrl(stripePaymentIntentId: string): string {
+  return `${STRIPE_DASHBOARD_TEST_BASE}/payments/${encodeURIComponent(stripePaymentIntentId)}`
+}

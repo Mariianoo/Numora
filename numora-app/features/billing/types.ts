@@ -64,3 +64,48 @@ export interface AdminSubscriptionsSummary {
   cancelingSubscriptions: number
   failedPaymentSubscriptions: number
 }
+
+/**
+ * Etapa "Admin Transactions V1" — `AdminTransactionRow` representa uma linha
+ * de `public.billing_transactions` REAL — fonte única, nunca uma segunda
+ * verdade. `status` é exatamente o CHECK da tabela (`paid`/`failed`/
+ * `pending`/`refunded`), nunca um valor inventado.
+ */
+export type AdminTransactionStatus = 'paid' | 'failed' | 'pending' | 'refunded'
+export type AdminTransactionCurrencyFilter = 'BRL' | 'USD'
+
+export interface AdminTransactionRow {
+  id: string
+  userId: string
+  userName: string | null
+  userEmail: string | null
+  amount: number | null
+  currency: string | null
+  status: AdminTransactionStatus
+  createdAt: string
+  paidAt: string | null
+  /** ID REAL — usar para montar o `href` do link do Stripe Dashboard, nunca para exibir em texto. */
+  stripeInvoiceId: string | null
+  /** Versão mascarada de `stripeInvoiceId`, pronta para exibição em texto. */
+  stripeInvoiceIdMasked: string
+  /** ID REAL — usar para montar o `href` do link do Stripe Dashboard, nunca para exibir em texto. */
+  stripePaymentIntentId: string | null
+  /** Versão mascarada de `stripePaymentIntentId`, pronta para exibição em texto. */
+  stripePaymentIntentIdMasked: string
+  /** `null` = transação sem assinatura vinculada (subscription_id é opcional no schema) — nunca inventar uma. ID REAL do Stripe (nunca o UUID interno `subscription_id`), para o link do Stripe Dashboard. */
+  stripeSubscriptionId: string | null
+  /** Versão mascarada de `stripeSubscriptionId`. */
+  stripeSubscriptionIdMasked: string
+}
+
+export interface AdminTransactionsPage {
+  transactions: AdminTransactionRow[]
+  totalCount: number
+}
+
+export interface ListTransactionsParams {
+  limit?: number
+  offset?: number
+  statusFilter?: AdminTransactionStatus | null
+  currencyFilter?: AdminTransactionCurrencyFilter | null
+}
