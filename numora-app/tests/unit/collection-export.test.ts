@@ -316,6 +316,31 @@ describe('buildCollectionExportRows — escaping RFC 4180', () => {
   })
 })
 
+/**
+ * Etapa "XLSX UI Integration" — auditoria "XLSX UI Integration Audit"
+ * (Seção 6) documentou, sem corrigir, que `escapeCsvField()` só neutraliza
+ * separador (`;`)/aspas/quebra de linha (RFC 4180) — NUNCA um caractere
+ * inicial `=`/`+`/`-`/`@`, que o Excel pode interpretar como início de
+ * fórmula ao ABRIR um `.csv` (heurística de texto, não uma regra do
+ * formato CSV em si). Este bloco só DOCUMENTA o comportamento real e atual
+ * — nenhuma correção foi aplicada aqui (mudar `escapeCsvField()` alteraria
+ * o comportamento existente do CSV, fora do escopo desta etapa). Se uma
+ * correção for decidida no futuro, é um NON-BLOCKING FOLLOW-UP separado.
+ */
+describe('buildCollectionExportRows — valores começando com =/+/-/@ (comportamento ATUAL, não corrigido nesta etapa)', () => {
+  it.each(['=1+1', '+1+1', '-1+1', '@SUM(1,1)'])(
+    'campo "%s" passa para o CSV SEM nenhum prefixo neutralizador (comportamento pré-existente, documentado)',
+    async (value) => {
+      const item = makeItem({ description: value })
+      const text = await blobText(generateCollectionCsv([item]))
+      // Nenhuma aspa/prefixo é adicionado: o valor aparece literalmente no CSV,
+      // exatamente como o usuário digitou — confirmando que `escapeCsvField()`
+      // não trata este caso hoje.
+      expect(text).toContain(`;${value};`)
+    },
+  )
+})
+
 describe('escala — 50 e 5000 itens', () => {
   it('50 itens: 50 linhas de dados + 1 cabeçalho', async () => {
     const items = Array.from({ length: 50 }, () => makeItem())

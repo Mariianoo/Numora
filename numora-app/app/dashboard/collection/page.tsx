@@ -59,6 +59,8 @@ import {
 import { createSupabaseCollectionRepository } from '@/features/collection/repositories/collection.repository'
 import { createSupabaseExportEntitlementRepository } from '@/features/collection/repositories/export-entitlement.repository'
 import { buildCollectionExportFilename, generateCollectionCsv } from '@/features/collection/export'
+import { buildCollectionExportXlsxFilename, generateCollectionXlsx } from '@/features/collection/export-xlsx'
+import { ExportFormatDialog, type ExportFormat } from '@/components/collection/ExportFormatDialog'
 import { createSupabaseCoinCompositionRepository } from '@/features/coin-composition/repositories/coin-composition.repository'
 import { CoinCompositionEditor } from '@/features/coin-composition/components/CoinCompositionEditor'
 import { summarizeDraftComposition } from '@/features/coin-composition/summary'
@@ -967,6 +969,15 @@ export default function CollectionPage() {
   const [isExportUpgradeDialogOpen, setIsExportUpgradeDialogOpen] = useState(false)
   const [isExporting, setIsExporting] = useState(false)
   const [exportError, setExportError] = useState<string | null>(null)
+  /**
+   * Etapa "XLSX UI Integration" — `isExportFormatDialogOpen` só abre DEPOIS
+   * que `handleExportCollection` já confirmou `exports` habilitado (nunca
+   * antes). `exportingFormat` é o formato em geração agora (`null` = nenhum
+   * em voo) — impede duas exportações simultâneas e decide qual botão do
+   * diálogo mostra o spinner.
+   */
+  const [isExportFormatDialogOpen, setIsExportFormatDialogOpen] = useState(false)
+  const [exportingFormat, setExportingFormat] = useState<ExportFormat | null>(null)
   const [countries, setCountries] = useState<Country[]>([])
   const [metals, setMetals] = useState<Metal[]>([])
   const [grades, setGrades] = useState<Grade[]>([])
@@ -1723,12 +1734,14 @@ export default function CollectionPage() {
   }
 
   /**
-   * Etapa "5.10U — Exportação da Coleção" — clique em "Exportar coleção".
-   * Nunca faz uma query nova de coleção: `items` já é o array carregado
-   * por `loadCollectionData()` (mesma tela). Nunca chama Stripe, nunca
-   * escreve no Supabase — `exportEntitlementRepository.isEnabled()` é uma
-   * LEITURA de `get_my_entitlement('exports')`, a única chamada de rede
-   * deste fluxo inteiro.
+   * Etapa "5.10U — Exportação da Coleção" (ampliada pela "XLSX UI
+   * Integration"): clique em "Exportar coleção". Nunca faz uma query nova
+   * de coleção: `items` já é o array carregado por `loadCollectionData()`
+   * (mesma tela). Nunca chama Stripe, nunca escreve no Supabase —
+   * `exportEntitlementRepository.isEnabled()` é uma LEITURA de
+   * `get_my_entitlement('exports')`, a única chamada de rede deste fluxo
+   * inteiro. O entitlement é sempre confirmado ANTES de abrir o seletor de
+   * formato — nenhum arquivo é gerado antes dessa validação.
    */
   async function handleExportCollection() {
     if (isExporting) return
@@ -1746,27 +1759,51 @@ export default function CollectionPage() {
 
       if (items.length === 0) {
         // Nunca gera um arquivo inválido/vazio de propósito (Etapa 5.10U,
-        // seção 8) — estado apropriado, sem tocar `generateCollectionCsv`.
+        // seção 8) — estado apropriado, sem tocar nenhum gerador.
         setExportError('Sua coleção está vazia — adicione moedas antes de exportar.')
         return
       }
 
-      const csvBlob = generateCollectionCsv(items)
-      triggerBrowserDownload(csvBlob, buildCollectionExportFilename())
-
-      // Etapa 5.10U — dispara SÓ depois que o Blob foi gerado com sucesso E
-      // o download foi iniciado logo acima — nunca no clique bruto, nunca
-      // quando a geração falha (ver catch abaixo, que nunca chama isto).
-      try {
-        trackExportCompleted({ plan_slug: itemLimit?.planSlug ?? 'free', format: 'csv' })
-      } catch (err) {
-        Sentry.captureException(err)
-      }
+      setIsExportFormatDialogOpen(true)
     } catch (err) {
       Sentry.captureException(err)
       setExportError(getUserFriendlyErrorMessage(err))
     } finally {
       setIsExporting(false)
+    }
+  }
+
+  /**
+   * Etapa "XLSX UI Integration" — escolha de formato dentro do
+   * `ExportFormatDialog`, já com o entitlement confirmado por
+   * `handleExportCollection`. `exportingFormat` (não apenas um booleano)
+   * impede duas exportações simultâneas E decide qual botão do diálogo
+   * mostra o spinner. Analytics dispara SÓ depois que o Blob foi gerado com
+   * sucesso E o download foi iniciado — nunca no clique bruto, nunca quando
+   * a geração falha, mesmo contrato já usado pelo CSV desde a Etapa 5.10U.
+   */
+  async function handleSelectExportFormat(format: ExportFormat) {
+    if (exportingFormat) return
+
+    setExportingFormat(format)
+
+    try {
+      const blob = format === 'csv' ? generateCollectionCsv(items) : await generateCollectionXlsx(items)
+      const filename = format === 'csv' ? buildCollectionExportFilename() : buildCollectionExportXlsxFilename()
+      triggerBrowserDownload(blob, filename)
+      setIsExportFormatDialogOpen(false)
+
+      try {
+        trackExportCompleted({ plan_slug: itemLimit?.planSlug ?? 'free', format })
+      } catch (err) {
+        Sentry.captureException(err)
+      }
+    } catch (err) {
+      Sentry.captureException(err)
+      setIsExportFormatDialogOpen(false)
+      setExportError(getUserFriendlyErrorMessage(err))
+    } finally {
+      setExportingFormat(null)
     }
   }
 
@@ -3545,6 +3582,13 @@ export default function CollectionPage() {
         targetPlanSlug="pro"
         interval="month"
         currency={checkoutCurrency}
+      />
+
+      <ExportFormatDialog
+        isOpen={isExportFormatDialogOpen}
+        onClose={() => setIsExportFormatDialogOpen(false)}
+        onSelect={handleSelectExportFormat}
+        generatingFormat={exportingFormat}
       />
     </div>
   )

@@ -197,6 +197,32 @@ describe('generateCollectionXlsx — cabeçalhos e dados presentes (aba Coleçã
   })
 })
 
+/**
+ * Etapa "XLSX UI Integration" — auditoria "XLSX UI Integration Audit"
+ * (Seção 6) verificou no código-fonte de `write-excel-file` que uma célula
+ * só vira fórmula real quando o cell object usa explicitamente
+ * `type: 'Formula'` — `export-xlsx.ts` nunca faz isso em nenhuma coluna.
+ * Este bloco PROVA isso no arquivo `.xlsx` REAL gerado (não só por leitura
+ * de código): um valor de texto livre começando com `=`/`+`/`-`/`@` chega
+ * ao workbook como texto puro, e o arquivo inteiro nunca contém nenhum
+ * elemento de fórmula OOXML (`<f>...</f>`) — diferente do CSV (documentado
+ * separadamente em collection-export.test.ts, sem correção nesta etapa).
+ */
+describe('generateCollectionXlsx — valores começando com =/+/-/@ NUNCA viram fórmula real (diferente do CSV)', () => {
+  it.each(['=1+1', '+1+1', '-1+1', '@SUM(1,1)'])(
+    'campo "%s" chega ao workbook como texto puro, e o arquivo não contém nenhum elemento de fórmula OOXML (<f>)',
+    async (value) => {
+      const item = makeItem({ description: value })
+      const blob = await generateCollectionXlsx([item])
+      const { allText } = await unzipAllText(blob)
+
+      expect(allText).toContain(value)
+      expect(allText).not.toMatch(/<f>/)
+      expect(allText).not.toMatch(/<f [^>]*>/)
+    },
+  )
+})
+
 describe('generateCollectionXlsx — números e datas são células REAIS do Excel', () => {
   it('peso bruto decimal é gravado como NÚMERO real (ponto decimal cru no XML), nunca como texto formatado com vírgula', async () => {
     const item = makeItem({ grossWeightG: 7.55 })

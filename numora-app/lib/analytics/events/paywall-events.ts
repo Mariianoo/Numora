@@ -132,8 +132,7 @@ export function trackUpgradeInterestRegistered(properties: UpgradeInterestRegist
 
 export interface ExportCompletedProperties {
   plan_slug: string
-  /** `'xlsx'` ainda não existe nesta etapa (ver auditoria 5.10T/5.10U — SheetJS avaliado e não adotado por ora) — união já preparada para não exigir mudança de contrato quando/se for implementado. */
-  format: 'csv'
+  format: 'csv' | 'xlsx'
 }
 
 /**

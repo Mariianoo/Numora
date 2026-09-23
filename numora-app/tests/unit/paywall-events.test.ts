@@ -194,6 +194,13 @@ describe('trackExportCompleted — Etapa 5.10U', () => {
     expect(pushToDataLayer).toHaveBeenCalledWith({ event: 'export_completed', plan_slug: 'premium', format: 'csv' })
   })
 
+  it('Etapa "XLSX UI Integration" — aceita format="xlsx" com o MESMO evento "export_completed" (nenhum evento "export_xlsx_completed" novo)', () => {
+    trackExportCompleted({ plan_slug: 'pro', format: 'xlsx' })
+
+    expect(pushToDataLayer).toHaveBeenCalledWith({ event: 'export_completed', plan_slug: 'pro', format: 'xlsx' })
+    expect(pushToDataLayer).not.toHaveBeenCalledWith(expect.objectContaining({ event: 'export_xlsx_completed' }))
+  })
+
   it('nunca contém priceId/customerId/sessionId/user_id — só o sinal de conclusão', () => {
     trackExportCompleted({ plan_slug: 'pro', format: 'csv' })
 
