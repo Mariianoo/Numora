@@ -92,6 +92,18 @@ export interface BenefitGrant {
   revokedAt: string | null
 }
 
+/**
+ * Etapa "Admin Alerts V1" — `BenefitGrant` + dados de exibição do usuário
+ * (mesmo padrão de `AdminFeedback` sobre `Feedback`), usado exclusivamente
+ * pela listagem de cortesias expirando em `/admin/alerts`. Nunca usado
+ * pelas mutações existentes (`grantCourtesy`/`revokeActiveCourtesy`), que
+ * já operam com o `userId` conhecido pelo contexto de `/admin/members`.
+ */
+export interface AdminExpiringBenefitGrant extends BenefitGrant {
+  userName: string | null
+  userEmail: string | null
+}
+
 export interface AuditLogEntry {
   id: string
   actorUserId: string
