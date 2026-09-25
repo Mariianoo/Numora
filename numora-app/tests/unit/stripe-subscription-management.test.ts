@@ -20,6 +20,16 @@ vi.mock('@/lib/stripe/catalog', async (importOriginal) => {
   return { ...actual, getCommercialPlanPricesCatalog: (...args: unknown[]) => getCommercialPlanPricesCatalog(...(args as [])) }
 })
 
+// Bloco A (Official Launch Foundation) — Premium é "Em breve": `changeOwnPlan`
+// rejeita destino Premium antes de qualquer outra coisa (lib/billing/plan-availability.ts).
+// Este arquivo cobre a MECÂNICA dormante de upgrade/moeda/preço (que volta a valer quando o
+// Premium for lançado) simulando a disponibilidade; a barreira REAL, sem nenhum mock, é
+// provada em tests/unit/premium-purchase-guard.test.ts.
+vi.mock('@/lib/billing/plan-availability', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/billing/plan-availability')>()
+  return { ...actual, isPlanPurchasable: () => true }
+})
+
 const { cancelOwnSubscription, changeOwnPlan, resolveOwnedEligibleSubscription } = await import('@/lib/stripe/subscription-management')
 
 const PRO_MONTH_BRL: CommercialPlanPrice = { planPriceId: 'pp-pro-month-brl', planId: 'plan-pro', planSlug: 'pro', interval: 'month', currency: 'BRL', amount: 19.9, stripePriceId: 'price_pro_month_brl', active: true }

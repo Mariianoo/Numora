@@ -26,6 +26,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
+import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
 import { getCommercialPlanPricesCatalog, type PaidPlanSlug, type PriceCurrency, type PriceInterval } from './catalog'
 import { resolveSellablePrice } from './checkout'
 import { syncSubscriptionFromStripe } from './subscription-sync'
@@ -108,6 +109,15 @@ export type ChangePlanResult =
  * essa dupla combinação; qualquer outra transição falha explicitamente.
  */
 export async function changeOwnPlan(supabase: SupabaseClient, stripe: Stripe, userId: string, target: ChangePlanTarget): Promise<ChangePlanResult> {
+  // Bloco A (Official Launch Foundation) — barreira de disponibilidade do
+  // plano de DESTINO, antes de qualquer leitura de banco ou chamada ao
+  // Stripe: Premium não é contratável (nem via upgrade Pro→Premium),
+  // independente de `plan_prices.active`. O destino Pro (downgrade
+  // Premium→Pro) continua permitido.
+  if (!isPlanPurchasable(target.planSlug)) {
+    throw new Error(`[subscription-management] ${PLAN_UNAVAILABLE_MESSAGE}`)
+  }
+
   const owned = await resolveOwnedEligibleSubscription(supabase, userId)
 
   if (owned.planSlug === target.planSlug) {

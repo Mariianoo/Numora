@@ -35,6 +35,7 @@ import * as Sentry from '@sentry/nextjs'
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
+import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
 import { clientEnv } from '@/lib/env.server'
 import { getStripeClient } from '@/lib/stripe/client'
 import { getCommercialPlanPricesCatalog } from '@/lib/stripe/catalog'
@@ -90,6 +91,14 @@ export async function POST(request: Request) {
 
   if (planSlug === 'free') {
     return NextResponse.json({ error: 'O plano Free não possui Checkout — não há Stripe Product/Price associado.' }, { status: 400 })
+  }
+
+  // Bloco A (Official Launch Foundation) — barreira de DISPONIBILIDADE do
+  // plano, independente do catálogo: Premium não é vendável (D1/D2) mesmo se
+  // existir um `plan_prices.active=true` para ele. Roda antes de qualquer
+  // acesso a Stripe/catálogo/Customer, com resposta neutra e determinística.
+  if (!isPlanPurchasable(planSlug)) {
+    return NextResponse.json({ error: PLAN_UNAVAILABLE_MESSAGE }, { status: 400 })
   }
 
   let stripe

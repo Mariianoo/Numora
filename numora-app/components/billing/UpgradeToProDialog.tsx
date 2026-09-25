@@ -53,15 +53,27 @@
  * (nenhuma taxonomia paralela). Idempotente e refletido já na abertura do
  * diálogo (getStatus) — clicar de novo, ou reabrir o diálogo depois de já
  * ter registrado, nunca duplica nem gera erro visível.
+ *
+ * Etapa "Official Launch Foundation — Bloco A": o conteúdo passa a depender
+ * de `targetPlanSlug` (nunca mais texto fixo em "Pro"). Para um plano
+ * "Em breve" (`isPlanComingSoon`, hoje só Premium — lib/billing/plan-availability.ts)
+ * o diálogo NUNCA oferece Checkout: mostra "Premium em breve" e só o CTA
+ * "Quero ser avisado" (`plan_interest`). `handleUpgrade` também recusa
+ * chamar `/api/billing/checkout` para um plano não comprável — defesa da
+ * UI; a barreira real é a do servidor (o Route Handler rejeita igual).
+ * A antiga nota "Durante o Beta…" foi removida: disponibilidade comercial
+ * não é mais tratada como Beta neste componente.
  */
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import { Sparkles } from 'lucide-react'
+import { Check, Sparkles } from 'lucide-react'
 import * as Sentry from '@sentry/nextjs'
 
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
+import { isPlanComingSoon, isPlanPurchasable } from '@/lib/billing/plan-availability'
+import { PRO_BENEFITS } from '@/lib/billing/plan-benefits'
 import { getConsent } from '@/lib/analytics/consent'
 import { trackCheckoutStarted, trackUpgradeInterestRegistered, trackUpgradeViewed, type UpgradeViewedTrigger } from '@/lib/analytics/events/paywall-events'
 import { createSupabasePlanInterestRepository } from '@/features/billing/repositories/plan-interest.repository'
@@ -94,6 +106,8 @@ export interface UpgradeToProDialogProps {
 }
 
 const DEFAULT_TITLE = 'Desbloqueie o plano Pro'
+const COMING_SOON_TITLE = 'Premium em breve'
+const CHECKOUT_CTA_LABEL = 'Fazer upgrade para Pro'
 
 export function UpgradeToProDialog({
   isOpen,
@@ -211,6 +225,10 @@ export function UpgradeToProDialog({
   }
 
   async function handleUpgrade() {
+    // Plano "Em breve" (Premium) nunca inicia Checkout — nem por engano de
+    // um caller futuro. A barreira real é a do servidor.
+    if (!isPlanPurchasable(targetPlanSlug)) return
+
     setError(null)
     setIsRedirecting(true)
 
@@ -262,6 +280,21 @@ export function UpgradeToProDialog({
     }
   }
 
+  const isComingSoon = isPlanComingSoon(targetPlanSlug)
+
+  const interestButton = (
+    <Button
+      type="button"
+      variant="secondary"
+      onClick={handleRegisterInterest}
+      isLoading={isRegisteringInterest}
+      disabled={hasInterest || isCheckingInterest}
+      aria-live="polite"
+    >
+      {hasInterest ? 'Você está na lista de interesse' : 'Quero ser avisado'}
+    </Button>
+  )
+
   return (
     <Modal
       isOpen={isOpen}
@@ -269,38 +302,48 @@ export function UpgradeToProDialog({
         if (isRedirecting) return
         onClose()
       }}
-      title={title ?? DEFAULT_TITLE}
+      title={isComingSoon ? COMING_SOON_TITLE : (title ?? DEFAULT_TITLE)}
       footer={
         <div className="flex w-full flex-col gap-2 sm:flex-row sm:justify-end">
-          <Button
-            type="button"
-            variant="secondary"
-            onClick={handleRegisterInterest}
-            isLoading={isRegisteringInterest}
-            disabled={hasInterest || isCheckingInterest}
-            aria-live="polite"
-          >
-            {hasInterest ? 'Você está na lista de interesse' : 'Quero ser avisado'}
-          </Button>
-          <Button type="button" onClick={handleUpgrade} isLoading={isRedirecting}>
-            <Sparkles className="size-4" aria-hidden />
-            Fazer upgrade para Pro
-          </Button>
+          {interestButton}
+          {!isComingSoon && (
+            <Button type="button" onClick={handleUpgrade} isLoading={isRedirecting}>
+              <Sparkles className="size-4" aria-hidden />
+              {CHECKOUT_CTA_LABEL}
+            </Button>
+          )}
         </div>
       }
     >
       <div className="flex flex-col gap-3 text-sm text-text-secondary">
-        {typeof limitValue === 'number' && (
-          <p>
-            O plano Free permite até <span className="font-medium text-text-primary">{limitValue} moedas</span> ativas na
-            coleção.
-          </p>
+        {isComingSoon ? (
+          <>
+            <p>O plano Premium ainda não está disponível para contratação.</p>
+            <p>Registre seu interesse e avisaremos quando ele for lançado.</p>
+          </>
+        ) : (
+          <>
+            {typeof limitValue === 'number' && (
+              <p>
+                O plano Free permite até <span className="font-medium text-text-primary">{limitValue} moedas</span> ativas na
+                coleção.
+              </p>
+            )}
+            <p>Sua coleção continua intacta — nada é apagado ou escondido.</p>
+            <p>O plano Pro inclui:</p>
+            <ul className="flex flex-col gap-1">
+              {PRO_BENEFITS.map((benefit) => (
+                <li key={benefit} className="flex items-start gap-2">
+                  <Check className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+                  <span>{benefit}</span>
+                </li>
+              ))}
+            </ul>
+          </>
         )}
-        <p>Sua coleção continua intacta — nada é apagado ou escondido.</p>
-        <p>O plano Pro remove esse limite e libera o Dashboard avançado.</p>
         <p className="text-xs">
-          Durante o Beta, “Quero ser avisado” não cobra nada agora e não abre o Checkout — só registra seu interesse
-          para quando o plano estiver disponível para contratação.
+          “Quero ser avisado” não cobra nada e não abre o Checkout — só registra seu interesse para quando o plano
+          estiver disponível para contratação.
         </p>
         {error && <p className="text-sm text-danger">{error}</p>}
         {interestError && <p className="text-sm text-danger">{interestError}</p>}

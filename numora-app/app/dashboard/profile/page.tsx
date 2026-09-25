@@ -75,6 +75,7 @@ import type { CollectionStats } from '@/lib/stats/collection-stats'
 import { formatDateOnly, formatTimestampDate } from '@/lib/format/date'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { planLabel, planBadgeTone, planSourceLabel } from '@/lib/plans/plan-display'
+import { isPlanPurchasable } from '@/lib/billing/plan-availability'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
 import { Input } from '@/components/ui/Input'
@@ -678,7 +679,11 @@ export default function ProfilePage() {
                     </Button>
                   )}
 
-                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) && !ownSubscription.scheduledPlanSlug && ownSubscription.planSlug === 'pro' && (
+                  {/* Bloco A (Official Launch Foundation) — Pro→Premium só aparece quando o Premium for contratável (hoje "Em breve", D1/D2). A barreira real é a do servidor (`/api/billing/subscription/change-plan` rejeita destino Premium). */}
+                  {ELIGIBLE_SUBSCRIPTION_STATUSES.includes(ownSubscription.status) &&
+                    !ownSubscription.scheduledPlanSlug &&
+                    ownSubscription.planSlug === 'pro' &&
+                    isPlanPurchasable('premium') && (
                     <Button type="button" variant="secondary" onClick={() => setIsUpgradeDialogOpen(true)}>
                       <ArrowUpCircle className="size-4" aria-hidden />
                       Fazer upgrade para Premium

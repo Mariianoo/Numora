@@ -10,9 +10,14 @@
  * Etapa "5.9E — Analytics": dispara `feature_locked` (feature_key/context
  * `labels`) quando `state` transiciona para `'blocked'` — `planSlug` vem de
  * `ProfileRepository.getOwnEffectivePlan()` (mesma RPC `get_effective_plan`
- * usada pelo Dashboard), nunca de uma comparação de string aqui. Este fluxo
- * não abre `UpgradeToProDialog` (CTA é `mailto:`, decisão de produto de
- * outra etapa) — por isso não dispara `upgrade_viewed`.
+ * usada pelo Dashboard), nunca de uma comparação de string aqui.
+ *
+ * Etapa "Official Launch Foundation — Bloco A": o paywall de Labels deixa
+ * de usar `mailto:` como CTA comercial e passa ao fluxo padronizado de
+ * upgrade — o CTA abre `UpgradeToProDialog` (`trigger: 'labels'`,
+ * `targetPlanSlug: 'pro'`), o mesmo componente de limite de coleção,
+ * exportação e Dashboard avançado, que passa a disparar `upgrade_viewed`
+ * também aqui. `feature_locked` (acima) continua sendo disparado.
  */
 'use client'
 
@@ -28,16 +33,16 @@ import { generateLabelsPdf } from '@/features/labels/pdf'
 import type { FinancialDisplayOption } from '@/features/labels/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { trackFeatureLocked } from '@/lib/analytics/events/paywall-events'
+import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
+import type { PriceCurrency } from '@/lib/stripe/catalog'
 import { Modal } from '@/components/ui/Modal'
 import { Button } from '@/components/ui/Button'
 import { Select } from '@/components/ui/Select'
+import { UpgradeToProDialog } from '@/components/billing/UpgradeToProDialog'
 import { LabelCardPreview } from './LabelCardPreview'
 
 const profileRepository = createSupabaseProfileRepository()
 const labelsRepository = createSupabaseLabelsRepository()
-
-const UPGRADE_MAILTO =
-  'mailto:suporte.numora@gmail.com?subject=Quero%20conhecer%20o%20Numora%20Pro'
 
 export interface LabelGeneratorModalProps {
   items: CollectionItem[]
@@ -55,6 +60,10 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
   const [error, setError] = useState<string | null>(null)
   const [pdfUrl, setPdfUrl] = useState<string | null>(null)
   const [pdfFilename, setPdfFilename] = useState<string>('etiquetas-numora.pdf')
+  // Paywall padronizado (Bloco A): plano atual (só para `upgrade_viewed`) e moeda de Checkout — 'USD' até o perfil carregar (fail-safe: nunca assume BRL sem confirmar country_code='BR', mesmo padrão de app/dashboard/collection/page.tsx).
+  const [currentPlanSlug, setCurrentPlanSlug] = useState('free')
+  const [checkoutCurrency, setCheckoutCurrency] = useState<PriceCurrency>('USD')
+  const [isUpgradeDialogOpen, setIsUpgradeDialogOpen] = useState(false)
 
   const isOpen = items.length > 0
 
@@ -92,11 +101,13 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
       .then(() => {
         setState('loading')
         setError(null)
+        setIsUpgradeDialogOpen(false)
         return Promise.all([labelsRepository.isEnabled(), profileRepository.getOwnProfile()])
       })
       .then(([enabled, profile]) => {
         setOwnerUsername(profile.username)
         setPassportPublic(profile.passportPublic)
+        setCheckoutCurrency(resolveCurrencyFromCountryCode(profile.countryCode))
         setState(enabled ? 'ready' : 'blocked')
 
         // Etapa 5.9E — busca do plano ISOLADA do Promise.all crítico acima
@@ -108,6 +119,7 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
           profileRepository
             .getOwnEffectivePlan()
             .then((effectivePlan) => {
+              setCurrentPlanSlug(effectivePlan.planSlug)
               trackFeatureLocked({ feature_key: 'labels', plan_slug: effectivePlan.planSlug, context: 'labels' })
             })
             .catch((err) => {
@@ -165,82 +177,94 @@ export function LabelGeneratorModal({ items, onClose }: LabelGeneratorModalProps
   )
 
   return (
-    <Modal
-      isOpen={isOpen}
-      onClose={onClose}
-      title="Numora Labels"
-      description={items.length === 1 ? 'Etiqueta desta moeda' : `${items.length} etiquetas selecionadas`}
-    >
-      {state === 'loading' && <p className="py-6 text-center text-sm text-text-secondary">Carregando...</p>}
+    <>
+      <Modal
+        isOpen={isOpen}
+        onClose={onClose}
+        title="Numora Labels"
+        description={items.length === 1 ? 'Etiqueta desta moeda' : `${items.length} etiquetas selecionadas`}
+      >
+        {state === 'loading' && <p className="py-6 text-center text-sm text-text-secondary">Carregando...</p>}
 
-      {state === 'blocked' && (
-        <div className="flex flex-col items-center gap-4 py-4 text-center">
-          <div className="flex size-14 items-center justify-center rounded-full bg-accent/10 text-accent">
-            <Sparkles className="size-7" aria-hidden />
-          </div>
-          <div>
-            <h3 className="text-base font-semibold text-text-primary">Numora Labels</h3>
-            <p className="mt-1 max-w-xs text-sm text-text-secondary">
-              Identifique fisicamente suas moedas e conecte cada uma ao seu Passport.
-            </p>
-            <p className="mt-1 text-sm font-medium text-accent">Exclusivo do Numora Pro.</p>
-          </div>
-          {/* Navegação na própria aba (não `window.open`) — `mailto:` só precisa acionar o cliente de e-mail do sistema, nunca uma nova aba do navegador. */}
-          <Button type="button" onClick={() => (window.location.href = UPGRADE_MAILTO)}>
-            Conhecer o Pro
-          </Button>
-        </div>
-      )}
-
-      {state === 'ready' && (
-        <div className="flex flex-col gap-5">
-          {!passportPublic && (
-            <div className="flex items-start gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm text-text-secondary">
-              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
-              <p>
-                Este QR Code só mostrará informações quando seu Passport estiver público.{' '}
-                <a href="/dashboard/profile" className="font-medium text-accent underline underline-offset-2">
-                  Configurar Passport
-                </a>
-              </p>
+        {state === 'blocked' && (
+          <div className="flex flex-col items-center gap-4 py-4 text-center">
+            <div className="flex size-14 items-center justify-center rounded-full bg-accent/10 text-accent">
+              <Sparkles className="size-7" aria-hidden />
             </div>
-          )}
-
-          <Select
-            label="Valor financeiro na etiqueta"
-            value={financialDisplay}
-            onChange={(event) => setFinancialDisplay(event.target.value as FinancialDisplayOption)}
-          >
-            <option value="none">Não mostrar valor</option>
-            <option value="purchase">Mostrar valor de compra</option>
-          </Select>
-
-          <div className="flex flex-wrap justify-center gap-3 overflow-x-auto rounded-lg border border-border bg-surface-hover p-4">
-            {previewData.map((data) => (
-              <LabelCardPreview key={data.itemId} data={data} />
-            ))}
-          </div>
-
-          {error && <p className="text-sm text-danger">{error}</p>}
-
-          <div className="flex items-center justify-end gap-3">
-            {pdfUrl && (
-              <a
-                href={pdfUrl}
-                download={pdfFilename}
-                className="inline-flex h-10 items-center gap-2 rounded-lg bg-success px-4 text-sm font-medium text-background transition-colors hover:opacity-90"
-              >
-                <FileDown className="size-4" aria-hidden />
-                Baixar PDF
-              </a>
-            )}
-            <Button type="button" onClick={handleGenerate} isLoading={isGenerating} variant={pdfUrl ? 'secondary' : 'primary'}>
-              {!pdfUrl && <FileDown className="size-4" aria-hidden />}
-              {isGenerating ? 'Gerando...' : pdfUrl ? 'Gerar novamente' : 'Gerar PDF'}
+            <div>
+              <h3 className="text-base font-semibold text-text-primary">Numora Labels</h3>
+              <p className="mt-1 max-w-xs text-sm text-text-secondary">
+                Identifique fisicamente suas moedas e conecte cada uma ao seu Passport.
+              </p>
+              <p className="mt-1 text-sm font-medium text-accent">Exclusivo do Numora Pro.</p>
+            </div>
+            <Button type="button" onClick={() => setIsUpgradeDialogOpen(true)}>
+              Fazer upgrade
             </Button>
           </div>
-        </div>
-      )}
-    </Modal>
+        )}
+
+        {state === 'ready' && (
+          <div className="flex flex-col gap-5">
+            {!passportPublic && (
+              <div className="flex items-start gap-2 rounded-lg border border-accent/30 bg-accent/5 p-3 text-sm text-text-secondary">
+                <AlertTriangle className="mt-0.5 size-4 shrink-0 text-accent" aria-hidden />
+                <p>
+                  Este QR Code só mostrará informações quando seu Passport estiver público.{' '}
+                  <a href="/dashboard/profile" className="font-medium text-accent underline underline-offset-2">
+                    Configurar Passport
+                  </a>
+                </p>
+              </div>
+            )}
+
+            <Select
+              label="Valor financeiro na etiqueta"
+              value={financialDisplay}
+              onChange={(event) => setFinancialDisplay(event.target.value as FinancialDisplayOption)}
+            >
+              <option value="none">Não mostrar valor</option>
+              <option value="purchase">Mostrar valor de compra</option>
+            </Select>
+
+            <div className="flex flex-wrap justify-center gap-3 overflow-x-auto rounded-lg border border-border bg-surface-hover p-4">
+              {previewData.map((data) => (
+                <LabelCardPreview key={data.itemId} data={data} />
+              ))}
+            </div>
+
+            {error && <p className="text-sm text-danger">{error}</p>}
+
+            <div className="flex items-center justify-end gap-3">
+              {pdfUrl && (
+                <a
+                  href={pdfUrl}
+                  download={pdfFilename}
+                  className="inline-flex h-10 items-center gap-2 rounded-lg bg-success px-4 text-sm font-medium text-background transition-colors hover:opacity-90"
+                >
+                  <FileDown className="size-4" aria-hidden />
+                  Baixar PDF
+                </a>
+              )}
+              <Button type="button" onClick={handleGenerate} isLoading={isGenerating} variant={pdfUrl ? 'secondary' : 'primary'}>
+                {!pdfUrl && <FileDown className="size-4" aria-hidden />}
+                {isGenerating ? 'Gerando...' : pdfUrl ? 'Gerar novamente' : 'Gerar PDF'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      <UpgradeToProDialog
+        isOpen={isOpen && isUpgradeDialogOpen}
+        onClose={() => setIsUpgradeDialogOpen(false)}
+        title="Numora Labels é do plano Pro"
+        trigger="labels"
+        planSlug={currentPlanSlug}
+        targetPlanSlug="pro"
+        interval="month"
+        currency={checkoutCurrency}
+      />
+    </>
   )
 }

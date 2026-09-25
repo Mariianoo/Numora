@@ -4,7 +4,7 @@
  * contra Supabase DEV real E Stripe TEST MODE real:
  *   - Customer Portal Session real (usando a Configuration criada nesta etapa);
  *   - cancelamento real (`cancel_at_period_end`, nunca imediato);
- *   - upgrade real Pro→Premium (subscriptions.update + proration);
+ *   - upgrade Pro→Premium BLOQUEADO (Premium "Em breve" — Bloco A, sem chamada ao Stripe);
  *   - downgrade real Premium→Pro (Subscription Schedule real, 2 fases);
  *   - `get_my_subscription()` (RPC self-scoped) refletindo cada estado.
  *
@@ -159,34 +159,20 @@ describe.skipIf(!hasTestEnv())('Customer Portal / gestão da assinatura (DEV rea
     })
   })
 
-  describe('Upgrade Pro → Premium', () => {
-    it('resolve o Price pelo catálogo, aplica proration always_invoice, sincroniza localmente', async () => {
-      const { user, subscription } = await setupUserWithRealSubscription('upgrade-flow', proMonthBrlPriceId)
+  // Bloco A (Official Launch Foundation) — Premium é "Em breve" (D1/D2): o
+  // upgrade Pro→Premium NÃO é mais contratável, independente de o preço do
+  // Premium estar ativo no catálogo real. A guarda (lib/billing/plan-availability.ts)
+  // roda ANTES de qualquer leitura de subscription ou chamada ao Stripe, então
+  // este teste não cria nenhuma subscription/Customer no Stripe — só prova a
+  // rejeição. (A mecânica dormante de upgrade segue coberta, com a
+  // disponibilidade simulada, em tests/unit/stripe-subscription-management.test.ts.)
+  describe('Upgrade Pro → Premium (bloqueado — Premium "Em breve")', () => {
+    it('é rejeitado pela guarda de disponibilidade antes de qualquer acesso a subscription/Stripe', async () => {
+      const user = await createDisposableUser(admin, 'upgrade-premium-blocked')
       try {
-        const result = await changeOwnPlan(admin, stripe, user.id, { planSlug: 'premium', interval: 'month', currency: 'BRL' })
-        expect(result.kind).toBe('upgraded')
-
-        const stripeSub = await stripe.subscriptions.retrieve(subscription.id)
-        expect(stripeSub.items.data).toHaveLength(1)
-        const currentPriceId = typeof stripeSub.items.data[0].price === 'string' ? stripeSub.items.data[0].price : stripeSub.items.data[0].price.id
-        expect(currentPriceId).toBe(premiumMonthBrlPriceId)
-
-        await syncSubscriptionFromStripe(admin, stripe, subscription.id, null)
-        const { data: row } = await admin.from('subscriptions').select('stripe_price_id, plans:plan_id(slug)').eq('stripe_subscription_id', subscription.id).single()
-        expect(row?.stripe_price_id).toBe(premiumMonthBrlPriceId)
-        const slug = Array.isArray(row?.plans) ? row?.plans[0]?.slug : ((row?.plans ?? null) as { slug: string } | null)?.slug
-        expect(slug).toBe('premium')
+        await expect(changeOwnPlan(admin, stripe, user.id, { planSlug: 'premium', interval: 'month', currency: 'BRL' })).rejects.toThrow(/não está disponível para contratação/)
       } finally {
-        await teardownUser(user)
-      }
-    })
-
-    it('mudança de moeda é rejeitada (Pro BRL → Premium USD)', async () => {
-      const { user } = await setupUserWithRealSubscription('upgrade-currency-mismatch', proMonthBrlPriceId)
-      try {
-        await expect(changeOwnPlan(admin, stripe, user.id, { planSlug: 'premium', interval: 'month', currency: 'USD' })).rejects.toThrow(/Mudança de moeda não é suportada/)
-      } finally {
-        await teardownUser(user)
+        await deleteDisposableUser(admin, user.id)
       }
     })
   })

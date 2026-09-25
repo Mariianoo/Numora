@@ -7,16 +7,30 @@
  * `stripe_price_id`. Upgrade a partir do Free reaproveita exatamente
  * `UpgradeToProDialog` (mesmo componente/mesmo contrato de
  * `/api/billing/checkout` já usado pelo paywall de limite de coleção/
- * Dashboard avançado — nenhum segundo fluxo de Checkout). Mudança entre
- * planos pagos (Pro↔Premium) e cancelamento (→Free) reaproveitam as rotas
- * já existentes (`/api/billing/subscription/change-plan`,
- * `/api/billing/subscription/cancel`) — nenhum endpoint novo, nenhuma
- * lógica de proration/agendamento reimplementada aqui (a UI só inicia a
- * ação correta e exibe o resultado que o servidor já calcula).
+ * Dashboard avançado — nenhum segundo fluxo de Checkout). Cancelamento
+ * (→Free) e downgrade Premium→Pro reaproveitam as rotas já existentes
+ * (`/api/billing/subscription/change-plan`, `/api/billing/subscription/cancel`)
+ * — nenhum endpoint novo, nenhuma lógica de proration/agendamento
+ * reimplementada aqui (a UI só inicia a ação correta e exibe o resultado que
+ * o servidor já calcula).
+ *
+ * Etapa "Official Launch Foundation — Bloco A": o Premium NÃO é vendido
+ * (D1/D2 — `lib/billing/plan-availability.ts`). O card do Premium mostra o
+ * preço do catálogo, o badge "Em breve" e um único CTA, "Quero ser
+ * avisado", que só registra `plan_interest` — nunca abre Checkout, nunca
+ * inicia troca de plano (Pro→Premium), nunca depende de `price.active`. A
+ * barreira real é a do servidor; esta UI apenas não oferece o caminho.
+ *
+ * Preço exibido vs. preço contratável: o valor MOSTRADO vem do catálogo
+ * mesmo quando a linha ainda está `active=false` (Production hoje, antes do
+ * Stripe LIVE) — nunca um card de plano pago com "Grátis" por falta de
+ * preço ativo. Já a habilitação do CTA de compra do Pro continua exigindo
+ * uma linha `active=true` (estado real de venda), sem mascarar a
+ * indisponibilidade.
  */
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { RefreshCcw } from 'lucide-react'
 import * as Sentry from '@sentry/nextjs'
 
@@ -24,8 +38,15 @@ import { PlanCard } from './PlanCard'
 import { UpgradeToProDialog } from './UpgradeToProDialog'
 import { ConfirmDialog } from '@/components/ui/ConfirmDialog'
 import { formatPrice } from '@/lib/format/currency'
+import { FREE_BENEFITS, PREMIUM_BENEFITS, PRO_BENEFITS } from '@/lib/billing/plan-benefits'
+import { type PurchasablePlanSlug } from '@/lib/billing/plan-availability'
+import { trackUpgradeInterestRegistered } from '@/lib/analytics/events/paywall-events'
+import { createSupabasePlanInterestRepository } from '@/features/billing/repositories/plan-interest.repository'
 import { computeYearlySavingsPercent } from '@/lib/stripe/pricing-display'
 import type { CommercialPlanPrice, PaidPlanSlug, PriceCurrency, PriceInterval } from '@/lib/stripe/catalog'
+
+// Módulo-escopo (mesmo padrão de UpgradeToProDialog) — uma única instância por sessão de browser.
+const planInterestRepository = createSupabasePlanInterestRepository()
 
 export interface PricingSelectorProps {
   catalog: CommercialPlanPrice[]
@@ -39,56 +60,84 @@ const PLAN_NAMES: Record<'free' | PaidPlanSlug, string> = {
   premium: 'Premium',
 }
 
-const PLAN_BENEFITS: Record<'free' | PaidPlanSlug, string[]> = {
-  free: ['Até 50 moedas ativas na coleção', 'Passport público'],
-  pro: ['Coleção ilimitada', 'Dashboard avançado', 'Numora Labels'],
-  premium: ['Tudo do Pro'],
+const INTEREST_ERROR_MESSAGE = 'Não foi possível registrar seu interesse agora. Tente novamente.'
+
+/** Downgrade Premium→Pro é a única troca de plano suportada — o destino é sempre um plano contratável (Pro). */
+type ChangeAction = { kind: 'downgrade-to-free' } | { kind: 'change-plan'; targetPlanSlug: PurchasablePlanSlug }
+
+/** Linha do catálogo para EXIBIÇÃO — ativa ou não (o preço mostrado nunca depende de o plano estar à venda). */
+function findDisplayPrice(catalog: CommercialPlanPrice[], planSlug: PaidPlanSlug, interval: PriceInterval, currency: PriceCurrency): CommercialPlanPrice | null {
+  return catalog.find((row) => row.planSlug === planSlug && row.interval === interval && row.currency === currency) ?? null
 }
 
-type ChangeAction = { kind: 'downgrade-to-free' } | { kind: 'change-plan'; targetPlanSlug: PaidPlanSlug }
+/** Linha do catálogo CONTRATÁVEL: só se estiver `active` (estado real de venda). */
+function findActivePrice(catalog: CommercialPlanPrice[], planSlug: PaidPlanSlug, interval: PriceInterval, currency: PriceCurrency): CommercialPlanPrice | null {
+  const row = findDisplayPrice(catalog, planSlug, interval, currency)
+  return row?.active ? row : null
+}
 
-function findPrice(catalog: CommercialPlanPrice[], planSlug: PaidPlanSlug, interval: PriceInterval, currency: PriceCurrency): CommercialPlanPrice | null {
-  return catalog.find((row) => row.planSlug === planSlug && row.interval === interval && row.currency === currency && row.active) ?? null
+interface PremiumInterestState {
+  registered: boolean
+  isChecking: boolean
+  isRegistering: boolean
+  error: string | null
 }
 
 export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingSelectorProps) {
   const [interval, setInterval] = useState<PriceInterval>('month')
-  const [checkoutTarget, setCheckoutTarget] = useState<PaidPlanSlug | null>(null)
+  const [checkoutTarget, setCheckoutTarget] = useState<PurchasablePlanSlug | null>(null)
   const [changeAction, setChangeAction] = useState<ChangeAction | null>(null)
   const [isChanging, setIsChanging] = useState(false)
   const [changeError, setChangeError] = useState<string | null>(null)
+  const [premiumInterest, setPremiumInterest] = useState<PremiumInterestState>({ registered: false, isChecking: true, isRegistering: false, error: null })
 
-  const monthlyPro = findPrice(catalog, 'pro', 'month', currency)
-  const yearlyPro = findPrice(catalog, 'pro', 'year', currency)
-  const monthlyPremium = findPrice(catalog, 'premium', 'month', currency)
-  const yearlyPremium = findPrice(catalog, 'premium', 'year', currency)
+  // Reflete "Você está na lista de interesse" já ao carregar a página — mesmo padrão de UpgradeToProDialog. Falha aqui nunca bloqueia nada (o CTA continua disponível).
+  useEffect(() => {
+    let cancelled = false
 
-  const proPrice = interval === 'month' ? monthlyPro : yearlyPro
-  const premiumPrice = interval === 'month' ? monthlyPremium : yearlyPremium
+    planInterestRepository
+      .getStatus('premium')
+      .then((status) => {
+        if (!cancelled) setPremiumInterest((previous) => ({ ...previous, registered: status.registered }))
+      })
+      .catch((err) => {
+        Sentry.captureException(err)
+      })
+      .finally(() => {
+        if (!cancelled) setPremiumInterest((previous) => ({ ...previous, isChecking: false }))
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const proDisplayPrice = findDisplayPrice(catalog, 'pro', interval, currency)
+  const proActivePrice = findActivePrice(catalog, 'pro', interval, currency)
+  const premiumDisplayPrice = findDisplayPrice(catalog, 'premium', interval, currency)
 
   // Etapa 5.10D — economia sempre derivada dos 2 preços reais do
   // catálogo, nunca um percentual fixo. `null` quando alguma das duas
-  // combinações não está disponível (nunca inventa um número).
+  // combinações não existe (nunca inventa um número).
+  const monthlyPro = findDisplayPrice(catalog, 'pro', 'month', currency)
+  const yearlyPro = findDisplayPrice(catalog, 'pro', 'year', currency)
+  const monthlyPremium = findDisplayPrice(catalog, 'premium', 'month', currency)
+  const yearlyPremium = findDisplayPrice(catalog, 'premium', 'year', currency)
   const proSavingsPercent = monthlyPro && yearlyPro ? computeYearlySavingsPercent(monthlyPro.amount, yearlyPro.amount) : null
   const premiumSavingsPercent = monthlyPremium && yearlyPremium ? computeYearlySavingsPercent(monthlyPremium.amount, yearlyPremium.amount) : null
 
-  function ctaFor(targetPlanSlug: PaidPlanSlug): { label: string; disabled: boolean; onClick?: () => void } {
-    if (currentPlanSlug === targetPlanSlug) {
+  function proCta(): { label: string; disabled: boolean; onClick?: () => void } {
+    if (currentPlanSlug === 'pro') {
       return { label: 'Plano atual', disabled: true }
     }
 
     if (currentPlanSlug === 'free') {
-      return { label: 'Fazer upgrade', disabled: false, onClick: () => setCheckoutTarget(targetPlanSlug) }
+      return { label: 'Fazer upgrade', disabled: false, onClick: () => setCheckoutTarget('pro') }
     }
 
-    // pro→premium ou premium→pro: sempre "change-plan" (upgrade imediato
-    // com proration, ou downgrade agendado — decidido pelo servidor,
-    // nunca aqui) — NUNCA passa pelo Checkout.
-    return {
-      label: targetPlanSlug === 'premium' ? 'Fazer upgrade' : 'Fazer downgrade',
-      disabled: false,
-      onClick: () => setChangeAction({ kind: 'change-plan', targetPlanSlug }),
-    }
+    // premium→pro: sempre "change-plan" (downgrade agendado, decidido pelo
+    // servidor, nunca aqui) — NUNCA passa pelo Checkout.
+    return { label: 'Fazer downgrade', disabled: false, onClick: () => setChangeAction({ kind: 'change-plan', targetPlanSlug: 'pro' }) }
   }
 
   const freeCta =
@@ -96,8 +145,31 @@ export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingS
       ? { label: 'Plano atual', disabled: true, onClick: undefined }
       : { label: 'Fazer downgrade', disabled: false, onClick: () => setChangeAction({ kind: 'downgrade-to-free' }) }
 
-  const proCta = ctaFor('pro')
-  const premiumCta = ctaFor('premium')
+  const proCtaState = proCta()
+
+  async function handleRegisterPremiumInterest() {
+    // Idempotência também no client (a UNIQUE do banco garante no limite).
+    if (premiumInterest.registered || premiumInterest.isRegistering) return
+
+    setPremiumInterest((previous) => ({ ...previous, error: null, isRegistering: true }))
+
+    try {
+      // Nunca chama /api/billing/checkout, nunca toca Stripe — só grava em plan_interest.
+      await planInterestRepository.register({ planSlug: 'premium', source: 'pricing_page' })
+      setPremiumInterest((previous) => ({ ...previous, registered: true }))
+
+      try {
+        trackUpgradeInterestRegistered({ trigger: 'pricing_page', plan_slug: 'premium', currency })
+      } catch (err) {
+        Sentry.captureException(err)
+      }
+    } catch (err) {
+      Sentry.captureException(err)
+      setPremiumInterest((previous) => ({ ...previous, error: INTEREST_ERROR_MESSAGE }))
+    } finally {
+      setPremiumInterest((previous) => ({ ...previous, isRegistering: false }))
+    }
+  }
 
   async function confirmChange() {
     if (!changeAction) return
@@ -134,6 +206,8 @@ export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingS
     }
   }
 
+  const premiumCtaLabel = premiumInterest.isRegistering ? 'Registrando...' : premiumInterest.registered ? 'Você está na lista de interesse' : 'Quero ser avisado'
+
   return (
     <div className="flex flex-col gap-6">
       <div className="flex items-center justify-center gap-2" role="radiogroup" aria-label="Intervalo de cobrança">
@@ -165,7 +239,7 @@ export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingS
         <PlanCard
           name={PLAN_NAMES.free}
           priceLabel={null}
-          benefits={PLAN_BENEFITS.free}
+          benefits={[...FREE_BENEFITS]}
           isCurrentPlan={currentPlanSlug === 'free'}
           ctaLabel={freeCta.label}
           ctaDisabled={freeCta.disabled}
@@ -173,33 +247,33 @@ export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingS
         />
         <PlanCard
           name={PLAN_NAMES.pro}
-          priceLabel={proPrice ? formatPrice(proPrice.amount, currency) : null}
-          intervalLabel={proPrice ? (interval === 'month' ? '/mês' : '/ano') : undefined}
-          benefits={PLAN_BENEFITS.pro}
+          priceLabel={proDisplayPrice ? formatPrice(proDisplayPrice.amount, currency) : 'Preço indisponível'}
+          intervalLabel={proDisplayPrice ? (interval === 'month' ? '/mês' : '/ano') : undefined}
+          benefits={[...PRO_BENEFITS]}
           isCurrentPlan={currentPlanSlug === 'pro'}
-          ctaLabel={proCta.label}
-          ctaDisabled={proCta.disabled || !proPrice}
-          onCtaClick={proCta.onClick}
+          ctaLabel={proCtaState.label}
+          ctaDisabled={proCtaState.disabled || !proActivePrice}
+          onCtaClick={proCtaState.onClick}
           highlighted
           yearlySavingsPercent={interval === 'year' ? proSavingsPercent : null}
         />
         <PlanCard
           name={PLAN_NAMES.premium}
-          priceLabel={premiumPrice ? formatPrice(premiumPrice.amount, currency) : null}
-          intervalLabel={premiumPrice ? (interval === 'month' ? '/mês' : '/ano') : undefined}
-          benefits={PLAN_BENEFITS.premium}
+          priceLabel={premiumDisplayPrice ? formatPrice(premiumDisplayPrice.amount, currency) : 'Preço indisponível'}
+          intervalLabel={premiumDisplayPrice ? (interval === 'month' ? '/mês' : '/ano') : undefined}
+          benefits={[...PREMIUM_BENEFITS]}
           isCurrentPlan={currentPlanSlug === 'premium'}
-          ctaLabel={premiumCta.label}
-          ctaDisabled={premiumCta.disabled || !premiumPrice}
-          onCtaClick={premiumCta.onClick}
+          ctaLabel={premiumCtaLabel}
+          ctaDisabled={premiumInterest.registered || premiumInterest.isChecking || premiumInterest.isRegistering}
+          onCtaClick={handleRegisterPremiumInterest}
+          comingSoon
           yearlySavingsPercent={interval === 'year' ? premiumSavingsPercent : null}
+          footnote={premiumInterest.error ?? 'Ainda não disponível para contratação.'}
         />
       </div>
 
-      {(!proPrice || !premiumPrice) && (
-        <p className="text-center text-sm text-text-secondary">
-          Algumas combinações de plano/intervalo/moeda ainda não estão disponíveis para compra.
-        </p>
+      {!proActivePrice && (
+        <p className="text-center text-sm text-text-secondary">A contratação do plano Pro ainda não está disponível para este período/moeda.</p>
       )}
 
       {checkoutTarget && (
@@ -227,7 +301,7 @@ export function PricingSelector({ catalog, currentPlanSlug, currency }: PricingS
         description={
           changeAction?.kind === 'downgrade-to-free'
             ? 'Seu acesso Pro/Premium continua até o fim do período já pago — depois disso, sua conta volta ao plano Free.'
-            : 'A mudança de plano segue as regras já aprovadas: upgrade é imediato (com cobrança proporcional), downgrade só entra em vigor no fim do período atual.'
+            : 'O downgrade só entra em vigor no fim do período atual — até lá, você continua com o plano atual.'
         }
         confirmLabel={changeAction?.kind === 'downgrade-to-free' ? 'Cancelar assinatura' : 'Confirmar'}
         icon={RefreshCcw}

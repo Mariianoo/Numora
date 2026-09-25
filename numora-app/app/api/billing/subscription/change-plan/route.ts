@@ -24,6 +24,7 @@ import { z } from 'zod'
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
+import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
 import { getStripeClient } from '@/lib/stripe/client'
 import { VALID_CURRENCIES, VALID_INTERVALS } from '@/lib/stripe/catalog'
 import { changeOwnPlan } from '@/lib/stripe/subscription-management'
@@ -63,6 +64,15 @@ export async function POST(request: Request) {
   const parsed = changePlanRequestSchema.safeParse(rawBody)
   if (!parsed.success) {
     return NextResponse.json({ error: 'Payload inválido.', issues: parsed.error.issues.map((issue) => issue.message) }, { status: 400 })
+  }
+
+  // Bloco A (Official Launch Foundation) — o plano DE DESTINO precisa estar
+  // disponível para contratação: bloqueia Pro→Premium (Premium é "Em
+  // breve", D1/D2) antes de qualquer acesso a Stripe/banco. Downgrade
+  // Premium→Pro (destino Pro) continua permitido. `changeOwnPlan` repete
+  // esta checagem (defesa em profundidade para qualquer outro chamador).
+  if (!isPlanPurchasable(parsed.data.planSlug)) {
+    return NextResponse.json({ error: PLAN_UNAVAILABLE_MESSAGE }, { status: 400 })
   }
 
   let stripe

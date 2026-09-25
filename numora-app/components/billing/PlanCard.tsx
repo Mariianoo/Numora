@@ -28,6 +28,10 @@ export interface PlanCardProps {
   highlighted?: boolean
   /** Etapa 5.10D — percentual real do catálogo (`computeYearlySavingsPercent`), só exibido no intervalo anual; `null`/0 = nenhum badge. */
   yearlySavingsPercent?: number | null
+  /** Bloco A (Official Launch Foundation) — plano ainda não contratável ("Em breve"): mostra o badge e nunca o rótulo de "plano atual"/checkout; o CTA é sempre o de `plan_interest`, decidido pelo caller. */
+  comingSoon?: boolean
+  /** Bloco A — texto curto abaixo do botão (ex.: erro ao registrar interesse, ou "Ainda não disponível para contratação"). */
+  footnote?: string | null
 }
 
 export function PlanCard({
@@ -41,6 +45,8 @@ export function PlanCard({
   ctaDisabled,
   highlighted,
   yearlySavingsPercent,
+  comingSoon,
+  footnote,
 }: PlanCardProps) {
   return (
     <Card className={cn('flex flex-col gap-4 p-6', highlighted && 'border-accent/50 ring-1 ring-accent/30')}>
@@ -49,6 +55,7 @@ export function PlanCard({
         <div className="flex items-center gap-1.5">
           {Boolean(yearlySavingsPercent) && <Badge tone="success">Economize ~{yearlySavingsPercent}%</Badge>}
           {highlighted && <Badge tone="accent">Mais popular</Badge>}
+          {comingSoon && <Badge tone="neutral">Em breve</Badge>}
         </div>
       </div>
 
@@ -81,6 +88,8 @@ export function PlanCard({
       >
         {isCurrentPlan ? 'Plano atual' : ctaLabel}
       </Button>
+
+      {footnote && <p className="text-xs text-text-secondary">{footnote}</p>}
     </Card>
   )
 }
