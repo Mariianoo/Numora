@@ -67,6 +67,7 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
+import Link from 'next/link'
 import { Check, Sparkles } from 'lucide-react'
 import * as Sentry from '@sentry/nextjs'
 
@@ -123,6 +124,8 @@ export function UpgradeToProDialog({
 }: UpgradeToProDialogProps) {
   const [isRedirecting, setIsRedirecting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // B1 — código neutro devolvido pelo servidor (ex.: `country_missing`): só decide se mostramos o atalho para o perfil; a mensagem é sempre a do servidor.
+  const [errorCode, setErrorCode] = useState<string | null>(null)
 
   // Etapa 5.10S — estado do sinal "Quero ser avisado", inteiramente
   // separado do estado de Checkout acima (nunca compartilha isRedirecting/
@@ -230,6 +233,7 @@ export function UpgradeToProDialog({
     if (!isPlanPurchasable(targetPlanSlug)) return
 
     setError(null)
+    setErrorCode(null)
     setIsRedirecting(true)
 
     try {
@@ -250,10 +254,11 @@ export function UpgradeToProDialog({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ planSlug: targetPlanSlug, interval, currency, analyticsConsent }),
       })
-      const body: { url?: string; funnelId?: string; error?: string } | null = await response.json().catch(() => null)
+      const body: { url?: string; funnelId?: string; error?: string; code?: string } | null = await response.json().catch(() => null)
 
       if (!response.ok || !body?.url) {
         setError(body?.error ?? 'Não foi possível iniciar o upgrade agora. Tente novamente.')
+        setErrorCode(body?.code ?? null)
         setIsRedirecting(false)
         return
       }
@@ -346,6 +351,11 @@ export function UpgradeToProDialog({
           estiver disponível para contratação.
         </p>
         {error && <p className="text-sm text-danger">{error}</p>}
+        {errorCode === 'country_missing' && (
+          <Link href="/dashboard/profile" className="text-sm font-medium text-accent underline underline-offset-2">
+            Informar meu país no perfil
+          </Link>
+        )}
         {interestError && <p className="text-sm text-danger">{interestError}</p>}
       </div>
     </Modal>

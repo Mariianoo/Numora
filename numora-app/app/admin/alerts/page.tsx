@@ -5,9 +5,18 @@
  * `/admin/transactions`/`/admin/feedback` (sem reload).
  *
  * Auditoria "ADMIN ALERTS V1 — AUDIT REPORT" — escopo estritamente limitado
- * aos 2 alertas Categoria A (dado real hoje, regra objetiva, zero
+ * aos alertas Categoria A (dado real hoje, regra objetiva, zero
  * infraestrutura nova): cortesias expirando (`benefit_grants`) e feedback
- * crítico não resolvido (`feedbacks`). Nenhum KPI agregado, nenhum filtro de
+ * crítico não resolvido (`feedbacks`).
+ *
+ * Etapa "B1 — Official Launch, código de cobrança": terceiro alerta,
+ * assinaturas com pagamento pendente (`status = past_due`), derivado AO VIVO
+ * do estado real via `admin_list_subscriptions` (RPC já existente, com a
+ * autorização de admin feita no próprio banco) — nenhum alerta é gravado, então não há
+ * duplicação possível; sem e-mail, sem escrita, sem sistema paralelo.
+ * Independente das duas seções acima (próprio load/erro/vazio). Política
+ * inalterada: `past_due` MANTÉM o acesso (`effective_plans()`); este alerta
+ * só dá visibilidade operacional. Nenhum KPI agregado, nenhum filtro de
  * severidade, nenhuma classificação inventada — cada seção é uma consulta
  * objetiva independente, nunca misturadas numa lista única.
  *
@@ -27,7 +36,7 @@
 
 import Link from 'next/link'
 import { useCallback, useEffect, useState } from 'react'
-import { Gift, Inbox } from 'lucide-react'
+import { CreditCard, Gift, Inbox } from 'lucide-react'
 
 import { PageHeader } from '@/components/ui/PageHeader'
 import { Card } from '@/components/ui/Card'
@@ -36,12 +45,19 @@ import { ErrorState } from '@/components/ui/ErrorState'
 import { EmptyState } from '@/components/ui/EmptyState'
 import { createSupabaseAdminAlertsRepository, isCriticalUnresolvedFeedback } from '@/features/admin/repositories/admin-alerts.repository'
 import { createSupabaseFeedbackAdminRepository } from '@/features/feedback/repositories/feedback-admin.repository'
+import { createSupabaseAdminSubscriptionsRepository } from '@/features/billing/repositories/admin-subscriptions.repository'
+import type { AdminSubscriptionRow } from '@/features/billing/types'
+import { planLabel } from '@/lib/plans/plan-display'
 import type { AdminExpiringBenefitGrant, BenefitType } from '@/features/admin/types'
 import type { AdminFeedback, FeedbackPriority, FeedbackStatus } from '@/features/feedback/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 
 const alertsRepository = createSupabaseAdminAlertsRepository()
 const feedbackAdminRepository = createSupabaseFeedbackAdminRepository()
+const subscriptionsRepository = createSupabaseAdminSubscriptionsRepository()
+
+/** Limite de linhas do alerta — `past_due` é um estado transitório e raro; se passar disso, /admin/subscriptions (com filtro de status) continua sendo a lista completa. */
+const PAST_DUE_ALERT_LIMIT = 50
 
 const BENEFIT_TYPE_LABELS: Record<BenefitType, string> = {
   trial: 'Trial',
@@ -220,6 +236,87 @@ function CriticalFeedbackSection() {
   )
 }
 
+const LAST_TRANSACTION_LABELS: Record<string, string> = {
+  paid: 'Paga',
+  pending: 'Pendente',
+  failed: 'Falhou',
+  refunded: 'Reembolsada',
+}
+
+function PastDueSubscriptionsSection() {
+  const [subscriptions, setSubscriptions] = useState<AdminSubscriptionRow[]>([])
+  const [isLoading, setIsLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(() => {
+    return Promise.resolve()
+      .then(() => {
+        setIsLoading(true)
+        setError(null)
+        return subscriptionsRepository.listSubscriptions({ statusFilter: 'past_due', limit: PAST_DUE_ALERT_LIMIT })
+      })
+      .then((page) => setSubscriptions(page.subscriptions))
+      .catch((err) => setError(getUserFriendlyErrorMessage(err)))
+      .finally(() => setIsLoading(false))
+  }, [])
+
+  useEffect(() => {
+    load()
+  }, [load])
+
+  return (
+    <section className="flex flex-col gap-4">
+      <h2 className="text-base font-semibold text-text-primary">Pagamentos pendentes</h2>
+
+      {error ? (
+        <ErrorState title="Não foi possível carregar os pagamentos pendentes" description={error} actionLabel="Tentar novamente" onAction={load} />
+      ) : !isLoading && subscriptions.length === 0 ? (
+        <EmptyState icon={CreditCard} title="Nenhuma assinatura com pagamento pendente." />
+      ) : (
+        <Card className="overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[720px] text-left text-sm">
+              <thead className="border-b border-border bg-surface-hover">
+                <tr>
+                  <th className="px-4 py-3 font-medium text-text-secondary">Usuário</th>
+                  <th className="px-4 py-3 font-medium text-text-secondary">Plano</th>
+                  <th className="px-4 py-3 font-medium text-text-secondary">Fim do período</th>
+                  <th className="px-4 py-3 font-medium text-text-secondary">Última cobrança</th>
+                  <th className="px-4 py-3 font-medium text-text-secondary">Ação</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subscriptions.map((subscription) => (
+                  <tr key={subscription.subscriptionId} className="border-b border-border last:border-0 align-top">
+                    <td className="px-4 py-3 text-text-primary">
+                      {subscription.userName ?? <span className="text-text-secondary">—</span>}
+                      <p className="text-xs text-text-secondary">{subscription.userEmail ?? '—'}</p>
+                    </td>
+                    <td className="px-4 py-3">
+                      <Badge tone="danger">{planLabel(subscription.planSlug)}</Badge>
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-text-secondary">
+                      {subscription.currentPeriodEnd ? dateFormatter.format(new Date(subscription.currentPeriodEnd)) : '—'}
+                    </td>
+                    <td className="px-4 py-3 whitespace-nowrap text-text-secondary">
+                      {subscription.lastTransactionStatus ? (LAST_TRANSACTION_LABELS[subscription.lastTransactionStatus] ?? subscription.lastTransactionStatus) : '—'}
+                    </td>
+                    <td className="px-4 py-3">
+                      <Link href="/admin/subscriptions" className={ACTION_LINK_CLASSES}>
+                        Ver assinaturas
+                      </Link>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
+    </section>
+  )
+}
+
 export default function AdminAlertsPage() {
   return (
     <div className="flex flex-col gap-10">
@@ -227,6 +324,7 @@ export default function AdminAlertsPage() {
 
       <ExpiringBenefitGrantsSection />
       <CriticalFeedbackSection />
+      <PastDueSubscriptionsSection />
     </div>
   )
 }

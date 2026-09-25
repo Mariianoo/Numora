@@ -78,7 +78,8 @@ describe('PricingSelector — Premium "Em breve", sem checkout', () => {
   it('o card do Premium é marcado como comingSoon e usa o CTA de interesse', () => {
     expect(premiumCard).toMatch(/comingSoon/)
     expect(premiumCard).toMatch(/onCtaClick=\{handleRegisterPremiumInterest\}/)
-    expect(premiumCard).toMatch(/ctaLabel=\{premiumCtaLabel\}/)
+    expect(premiumCard).toMatch(/ctaLabel=\{premiumInterest\.label\}/)
+    expect(premiumCard).toMatch(/ctaDisabled=\{premiumInterest\.disabled\}/)
   })
 
   it('o CTA do Premium é "Quero ser avisado" e, depois de registrado, "Você está na lista de interesse"', () => {
@@ -96,11 +97,13 @@ describe('PricingSelector — Premium "Em breve", sem checkout', () => {
   })
 
   it('o CTA do Premium registra interesse em plan_slug = "premium" via plan_interest', () => {
-    expect(code).toMatch(/planInterestRepository\.register\(\{\s*planSlug:\s*'premium',\s*source:\s*'pricing_page'\s*\}\)/)
+    // B1: a orquestração virou o hook `usePlanInterest` (reutilizado pelo Pro fora do Brasil); o Premium o instancia com o plano e a origem fixos.
+    expect(code).toMatch(/usePlanInterest\('premium', 'pricing_page', currency, true\)/)
+    expect(code).toMatch(/planInterestRepository\.register\(\{\s*planSlug,\s*source\s*\}\)/)
   })
 
-  it('handleRegisterPremiumInterest nunca chama Checkout, Stripe nem redireciona', () => {
-    const handler = sliceBetween(code, 'async function handleRegisterPremiumInterest', 'async function confirmChange')
+  it('usePlanInterest (CTA do Premium) nunca chama Checkout, Stripe nem redireciona', () => {
+    const handler = sliceBetween(code, 'function usePlanInterest', 'export function PricingSelector')
     expect(handler).not.toMatch(/fetch\(/)
     expect(handler).not.toMatch(/\/api\/billing/)
     expect(handler).not.toMatch(/getStripeClient\(/)
@@ -108,7 +111,7 @@ describe('PricingSelector — Premium "Em breve", sem checkout', () => {
   })
 
   it('o evento de interesse só é disparado DEPOIS do register() confirmado e nunca no catch de falha', () => {
-    const handler = sliceBetween(code, 'async function handleRegisterPremiumInterest', 'async function confirmChange')
+    const handler = sliceBetween(code, 'function usePlanInterest', 'export function PricingSelector')
     const registerIndex = handler.indexOf('planInterestRepository.register(')
     const trackIndex = handler.indexOf('trackUpgradeInterestRegistered(')
     expect(trackIndex).toBeGreaterThan(registerIndex)
@@ -129,8 +132,8 @@ describe('PricingSelector — Premium "Em breve", sem checkout', () => {
     expect(code).toMatch(/priceLabel=\{proDisplayPrice \?/)
     expect(code).toMatch(/priceLabel=\{premiumDisplayPrice \?/)
     expect((code.match(/priceLabel=\{null\}/g) ?? []).length).toBe(1)
-    // a habilitação de compra do Pro continua exigindo preço ATIVO
-    expect(code).toMatch(/ctaDisabled=\{proCtaState\.disabled \|\| !proActivePrice\}/)
+    // a habilitação de compra do Pro continua exigindo preço ATIVO (B1: só o upgrade/downgrade reais; "Informar país" e o interesse regional não dependem de preço)
+    expect(code).toMatch(/ctaDisabled=\{proCtaState\.disabled \|\| \(proCtaNeedsActivePrice && !proActivePrice\)\}/)
   })
 
   it('nenhum segredo/Stripe server-side no client component', () => {

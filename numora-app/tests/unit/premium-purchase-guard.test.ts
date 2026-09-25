@@ -12,6 +12,12 @@
  *   3. `changeOwnPlan` (defesa em profundidade para qualquer outro chamador).
  * Nenhum preço é ativado, nenhum Product/Price do Stripe é criado, nenhuma
  * chamada de rede é feita.
+ *
+ * B1: as rotas e `changeOwnPlan` agora também leem o país do PERFIL (política
+ * única de elegibilidade Brasil/BRL, lib/billing/purchase-eligibility.ts) —
+ * o mock do client de servidor devolve o país configurado em `profileCountry`
+ * (default 'BR', o único elegível). A política em si é coberta em
+ * tests/unit/purchase-eligibility.test.ts; aqui só a aplicação nas rotas.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { SupabaseClient } from '@supabase/supabase-js'
@@ -23,8 +29,25 @@ const captureException = vi.fn()
 vi.mock('@sentry/nextjs', () => ({ captureException: (...args: unknown[]) => captureException(...args) }))
 
 const getUser = vi.fn()
+/** País devolvido pela leitura do perfil no servidor; 'ERROR' simula falha de consulta. */
+let profileCountry: string | null | 'ERROR' = 'BR'
+const profileReads = vi.fn()
+function makeProfileQueryClient() {
+  return {
+    from: (table: string) => {
+      profileReads(table)
+      return {
+        select: () => ({
+          eq: () => ({
+            maybeSingle: async () => (profileCountry === 'ERROR' ? { data: null, error: { message: 'boom' } } : { data: { country_code: profileCountry }, error: null }),
+          }),
+        }),
+      }
+    },
+  }
+}
 vi.mock('@/lib/supabase/server', () => ({
-  getSupabaseServerClient: async () => ({ auth: { getUser: (...args: unknown[]) => getUser(...args) } }),
+  getSupabaseServerClient: async () => ({ auth: { getUser: (...args: unknown[]) => getUser(...args) }, ...makeProfileQueryClient() }),
 }))
 vi.mock('@/lib/supabase/admin', () => ({ getSupabaseAdminClient: () => ({}) }))
 vi.mock('@/lib/billing/assert-billing-environment', () => ({
@@ -82,6 +105,8 @@ beforeEach(() => {
   createCheckoutSession.mockReset()
   syncSubscriptionFromStripe.mockReset()
   changeOwnPlanMock.mockReset()
+  profileCountry = 'BR'
+  profileReads.mockClear()
 
   getUser.mockResolvedValue({ data: { user: { id: 'user-uuid-1', email: 'colecionador@example.test' } }, error: null })
 })
@@ -151,7 +176,7 @@ describe('POST /api/billing/checkout — barreira de disponibilidade', () => {
     const body = await response.json()
     expect(body.url).toBe('https://checkout.stripe.test/cs_test_1')
     expect(createCheckoutSession).toHaveBeenCalledTimes(1)
-    expect(createCheckoutSession.mock.calls[0][1]).toMatchObject({ stripePriceId: 'price_pro_month_brl', planSlug: 'pro' })
+    expect(createCheckoutSession.mock.calls[0][1]).toMatchObject({ stripePriceId: 'price_pro_month_brl', planSlug: 'pro', currency: 'BRL' })
   })
 
   it('Pro sem preço ativo continua rejeitado pelo catálogo (a guarda é ADICIONAL a `active`, nunca a substitui)', async () => {
@@ -221,6 +246,23 @@ describe('POST /api/billing/subscription/change-plan — barreira de disponibili
 })
 
 describe('changeOwnPlan — defesa em profundidade (mesmo chamado direto, fora do Route Handler)', () => {
+  /** Client que roteia por tabela: perfil (país) e subscriptions (sem linha elegível). */
+  function makeRoutedSupabase({ country }: { country: string | null | 'ERROR' }) {
+    const from = vi.fn((table: string) => {
+      if (table === 'profiles') {
+        return {
+          select: () => ({
+            eq: () => ({
+              maybeSingle: async () => (country === 'ERROR' ? { data: null, error: { message: 'boom' } } : { data: { country_code: country }, error: null }),
+            }),
+          }),
+        }
+      }
+      return { select: () => ({ eq: () => ({ in: () => ({ maybeSingle: async () => ({ data: null, error: null }) }) }) }) }
+    })
+    return { client: { from } as unknown as SupabaseClient, from }
+  }
+
   function makeUntouchedSupabase() {
     const from = vi.fn()
     return { client: { from } as unknown as SupabaseClient, from }
@@ -248,15 +290,193 @@ describe('changeOwnPlan — defesa em profundidade (mesmo chamado direto, fora d
   })
 
   it('destino Pro passa pela guarda (segue para a leitura da subscription do usuário)', async () => {
-    const maybeSingle = vi.fn().mockResolvedValue({ data: null, error: null })
-    const inFn = vi.fn().mockReturnValue({ maybeSingle })
-    const eq = vi.fn().mockReturnValue({ in: inFn })
-    const select = vi.fn().mockReturnValue({ eq })
-    const from = vi.fn().mockReturnValue({ select })
-    const client = { from } as unknown as SupabaseClient
+    const routed = makeRoutedSupabase({ country: 'BR' })
 
-    // Sem subscription elegível o fluxo falha DEPOIS da guarda — prova que a guarda não bloqueou o destino Pro.
-    await expect(realChangeOwnPlan(client, {} as unknown as Stripe, 'user-uuid-1', { planSlug: 'pro', interval: 'month', currency: 'BRL' })).rejects.toThrow(/Nenhuma subscription elegível/)
-    expect(from).toHaveBeenCalledWith('subscriptions')
+    // Sem subscription elegível o fluxo falha DEPOIS das guardas — prova que nem a de plano nem a de elegibilidade bloquearam o destino Pro/BR/BRL.
+    await expect(realChangeOwnPlan(routed.client, {} as unknown as Stripe, 'user-uuid-1', { planSlug: 'pro', interval: 'month', currency: 'BRL' })).rejects.toThrow(/Nenhuma subscription elegível/)
+    expect(routed.from).toHaveBeenCalledWith('profiles')
+    expect(routed.from).toHaveBeenCalledWith('subscriptions')
+  })
+})
+
+describe('B1 — elegibilidade de compra (Brasil/BRL) aplicada no servidor', () => {
+  const checkoutBody = (overrides: Record<string, unknown> = {}) => ({ planSlug: 'pro', interval: 'month', currency: 'BRL', ...overrides })
+  const post = (body: unknown) => checkoutPOST(jsonRequest('https://numora.test/api/billing/checkout', body))
+
+  function expectNoExternalAccess() {
+    expect(getStripeClient).not.toHaveBeenCalled()
+    expect(getCommercialPlanPricesCatalog).not.toHaveBeenCalled()
+    expect(getOrCreateBillingCustomer).not.toHaveBeenCalled()
+    expect(createCheckoutSession).not.toHaveBeenCalled()
+  }
+
+  it('BR + BRL: prossegue para a lógica existente (preço ativo → Checkout Session)', async () => {
+    getCommercialPlanPricesCatalog.mockResolvedValue([PRO_MONTH_BRL])
+    getOrCreateBillingCustomer.mockResolvedValue({ stripeCustomerId: 'cus_test_1' })
+    createCheckoutSession.mockResolvedValue({ id: 'cs_test_1', url: 'https://checkout.stripe.test/cs_test_1' })
+
+    const response = await post(checkoutBody())
+
+    expect(response.status).toBe(200)
+    expect(profileReads).toHaveBeenCalledWith('profiles')
+  })
+
+  it('BR + USD: rejeitado como requisição inválida (moeda divergente da derivada), sem Stripe', async () => {
+    const response = await post(checkoutBody({ currency: 'USD' }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' })
+    expectNoExternalAccess()
+  })
+
+  it.each([
+    ['NULL + BRL', null, 'BRL'],
+    ['NULL + USD', null, 'USD'],
+    ['string vazia + BRL', '', 'BRL'],
+  ])('%s: 403 country_missing com mensagem neutra orientando a informar o país', async (_label, country, currency) => {
+    profileCountry = country
+
+    const response = await post(checkoutBody({ currency }))
+
+    expect(response.status).toBe(403)
+    const body = await response.json()
+    expect(body).toEqual({ error: 'Informe seu país no perfil para verificar a disponibilidade do plano.', code: 'country_missing' })
+    expectNoExternalAccess()
+  })
+
+  it.each([
+    ['US + USD', 'US', 'USD'],
+    ['US + BRL (arbitragem)', 'US', 'BRL'],
+    ['país desconhecido + BRL', 'XX', 'BRL'],
+    ['minúsculo "br" + BRL (sem normalização, fail-closed)', 'br', 'BRL'],
+  ])('%s: 403 region_unavailable (V1 é somente Brasil)', async (_label, country, currency) => {
+    profileCountry = country
+
+    const response = await post(checkoutBody({ currency }))
+
+    expect(response.status).toBe(403)
+    await expect(response.json()).resolves.toEqual({ error: 'O plano Pro está disponível apenas no Brasil por enquanto.', code: 'region_unavailable' })
+    expectNoExternalAccess()
+  })
+
+  it('país enviado no body NUNCA é considerado — só o do perfil lido no servidor', async () => {
+    profileCountry = 'US'
+
+    const response = await post(checkoutBody({ countryCode: 'BR', country_code: 'BR', country: 'BR' }))
+
+    expect(response.status).toBe(403)
+    expectNoExternalAccess()
+  })
+
+  it('falha ao ler o perfil: fail-closed (500 neutro + observabilidade), sem Stripe', async () => {
+    profileCountry = 'ERROR'
+
+    const response = await post(checkoutBody())
+
+    expect(response.status).toBe(500)
+    expect(captureException).toHaveBeenCalled()
+    expectNoExternalAccess()
+  })
+
+  it('a resposta de rejeição não vaza catálogo, IDs do Stripe nem detalhe interno', async () => {
+    profileCountry = 'US'
+
+    const text = JSON.stringify(await (await post(checkoutBody())).json())
+
+    expect(text).not.toMatch(/price_|cus_|cs_|stripe|catálogo|catalog|active|ativo|sk_/i)
+  })
+
+  it('Premium continua bloqueado ANTES da política de elegibilidade (mesmo para BR/BRL)', async () => {
+    const response = await post(checkoutBody({ planSlug: 'premium' }))
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: PLAN_UNAVAILABLE_MESSAGE })
+    expect(profileReads).not.toHaveBeenCalled()
+  })
+})
+
+describe('B1 — elegibilidade de compra em change-plan / changeOwnPlan', () => {
+  const postChange = (body: unknown) => changePlanPOST(jsonRequest('https://numora.test/api/billing/subscription/change-plan', body))
+  const proBody = { planSlug: 'pro', interval: 'month', currency: 'BRL' }
+
+  it('BR + BRL: downgrade para Pro continua permitido', async () => {
+    changeOwnPlanMock.mockResolvedValue({ kind: 'downgrade_scheduled', stripeSubscriptionId: 'sub_test_1', stripeScheduleId: 'sub_sched_1' })
+    syncSubscriptionFromStripe.mockResolvedValue(undefined)
+
+    const response = await postChange(proBody)
+
+    expect(response.status).toBe(200)
+    expect(changeOwnPlanMock).toHaveBeenCalledTimes(1)
+  })
+
+  it.each([
+    ['NULL', null, 'country_missing', 403],
+    ['US', 'US', 'region_unavailable', 403],
+  ])('país %s: rejeitado na rota com código %s, sem changeOwnPlan nem Stripe', async (_label, country, code, status) => {
+    profileCountry = country
+
+    const response = await postChange(proBody)
+
+    expect(response.status).toBe(status)
+    await expect(response.json()).resolves.toMatchObject({ code })
+    expect(changeOwnPlanMock).not.toHaveBeenCalled()
+    expect(getStripeClient).not.toHaveBeenCalled()
+  })
+
+  it('BR + USD: rejeitado como requisição inválida', async () => {
+    const response = await postChange({ ...proBody, currency: 'USD' })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toMatchObject({ code: 'invalid_request' })
+    expect(changeOwnPlanMock).not.toHaveBeenCalled()
+  })
+
+  it('Premium continua bloqueado (Pro → Premium) mesmo para BR/BRL', async () => {
+    const response = await postChange({ ...proBody, planSlug: 'premium' })
+
+    expect(response.status).toBe(400)
+    await expect(response.json()).resolves.toEqual({ error: PLAN_UNAVAILABLE_MESSAGE })
+    expect(changeOwnPlanMock).not.toHaveBeenCalled()
+  })
+
+  function makeRouted(country: string | null | 'ERROR') {
+    const from = vi.fn((table: string) => {
+      if (table === 'profiles') {
+        return {
+          select: () => ({
+            eq: () => ({ maybeSingle: async () => (country === 'ERROR' ? { data: null, error: { message: 'boom' } } : { data: { country_code: country }, error: null }) }),
+          }),
+        }
+      }
+      throw new Error('nenhuma outra tabela deveria ser lida antes da rejeição por elegibilidade: ' + table)
+    })
+    return { client: { from } as unknown as SupabaseClient, from }
+  }
+
+  it.each([
+    ['país nulo', null, /Informe seu país/],
+    ['país fora do Brasil', 'US', /apenas no Brasil/],
+  ])('changeOwnPlan direto (%s): rejeita ANTES de ler subscription ou chamar o Stripe', async (_label, country, message) => {
+    const { client, from } = makeRouted(country)
+    const stripe = { subscriptions: { retrieve: vi.fn(), update: vi.fn() }, subscriptionSchedules: { create: vi.fn() } } as unknown as Stripe
+
+    await expect(realChangeOwnPlan(client, stripe, 'user-uuid-1', { planSlug: 'pro', interval: 'month', currency: 'BRL' })).rejects.toThrow(message)
+
+    expect(from).toHaveBeenCalledTimes(1)
+    expect(from).toHaveBeenCalledWith('profiles')
+    expect(stripe.subscriptions.retrieve).not.toHaveBeenCalled()
+    expect(stripe.subscriptions.update).not.toHaveBeenCalled()
+  })
+
+  it('changeOwnPlan direto: moeda USD com país BR é rejeitada (nunca confia na moeda recebida)', async () => {
+    const { client } = makeRouted('BR')
+
+    await expect(realChangeOwnPlan(client, {} as unknown as Stripe, 'user-uuid-1', { planSlug: 'pro', interval: 'month', currency: 'USD' })).rejects.toThrow(/Não foi possível iniciar a contratação/)
+  })
+
+  it('changeOwnPlan direto: falha ao ler o perfil é fail-closed (lança, nunca prossegue)', async () => {
+    const { client } = makeRouted('ERROR')
+
+    await expect(realChangeOwnPlan(client, {} as unknown as Stripe, 'user-uuid-1', { planSlug: 'pro', interval: 'month', currency: 'BRL' })).rejects.toThrow(/Falha ao ler o país/)
   })
 })

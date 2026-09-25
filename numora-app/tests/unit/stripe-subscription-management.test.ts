@@ -30,6 +30,16 @@ vi.mock('@/lib/billing/plan-availability', async (importOriginal) => {
   return { ...actual, isPlanPurchasable: () => true }
 })
 
+// B1 — mesma ideia para a política de elegibilidade (Brasil/BRL, lib/billing/purchase-eligibility.ts):
+// `changeOwnPlan` agora lê o país do perfil e rejeita fora dela (inclusive moeda USD, o que torna
+// inalcançável, na V1, o caminho "mudança de moeda" testado abaixo). Este arquivo cobre a MECÂNICA
+// (upgrade, downgrade, moeda imutável dentro da subscription, preço) simulando "elegível"; a política
+// REAL, sem mock, é provada em tests/unit/premium-purchase-guard.test.ts e purchase-eligibility.test.ts.
+vi.mock('@/lib/billing/purchase-eligibility', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/billing/purchase-eligibility')>()
+  return { ...actual, loadOwnCountryCode: async () => 'BR', evaluatePurchaseEligibility: () => ({ eligible: true, currency: 'BRL' }) }
+})
+
 const { cancelOwnSubscription, changeOwnPlan, resolveOwnedEligibleSubscription } = await import('@/lib/stripe/subscription-management')
 
 const PRO_MONTH_BRL: CommercialPlanPrice = { planPriceId: 'pp-pro-month-brl', planId: 'plan-pro', planSlug: 'pro', interval: 'month', currency: 'BRL', amount: 19.9, stripePriceId: 'price_pro_month_brl', active: true }

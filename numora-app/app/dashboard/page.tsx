@@ -93,7 +93,14 @@ import {
   Lock,
 } from 'lucide-react'
 
+import * as Sentry from '@sentry/nextjs'
+
 import { getSupabaseServerClient } from '@/lib/supabase/server'
+import { getSupabaseAdminClient } from '@/lib/supabase/admin'
+import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
+import { CHECKOUT_SESSION_ID_PATTERN, resolveCheckoutReturn } from '@/lib/billing/checkout-return'
+import { PAYMENT_PENDING_NOTICE, getCheckoutReturnNotice, isPaymentPendingStatus, type CheckoutReturnNoticeInput } from '@/lib/billing/billing-notices'
+import { getStripeClient } from '@/lib/stripe/client'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { StatCard } from '@/components/ui/StatCard'
 import { Card } from '@/components/ui/Card'
@@ -118,6 +125,7 @@ import {
 import { formatDateOnly } from '@/lib/format/date'
 import { DashboardViewTracker } from '@/components/analytics/DashboardViewTracker'
 import { DashboardErrorState } from './DashboardErrorState'
+import { BillingNotices, type BillingNoticeItem } from './BillingNotices'
 import { DashboardUpgradeButton } from './DashboardUpgradeButton'
 import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
 import type { PriceCurrency } from '@/lib/stripe/catalog'
@@ -201,7 +209,46 @@ function getGreeting(): string {
   return 'Boa noite'
 }
 
-export default async function DashboardPage() {
+function firstQueryParam(value: string | string[] | undefined): string | null {
+  const first = Array.isArray(value) ? value[0] : value
+  return typeof first === 'string' && first !== '' ? first : null
+}
+
+/**
+ * B1 — retorno do Stripe Checkout. `?checkout=success` NUNCA é prova de
+ * pagamento: a autoridade é a Session recuperada no Stripe + `client_reference_id`
+ * + a sincronização idempotente (lib/billing/checkout-return.ts). `cancel`
+ * só informa — não toca assinatura, plano nem banco. Devolve `null` quando a
+ * URL não é um retorno de checkout (comportamento normal do Dashboard).
+ */
+async function resolveCheckoutNoticeInput(userId: string, checkoutParam: string | null, sessionIdParam: string | null): Promise<CheckoutReturnNoticeInput | null> {
+  if (checkoutParam === 'cancel') return 'cancel'
+  if (checkoutParam !== 'success') return null
+
+  if (!sessionIdParam || !CHECKOUT_SESSION_ID_PATTERN.test(sessionIdParam)) return 'invalid'
+
+  // Ambiente sem cobrança habilitada (ex.: Production antes do Stripe LIVE): condição esperada, não um erro a reportar.
+  try {
+    assertBillingEnvironment(gatherBillingEnvironmentContext())
+  } catch {
+    return 'unavailable'
+  }
+
+  try {
+    return await resolveCheckoutReturn({
+      stripe: getStripeClient(),
+      adminClient: getSupabaseAdminClient(),
+      userId,
+      sessionId: sessionIdParam,
+      reportError: (err) => Sentry.captureException(err),
+    })
+  } catch (err) {
+    Sentry.captureException(err)
+    return 'unavailable'
+  }
+}
+
+export default async function DashboardPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
   const supabase = await getSupabaseServerClient()
   const {
     data: { user },
@@ -211,7 +258,14 @@ export default async function DashboardPage() {
     redirect('/login')
   }
 
-  const [itemsResult, activeUnitsResult, profileResult, dashboardAdvancedEntitlement, effectivePlanResult] = await Promise.all([
+  // B1 — ANTES de ler plano/entitlements abaixo: se o retorno do checkout
+  // sincronizar a subscription agora, o resto da página já reflete o plano.
+  const queryParams = await searchParams
+  const checkoutParam = firstQueryParam(queryParams.checkout)
+  const sessionIdParam = firstQueryParam(queryParams.session_id)
+  const checkoutNoticeInput = await resolveCheckoutNoticeInput(user.id, checkoutParam, sessionIdParam)
+
+  const [itemsResult, activeUnitsResult, profileResult, dashboardAdvancedEntitlement, effectivePlanResult, ownSubscriptionResult] = await Promise.all([
     // Etapa 13.1: embeds de `countries`/`metals`/`collection_units(grades)`
     // adicionados para as distribuições — mesma query única de sempre,
     // sem N+1 (PostgREST resolve os embeds no próprio Postgres).
@@ -246,7 +300,32 @@ export default async function DashboardPage() {
     // como erro do Dashboard, só perde a granularidade do rótulo — ver
     // fallback abaixo.
     supabase.rpc('get_effective_plan', { p_user_id: user.id }).maybeSingle(),
+    // B1 — só para o aviso de "Pagamento pendente" (status real da
+    // subscription do próprio usuário, RPC self-scoped). Não altera acesso:
+    // `past_due` continua mantendo o plano via effective_plans(). Falha aqui
+    // simplesmente não mostra o aviso.
+    supabase.rpc('get_my_subscription').maybeSingle(),
   ])
+
+  const billingNoticeItems: BillingNoticeItem[] = []
+  if (checkoutNoticeInput) {
+    billingNoticeItems.push({
+      key: 'checkout-return',
+      notice: getCheckoutReturnNotice(checkoutNoticeInput),
+      // "Atualizar" só volta para a MESMA URL de retorno (que refaz a checagem no servidor) — nunca cria estado novo.
+      action:
+        checkoutNoticeInput === 'pending' && sessionIdParam
+          ? { href: `/dashboard?checkout=success&session_id=${encodeURIComponent(sessionIdParam)}`, label: 'Atualizar' }
+          : undefined,
+    })
+  }
+  if (isPaymentPendingStatus((ownSubscriptionResult.data as { status: string } | null)?.status)) {
+    billingNoticeItems.push({
+      key: 'payment-pending',
+      notice: PAYMENT_PENDING_NOTICE,
+      action: { href: '/dashboard/profile', label: 'Gerenciar pagamento' },
+    })
+  }
 
   const isDashboardAdvancedEnabled =
     (dashboardAdvancedEntitlement.data as { enabled: boolean } | null)?.enabled === true
@@ -386,6 +465,7 @@ export default async function DashboardPage() {
       <DashboardViewTracker />
       {!isDashboardAdvancedEnabled && sectionsVisible && <DashboardAdvancedLockedTracker planSlug={planSlug} />}
       <PageHeader title={`${getGreeting()}, ${displayName}`} description="Veja como está sua coleção." />
+      <BillingNotices items={billingNoticeItems} />
 
       {!hasStatsError && totalItems === 0 ? (
         // Etapa 15.10.13: usuário sem coleção — prioriza ativação (uma

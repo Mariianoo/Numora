@@ -6,6 +6,7 @@
  * `Badge`/`Button` do design system, nenhum componente visual novo
  * inventado além da composição.
  */
+import Link from 'next/link'
 import { Check } from 'lucide-react'
 
 import { Card } from '@/components/ui/Card'
@@ -32,6 +33,8 @@ export interface PlanCardProps {
   comingSoon?: boolean
   /** Bloco A — texto curto abaixo do botão (ex.: erro ao registrar interesse, ou "Ainda não disponível para contratação"). */
   footnote?: string | null
+  /** B1 — CTA que só NAVEGA (ex.: "Informar país" → perfil): renderizado como link, nunca como ação comercial. Ignorado quando o plano já é o atual. */
+  ctaHref?: string
 }
 
 export function PlanCard({
@@ -47,6 +50,7 @@ export function PlanCard({
   yearlySavingsPercent,
   comingSoon,
   footnote,
+  ctaHref,
 }: PlanCardProps) {
   return (
     <Card className={cn('flex flex-col gap-4 p-6', highlighted && 'border-accent/50 ring-1 ring-accent/30')}>
@@ -79,15 +83,24 @@ export function PlanCard({
         ))}
       </ul>
 
-      <Button
-        type="button"
-        variant={isCurrentPlan ? 'secondary' : 'primary'}
-        disabled={isCurrentPlan || ctaDisabled}
-        onClick={onCtaClick}
-        className="w-full"
-      >
-        {isCurrentPlan ? 'Plano atual' : ctaLabel}
-      </Button>
+      {ctaHref && !isCurrentPlan ? (
+        <Link
+          href={ctaHref}
+          className="inline-flex h-10 w-full items-center justify-center rounded-lg bg-accent px-4 text-sm font-medium text-background shadow-sm transition-colors hover:bg-accent-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/50"
+        >
+          {ctaLabel}
+        </Link>
+      ) : (
+        <Button
+          type="button"
+          variant={isCurrentPlan ? 'secondary' : 'primary'}
+          disabled={isCurrentPlan || ctaDisabled}
+          onClick={onCtaClick}
+          className="w-full"
+        >
+          {isCurrentPlan ? 'Plano atual' : ctaLabel}
+        </Button>
+      )}
 
       {footnote && <p className="text-xs text-text-secondary">{footnote}</p>}
     </Card>

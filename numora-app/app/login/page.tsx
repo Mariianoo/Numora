@@ -12,17 +12,25 @@
  * (usado na saudação) ficava desatualizado até um reload completo (F5),
  * que sempre ignora esse cache client-side. `refresh()` força o
  * Server Component de /dashboard a rodar de novo com a sessão atual.
+ *
+ * Etapa "B1 — Official Launch, código de cobrança": `app/auth/callback/route.ts`
+ * redireciona para `/login?error=auth_callback_failed` quando a troca do
+ * código falha — antes esse parâmetro nunca era lido (falha silenciosa). Agora
+ * `getLoginQueryErrorMessage` (whitelist estrita) mostra uma mensagem clara;
+ * qualquer outro valor/ausência de parâmetro não altera o comportamento. O
+ * `useSearchParams()` exige um limite de `<Suspense>` (a página é estática).
  */
 'use client'
 
-import { useEffect, useState, type FormEvent } from 'react'
+import { Suspense, useEffect, useState, type FormEvent } from 'react'
 import Link from 'next/link'
-import { useRouter } from 'next/navigation'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Loader2 } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import type { AuthSession } from '@/features/auth/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { getLoginQueryErrorMessage } from '@/features/auth/login-error-message'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { PasswordInput } from '@/components/ui/PasswordInput'
@@ -31,12 +39,16 @@ import { AuthShell } from '@/components/ui/AuthShell'
 
 const authRepository = createSupabaseAuthRepository()
 
-export default function LoginPage() {
+function LoginContent() {
   const router = useRouter()
+  const searchParams = useSearchParams()
+  const queryErrorMessage = getLoginQueryErrorMessage(searchParams.get('error'))
   const [session, setSession] = useState<AuthSession | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // O aviso vindo da URL some assim que o usuário tenta entrar de novo.
+  const [hasAttemptedLogin, setHasAttemptedLogin] = useState(false)
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
@@ -66,6 +78,7 @@ export default function LoginPage() {
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     setError(null)
+    setHasAttemptedLogin(true)
     setIsSubmitting(true)
 
     try {
@@ -105,7 +118,11 @@ export default function LoginPage() {
             required
           />
 
-          {error && <p className="text-sm text-danger">{error}</p>}
+          {(error ?? (hasAttemptedLogin ? null : queryErrorMessage)) && (
+            <p className="text-sm text-danger" role="alert">
+              {error ?? queryErrorMessage}
+            </p>
+          )}
 
           <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
             {isSubmitting ? 'Entrando...' : 'Entrar'}
@@ -124,5 +141,19 @@ export default function LoginPage() {
         </div>
       </Card>
     </AuthShell>
+  )
+}
+
+export default function LoginPage() {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex flex-1 items-center justify-center">
+          <Loader2 className="size-6 animate-spin text-text-secondary" aria-hidden />
+        </div>
+      }
+    >
+      <LoginContent />
+    </Suspense>
   )
 }

@@ -60,6 +60,8 @@ describe.skipIf(!hasTestEnv())('Customer Portal / gestão da assinatura (DEV rea
 
   async function setupUserWithRealSubscription(label: string, priceId: string) {
     const user = await createDisposableUser(admin, label)
+    // B1 — `changeOwnPlan` agora aplica a política de elegibilidade de compra (somente Brasil/BRL, país lido do perfil): o usuário descartável precisa ser BR para que estes testes exercitem o fluxo de troca de plano em si.
+    await admin.from('profiles').update({ country_code: 'BR' }).eq('id', user.id)
     const billingCustomer = await getOrCreateBillingCustomer(admin, stripe, { userId: user.id, email: user.email })
     createdStripeCustomerIds.add(billingCustomer.stripeCustomerId)
 

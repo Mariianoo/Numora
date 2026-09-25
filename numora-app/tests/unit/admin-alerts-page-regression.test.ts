@@ -8,8 +8,13 @@
  * nem clicar em nada aqui. As regras puras (janela de 7 dias, feedback
  * crítico) já estão cobertas por comportamento real em
  * tests/unit/admin-alerts-repository.test.ts — o que falta cobrir aqui é
- * exclusivamente a ORQUESTRAÇÃO da página: duas seções independentes,
+ * exclusivamente a ORQUESTRAÇÃO da página: seções independentes,
  * ausência total de mutação, ausência de KPI/severidade/score inventados.
+ *
+ * Etapa "B1": terceira seção independente, "Pagamentos pendentes"
+ * (`past_due`), coberta ao final deste arquivo — as asserções gerais abaixo
+ * (read-only, sem KPI, sem role própria, sem dado fictício…) continuam
+ * valendo para a página inteira, agora com 3 seções.
  */
 import { readFileSync } from 'node:fs'
 import path from 'node:path'
@@ -39,16 +44,19 @@ describe('app/admin/alerts/page.tsx — V1 read-only (Admin Alerts)', () => {
     expect(source).not.toMatch(/<AdminComingSoon/)
   })
 
-  it('existem exatamente duas seções independentes — "Cortesias expirando" e "Feedback crítico não resolvido"', () => {
+  it('existem exatamente três seções independentes — "Cortesias expirando", "Feedback crítico não resolvido" e "Pagamentos pendentes"', () => {
     const source = readPageSource()
     expect(source).toMatch(/Cortesias expirando/)
     expect(source).toMatch(/Feedback crítico não resolvido/)
+    expect(source).toMatch(/Pagamentos pendentes/)
+    expect((source.match(/<section className="flex flex-col gap-4">/g) ?? []).length).toBe(3)
   })
 
   it('cada seção carrega os próprios dados de forma independente (dois useEffect/load separados, nunca uma lista unificada)', () => {
     const source = readPageSource()
     expect(source).toMatch(/function ExpiringBenefitGrantsSection/)
     expect(source).toMatch(/function CriticalFeedbackSection/)
+    expect(source).toMatch(/function PastDueSubscriptionsSection/)
     // Nenhuma estrutura de dado combinando os dois tipos numa lista única.
     expect(source).not.toMatch(/combinedAlerts|allAlerts|unifiedAlerts/i)
   })
@@ -121,8 +129,8 @@ describe('app/admin/alerts/page.tsx — V1 read-only (Admin Alerts)', () => {
     const source = readPageSource()
     const errorStateCount = (source.match(/<ErrorState/g) ?? []).length
     const emptyStateCount = (source.match(/<EmptyState/g) ?? []).length
-    expect(errorStateCount).toBe(2)
-    expect(emptyStateCount).toBe(2)
+    expect(errorStateCount).toBe(3)
+    expect(emptyStateCount).toBe(3)
   })
 
   it('nenhuma dependência nova é importada (só módulos já usados no projeto)', () => {
@@ -137,5 +145,37 @@ describe('app/admin/alerts/page.tsx — V1 read-only (Admin Alerts)', () => {
     const source = readPageSource()
     expect(source).not.toMatch(/@example\.com/)
     expect(source).not.toMatch(/grant-[0-9]|feedback-[0-9]/)
+  })
+})
+
+describe('app/admin/alerts/page.tsx — seção "Pagamentos pendentes" (B1)', () => {
+  it('lê SOMENTE o estado real via o repository existente de assinaturas, filtrando status past_due (nenhuma query própria, nenhuma tabela lida direto)', () => {
+    const code = readPageCode()
+    expect(code).toMatch(/subscriptionsRepository\.listSubscriptions\(\{ statusFilter: 'past_due'/)
+    expect(code).not.toMatch(/\.from\(['"]subscriptions['"]\)/)
+    expect(code).not.toMatch(/\.from\(['"]billing_transactions['"]\)/)
+  })
+
+  it('o repository de assinaturas é o mesmo já existente (RPC admin_list_subscriptions) — nenhum repository/RPC novo', () => {
+    const source = readPageSource()
+    expect(source).toMatch(/from '@\/features\/billing\/repositories\/admin-subscriptions\.repository'/)
+  })
+
+  it('empty state honesto e link de navegação para /admin/subscriptions (nunca uma ação de cobrança)', () => {
+    const code = readPageCode()
+    expect(code).toMatch(/Nenhuma assinatura com pagamento pendente\./)
+    expect(code).toMatch(/<Link href="\/admin\/subscriptions"/)
+    expect(code).not.toMatch(/\/api\/billing|getStripeClient|stripe/i)
+  })
+
+  it('o alerta é derivado ao vivo — nada é gravado, e-mail nunca é enviado (não existe estado de alerta a duplicar)', () => {
+    const code = readPageCode()
+    expect(code).not.toMatch(/mailto:|sendEmail|resend|nodemailer/i)
+    expect(code).not.toMatch(/\.insert\(|\.update\(|\.upsert\(|\.delete\(/)
+  })
+
+  it('não mostra IDs do Stripe nem valores financeiros — só usuário, plano, fim do período e status da última cobrança', () => {
+    const code = readPageCode()
+    expect(code).not.toMatch(/stripeCustomerId|stripeSubscriptionId|amount/)
   })
 })

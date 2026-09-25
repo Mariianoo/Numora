@@ -27,6 +27,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import type Stripe from 'stripe'
 
 import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
+import { evaluatePurchaseEligibility, getPurchaseIneligibleResponse, loadOwnCountryCode } from '@/lib/billing/purchase-eligibility'
 import { getCommercialPlanPricesCatalog, type PaidPlanSlug, type PriceCurrency, type PriceInterval } from './catalog'
 import { resolveSellablePrice } from './checkout'
 import { syncSubscriptionFromStripe } from './subscription-sync'
@@ -116,6 +117,15 @@ export async function changeOwnPlan(supabase: SupabaseClient, stripe: Stripe, us
   // Premium→Pro) continua permitido.
   if (!isPlanPurchasable(target.planSlug)) {
     throw new Error(`[subscription-management] ${PLAN_UNAVAILABLE_MESSAGE}`)
+  }
+
+  // B1 — elegibilidade de compra (Brasil/BRL) lida do PERFIL no servidor,
+  // mesma política única do checkout (lib/billing/purchase-eligibility.ts).
+  // Nenhum caminho server-side de troca de plano contorna a política.
+  const countryCode = await loadOwnCountryCode(supabase, userId)
+  const eligibility = evaluatePurchaseEligibility({ countryCode, currency: target.currency })
+  if (!eligibility.eligible) {
+    throw new Error(`[subscription-management] ${getPurchaseIneligibleResponse(eligibility.reason).body.error}`)
   }
 
   const owned = await resolveOwnedEligibleSubscription(supabase, userId)

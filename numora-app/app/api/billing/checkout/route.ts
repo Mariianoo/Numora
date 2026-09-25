@@ -36,6 +36,7 @@ import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
 import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
+import { evaluatePurchaseEligibility, getPurchaseIneligibleResponse, loadOwnCountryCode } from '@/lib/billing/purchase-eligibility'
 import { clientEnv } from '@/lib/env.server'
 import { getStripeClient } from '@/lib/stripe/client'
 import { getCommercialPlanPricesCatalog } from '@/lib/stripe/catalog'
@@ -101,6 +102,26 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: PLAN_UNAVAILABLE_MESSAGE }, { status: 400 })
   }
 
+  // B1 — elegibilidade de compra da V1 (somente Brasil/BRL), política única
+  // em lib/billing/purchase-eligibility.ts. O país vem do PERFIL lido aqui
+  // no servidor — nunca do corpo. A moeda do cliente só é COMPARADA; o resto
+  // do fluxo usa a moeda derivada (`billingCurrency`). Fail-closed: erro ao
+  // ler o país = nada de cobrança. Antes de Stripe/catálogo/Customer.
+  let countryCode: string | null
+  try {
+    countryCode = await loadOwnCountryCode(sessionClient, user.id)
+  } catch (err) {
+    Sentry.captureException(err)
+    return NextResponse.json({ error: 'Não foi possível verificar a disponibilidade agora. Tente novamente.' }, { status: 500 })
+  }
+
+  const eligibility = evaluatePurchaseEligibility({ countryCode, currency })
+  if (!eligibility.eligible) {
+    const rejection = getPurchaseIneligibleResponse(eligibility.reason)
+    return NextResponse.json(rejection.body, { status: rejection.status })
+  }
+  const billingCurrency = eligibility.currency
+
   let stripe
   try {
     stripe = getStripeClient()
@@ -121,14 +142,14 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: 'Falha ao ler o catálogo comercial.' }, { status: 500 })
   }
 
-  const resolution = resolveSellablePrice(catalog, { planSlug, interval, currency })
+  const resolution = resolveSellablePrice(catalog, { planSlug, interval, currency: billingCurrency })
 
   if (resolution.status === 'not_found') {
-    return NextResponse.json({ error: `Nenhum preço vendável encontrado para ${planSlug}/${interval}/${currency}.` }, { status: 400 })
+    return NextResponse.json({ error: `Nenhum preço vendável encontrado para ${planSlug}/${interval}/${billingCurrency}.` }, { status: 400 })
   }
 
   if (resolution.status === 'inactive') {
-    return NextResponse.json({ error: `O preço para ${planSlug}/${interval}/${currency} não está ativo para venda.` }, { status: 400 })
+    return NextResponse.json({ error: `O preço para ${planSlug}/${interval}/${billingCurrency} não está ativo para venda.` }, { status: 400 })
   }
 
   const stripePriceId = resolution.price.stripePriceId
@@ -168,7 +189,7 @@ export async function POST(request: Request) {
       analyticsConsentSnapshot,
       planSlug,
       interval,
-      currency,
+      currency: billingCurrency,
     })
 
     if (!session.url) {

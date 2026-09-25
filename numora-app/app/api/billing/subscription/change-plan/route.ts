@@ -25,6 +25,7 @@ import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getSupabaseAdminClient } from '@/lib/supabase/admin'
 import { assertBillingEnvironment, gatherBillingEnvironmentContext } from '@/lib/billing/assert-billing-environment'
 import { PLAN_UNAVAILABLE_MESSAGE, isPlanPurchasable } from '@/lib/billing/plan-availability'
+import { evaluatePurchaseEligibility, getPurchaseIneligibleResponse, loadOwnCountryCode } from '@/lib/billing/purchase-eligibility'
 import { getStripeClient } from '@/lib/stripe/client'
 import { VALID_CURRENCIES, VALID_INTERVALS } from '@/lib/stripe/catalog'
 import { changeOwnPlan } from '@/lib/stripe/subscription-management'
@@ -73,6 +74,23 @@ export async function POST(request: Request) {
   // esta checagem (defesa em profundidade para qualquer outro chamador).
   if (!isPlanPurchasable(parsed.data.planSlug)) {
     return NextResponse.json({ error: PLAN_UNAVAILABLE_MESSAGE }, { status: 400 })
+  }
+
+  // B1 — mesma política única de elegibilidade de compra do checkout
+  // (Brasil/BRL, país lido do perfil no servidor). `changeOwnPlan` repete a
+  // checagem (defesa em profundidade). Antes de Stripe e de qualquer troca.
+  let countryCode: string | null
+  try {
+    countryCode = await loadOwnCountryCode(sessionClient, user.id)
+  } catch (err) {
+    Sentry.captureException(err)
+    return NextResponse.json({ error: 'Não foi possível verificar a disponibilidade agora. Tente novamente.' }, { status: 500 })
+  }
+
+  const eligibility = evaluatePurchaseEligibility({ countryCode, currency: parsed.data.currency })
+  if (!eligibility.eligible) {
+    const rejection = getPurchaseIneligibleResponse(eligibility.reason)
+    return NextResponse.json(rejection.body, { status: rejection.status })
   }
 
   let stripe

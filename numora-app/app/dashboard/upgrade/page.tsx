@@ -1,20 +1,27 @@
 /**
  * app/dashboard/upgrade/page.tsx
  * Etapa "5.10D — Billing Commercial Foundation" — página de seleção de
- * plano (Free/Pro/Premium × mensal/anual × BRL/USD). Server Component:
- * busca o catálogo real (`getCommercialPlanPricesCatalog`, mesma função já
- * usada por `/api/billing/checkout`), o plano efetivo (`get_effective_plan`,
- * mesma RPC do Dashboard) e `profiles.country_code` (para resolver a moeda
- * via `resolveCurrencyFromCountryCode` — nunca geolocalização). Toda a
- * autoridade de preço continua no servidor: esta página só lê o mesmo
- * catálogo que `/api/billing/checkout` valida contra antes de criar
- * qualquer Checkout Session.
+ * plano (Free/Pro/Premium × mensal/anual). Server Component: busca o
+ * catálogo real (`getCommercialPlanPricesCatalog`, mesma função já usada por
+ * `/api/billing/checkout`), o plano efetivo (`get_effective_plan`, mesma RPC
+ * do Dashboard) e `profiles.country_code`. Toda a autoridade de preço
+ * continua no servidor: esta página só lê o mesmo catálogo que
+ * `/api/billing/checkout` valida contra antes de criar qualquer Checkout
+ * Session.
+ *
+ * Etapa "B1 — Official Launch, código de cobrança": a V1 comercial é
+ * SOMENTE Brasil/BRL (lib/billing/purchase-eligibility.ts). O catálogo é
+ * sempre exibido em BRL (a única moeda comercial da V1 — USD nunca é
+ * apresentado como opção) e a elegibilidade de compra é derivada do país do
+ * perfil (`getPurchaseAvailability`) só para a apresentação; a barreira real
+ * é `evaluatePurchaseEligibility`, aplicada no servidor em
+ * `/api/billing/checkout` e `/api/billing/subscription/change-plan`.
  */
 import { redirect } from 'next/navigation'
 
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 import { getCommercialPlanPricesCatalog } from '@/lib/stripe/catalog'
-import { resolveCurrencyFromCountryCode } from '@/lib/stripe/resolve-currency'
+import { PURCHASE_ELIGIBLE_CURRENCY, getPurchaseAvailability } from '@/lib/billing/purchase-eligibility'
 import { PageHeader } from '@/components/ui/PageHeader'
 import { PricingSelector } from '@/components/billing/PricingSelector'
 import { ErrorState } from '@/components/ui/ErrorState'
@@ -48,9 +55,10 @@ export default async function UpgradePage() {
     )
   }
 
+  // Falha ao ler o perfil = país desconhecido = SEM elegibilidade (fail-closed) — nunca assume Brasil.
   const countryCode =
     profileResult.status === 'fulfilled' ? ((profileResult.value.data as { country_code: string | null } | null)?.country_code ?? null) : null
-  const currency = resolveCurrencyFromCountryCode(countryCode)
+  const purchaseAvailability = getPurchaseAvailability(countryCode)
 
   const currentPlanSlug =
     effectivePlanResult.status === 'fulfilled' ? ((effectivePlanResult.value.data as { plan_slug: string } | null)?.plan_slug ?? 'free') : 'free'
@@ -58,7 +66,12 @@ export default async function UpgradePage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader title="Planos" description="Colecione sem limites." />
-      <PricingSelector catalog={catalogResult.value} currentPlanSlug={currentPlanSlug} currency={currency} />
+      <PricingSelector
+        catalog={catalogResult.value}
+        currentPlanSlug={currentPlanSlug}
+        currency={PURCHASE_ELIGIBLE_CURRENCY}
+        purchaseAvailability={purchaseAvailability}
+      />
     </div>
   )
 }
