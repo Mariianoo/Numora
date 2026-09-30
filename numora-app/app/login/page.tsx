@@ -19,6 +19,13 @@
  * `getLoginQueryErrorMessage` (whitelist estrita) mostra uma mensagem clara;
  * qualquer outro valor/ausência de parâmetro não altera o comportamento. O
  * `useSearchParams()` exige um limite de `<Suspense>` (a página é estática).
+ *
+ * Etapa "B2.1 — Hardening": CAPTCHA (Turnstile). Só existe quando
+ * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` está configurada — sem ela o login chama
+ * `signInWithPassword(email, password)` exatamente como antes. Com ela, o
+ * token é OBRIGATÓRIO no navegador (fail-closed: sem token, nada é enviado) e
+ * repassado ao Supabase Auth, que o verifica. O token é de uso único, vive só
+ * em memória e nunca é registrado.
  */
 'use client'
 
@@ -31,6 +38,8 @@ import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.
 import type { AuthSession } from '@/features/auth/types'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
 import { getLoginQueryErrorMessage } from '@/features/auth/login-error-message'
+import { CAPTCHA_REQUIRED_MESSAGE, useCaptcha } from '@/features/auth/use-captcha'
+import { TurnstileWidget } from '@/components/auth/TurnstileWidget'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { PasswordInput } from '@/components/ui/PasswordInput'
@@ -52,6 +61,7 @@ function LoginContent() {
 
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const captcha = useCaptcha()
 
   useEffect(() => {
     authRepository.getSession().then((currentSession) => {
@@ -79,10 +89,21 @@ function LoginContent() {
     event.preventDefault()
     setError(null)
     setHasAttemptedLogin(true)
+
+    if (captcha.enabled && !captcha.token) {
+      setError(CAPTCHA_REQUIRED_MESSAGE)
+      return
+    }
+
     setIsSubmitting(true)
 
     try {
-      await authRepository.signInWithPassword(email, password)
+      if (captcha.enabled) {
+        // Token de uso único: consumido aqui (sucesso ou falha) e renovado pelo widget.
+        await authRepository.signInWithPassword(email, password, captcha.consume() ?? undefined)
+      } else {
+        await authRepository.signInWithPassword(email, password)
+      }
       // onAuthStateChange (acima) atualiza `session`; o efeito redireciona.
     } catch (err) {
       setError(getUserFriendlyErrorMessage(err))
@@ -117,6 +138,8 @@ function LoginContent() {
             onChange={(e) => setPassword(e.target.value)}
             required
           />
+
+          {captcha.siteKey && <TurnstileWidget siteKey={captcha.siteKey} onToken={captcha.handleToken} resetKey={captcha.resetKey} />}
 
           {(error ?? (hasAttemptedLogin ? null : queryErrorMessage)) && (
             <p className="text-sm text-danger" role="alert">

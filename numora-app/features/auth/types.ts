@@ -37,25 +37,32 @@ export interface AuthState {
 }
 
 /**
- * Dados do formulário de cadastro (Etapa 7 — e-mail/senha). `name` e
- * `countryCode` vão via `options.data` do `signUp()`: `name` é lido pelo
- * trigger `handle_new_user` (banco) para popular `profiles.name`;
- * `countryCode` não é lido pelo trigger — é aplicado separadamente pelo
- * repositório (ver auth.repository.ts) depois que há sessão.
+ * Payload do cadastro enviado a POST /api/auth/signup (Etapa "B2.4 — Signup
+ * server-controlled"). NÃO há senha: a conta nasce com uma senha aleatória
+ * descartada no servidor e o usuário define a real depois de confirmar o
+ * e-mail. A validação que vale é a do servidor
+ * (lib/auth/signup-validation.ts); os consentimentos são gravados SÓ pelo
+ * servidor (nenhuma metadata do cliente é prova de aceite).
  */
 export interface SignUpInput {
   name: string
   email: string
-  password: string
-  countryCode: string | null
+  /** V1: somente "BR" (o servidor rejeita qualquer outro valor). */
+  countryCode: string
+  termsAccepted: boolean
+  privacyAccepted: boolean
+  age18Confirmed: boolean
+  /** Opt-in de marketing — opcional, separado, nunca pré-marcado. */
+  marketingOptIn: boolean
+  /** Versões exibidas ao usuário no formulário (o servidor exige a vigente). */
+  termsVersion: string
+  privacyVersion: string
+  ageConfirmationVersion: string
+  /** Token do Turnstile (verificado no servidor; só quando o CAPTCHA está configurado). */
+  captchaToken?: string
 }
 
+/** O cadastro nunca devolve sessão: a conta só fica ativa após confirmar o e-mail. */
 export interface SignUpResult {
-  /**
-   * `true` = o Supabase já retornou uma sessão ativa (Confirm email
-   * desabilitado). `false` = cadastro criado, mas a sessão só existe
-   * depois que o usuário confirmar o e-mail (cenário confirmado como o
-   * real deste projeto).
-   */
-  hasSession: boolean
+  needsEmailConfirmation: true
 }

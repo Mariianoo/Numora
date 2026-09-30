@@ -16,9 +16,13 @@
  * depende deste código. Aqui atualizamos email/nome a cada confirmação/
  * login, caso tenham mudado, e `country_code` quando veio do formulário
  * de cadastro (`user_metadata.country_code` — o trigger só lê name/email,
- * nunca país). Nota: este UPDATE roda em toda passagem por aqui, não só
- * na primeira — se um dia existir tela de editar país, este trecho
- * precisa parar de sobrescrever incondicionalmente.
+ * nunca país).
+ *
+ * Etapa "B2 — Signup + Legal": `handle_new_user()` passou a gravar país/nome/
+ * e-mail (e os consentimentos) na CRIAÇÃO do usuário, então confirmar o
+ * e-mail em OUTRO navegador (PKCE falha → auth_callback_failed) não perde
+ * mais nenhum dado do cadastro. Aqui o país só é preenchido se ainda
+ * estiver vazio (nunca sobrescreve); ver lib/auth/callback-profile.ts.
  *
  * Etapa 15.10.2: este é o ponto real (não o client) onde a maioria dos
  * cadastros persiste a atribuição de first-touch — "Confirm email"
@@ -35,8 +39,9 @@
  */
 import { NextResponse } from 'next/server'
 import { cookies } from 'next/headers'
-import * as Sentry from '@sentry/nextjs'
 
+import { resolveCallbackProfileFields } from '@/lib/auth/callback-profile'
+import { captureAuthError } from '@/lib/monitoring/capture-auth-error'
 import { getSupabaseServerClient } from '@/lib/supabase/server'
 
 const ATTRIBUTION_COOKIE = 'numora_attribution'
@@ -61,21 +66,36 @@ export async function GET(request: Request) {
     const { data, error } = await supabase.auth.exchangeCodeForSession(code)
 
     if (error) {
-      Sentry.captureException(error)
+      captureAuthError('auth_callback', error)
     }
 
     if (!error) {
       const user = data.user
-      const countryCode = (user.user_metadata?.country_code ?? null) as string | null
+      const { base, countryToFill } = resolveCallbackProfileFields(user)
 
-      await supabase
-        .from('profiles')
-        .update({
-          email: user.email,
-          name: (user.user_metadata?.name ?? user.user_metadata?.full_name ?? null) as string | null,
-          ...(countryCode ? { country_code: countryCode } : {}),
-        })
-        .eq('id', user.id)
+      // Etapa "B2": nome/e-mail e país são UPDATEs separados — um país
+      // inválido nunca derruba a atualização de nome/e-mail — e erros deixam
+      // de ser ignorados em silêncio (vão ao Sentry sem dados do usuário).
+      // Nunca bloqueia o login: o profile já nasceu completo pelo trigger.
+      if (Object.keys(base).length > 0) {
+        const { error: profileError } = await supabase.from('profiles').update(base).eq('id', user.id)
+        if (profileError) {
+          captureAuthError('auth_callback_profile', profileError)
+        }
+      }
+
+      if (countryToFill) {
+        // Só preenche se ainda estiver vazio: nunca sobrescreve um país já
+        // definido (pelo trigger no cadastro ou editado pelo usuário).
+        const { error: countryError } = await supabase
+          .from('profiles')
+          .update({ country_code: countryToFill })
+          .eq('id', user.id)
+          .is('country_code', null)
+        if (countryError) {
+          captureAuthError('auth_callback_profile', countryError)
+        }
+      }
 
       const cookieStore = await cookies()
       const attributionCookie = cookieStore.get(ATTRIBUTION_COOKIE)?.value
@@ -103,7 +123,7 @@ export async function GET(request: Request) {
           attributionPersisted = !attributionError
         } catch (err) {
           // JSON inválido/cookie corrompido — nunca bloqueia o login.
-          Sentry.captureException(err)
+          captureAuthError('auth_callback', err)
         }
       }
 

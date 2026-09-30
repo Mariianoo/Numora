@@ -3,6 +3,14 @@
  * Recuperação de senha (Etapa 7). Sempre mostra a mesma mensagem de
  * sucesso, exista ou não o e-mail informado — mesmo princípio de
  * segurança contra enumeração de contas já usado no login.
+ *
+ * Etapa "B2.1 — Hardening": CAPTCHA (Turnstile) só quando
+ * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` está configurada; sem ela o comportamento é
+ * o de antes. O token é obrigatório no navegador quando habilitado, repassado
+ * ao Supabase Auth (que o verifica), de uso único, só em memória. As
+ * mensagens não mudam — nada revela se o e-mail existe. A tela de redefinição
+ * (/auth/reset-password) não usa CAPTCHA: a credencial ali é o link de
+ * recuperação já validado pelo Supabase.
  */
 'use client'
 
@@ -12,6 +20,8 @@ import { MailCheck } from 'lucide-react'
 
 import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { CAPTCHA_REQUIRED_MESSAGE, useCaptcha } from '@/features/auth/use-captcha'
+import { TurnstileWidget } from '@/components/auth/TurnstileWidget'
 import { Button } from '@/components/ui/Button'
 import { Input } from '@/components/ui/Input'
 import { Card } from '@/components/ui/Card'
@@ -24,14 +34,26 @@ export default function ForgotPasswordPage() {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(false)
+  const captcha = useCaptcha()
 
   async function handleSubmit(event: FormEvent) {
     event.preventDefault()
     setError(null)
+
+    if (captcha.enabled && !captcha.token) {
+      setError(CAPTCHA_REQUIRED_MESSAGE)
+      return
+    }
+
     setIsSubmitting(true)
 
     try {
-      await authRepository.requestPasswordReset(email)
+      if (captcha.enabled) {
+        // Token de uso único: consumido aqui (sucesso ou falha) e renovado pelo widget.
+        await authRepository.requestPasswordReset(email, captcha.consume() ?? undefined)
+      } else {
+        await authRepository.requestPasswordReset(email)
+      }
       setSubmitted(true)
     } catch (err) {
       setError(getUserFriendlyErrorMessage(err))
@@ -74,6 +96,8 @@ export default function ForgotPasswordPage() {
             onChange={(e) => setEmail(e.target.value)}
             required
           />
+
+          {captcha.siteKey && <TurnstileWidget siteKey={captcha.siteKey} onToken={captcha.handleToken} resetKey={captcha.resetKey} />}
 
           {error && <p className="text-sm text-danger">{error}</p>}
 

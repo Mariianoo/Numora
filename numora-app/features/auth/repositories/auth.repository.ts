@@ -9,24 +9,23 @@
  * o provider no Supabase continuam configurados; reativar no futuro é só
  * voltar a chamar este método a partir da UI, sem mudança de arquitetura.
  *
- * Etapa 15.10.2: `signUp()` persiste a atribuição de first-touch (se o
- * cookie existir — nunca cria dado quando o visitante não consentiu
- * marketing antes do cadastro) só no ramo `hasSession` (mesmo raciocínio
- * já usado para `country_code`: se "Confirm email" estiver desabilitado,
- * a sessão já existe aqui e o usuário nunca passa por
- * app/auth/callback/route.ts, que é quem cobre o caso normal — e-mail
- * pendente de confirmação). `upsert(..., { onConflict: 'user_id',
- * ignoreDuplicates: true })` nunca sobrescreve uma linha já existente —
- * a mesma garantia de first-touch usada nos dois caminhos possíveis.
+ * Etapa 15.10.2 (histórico): a atribuição de first-touch deixou de ser gravada
+ * aqui — desde a B2.4 o cadastro não devolve sessão e a atribuição é gravada
+ * em POST /api/auth/confirm (lib/auth/persist-attribution.ts).
+ *
+ * Etapa "B2.4 — Signup server-controlled": `signUp()` chama POST /api/auth/signup
+ * (validação no servidor, fail-closed por `SIGNUP_ENABLED`); o navegador NUNCA
+ * chama o GoTrue para criar conta (o signup público do Supabase fica
+ * desabilitado). `signInWithPassword`/`requestPasswordReset` aceitam um
+ * `captchaToken` opcional (repassado ao Supabase Auth) — preparação para o
+ * Turnstile; sem token, o comportamento é idêntico ao anterior.
  */
 import type { AuthChangeEvent, Session } from '@supabase/supabase-js'
 import { isAuthWeakPasswordError } from '@supabase/supabase-js'
-import * as Sentry from '@sentry/nextjs'
 
 import { getSupabaseBrowserClient } from '@/lib/supabase/client'
 import type { AuthSession, AuthUser, SignUpInput, SignUpResult } from '@/features/auth/types'
 import { mapAuthErrorMessage } from '@/features/auth/map-auth-error-message'
-import { getStoredAttribution, clearStoredAttribution } from '@/lib/analytics/attribution'
 
 export interface AuthRepository {
   getSession(): Promise<AuthSession | null>
@@ -34,9 +33,9 @@ export interface AuthRepository {
   /** Dispara quando o link de recuperação de senha é processado com sucesso. */
   onPasswordRecovery(callback: () => void): () => void
   signInWithGoogle(): Promise<void>
-  signInWithPassword(email: string, password: string): Promise<void>
+  signInWithPassword(email: string, password: string, captchaToken?: string): Promise<void>
   signUp(input: SignUpInput): Promise<SignUpResult>
-  requestPasswordReset(email: string): Promise<void>
+  requestPasswordReset(email: string, captchaToken?: string): Promise<void>
   updatePassword(password: string): Promise<void>
   signOut(): Promise<void>
 }
@@ -106,8 +105,12 @@ export function createSupabaseAuthRepository(): AuthRepository {
       }
     },
 
-    async signInWithPassword(email, password) {
-      const { data, error } = await supabase.auth.signInWithPassword({ email, password })
+    async signInWithPassword(email, password, captchaToken) {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+        ...(captchaToken ? { options: { captchaToken } } : {}),
+      })
 
       // Investigação no código-fonte instalado (@supabase/auth-js, dentro
       // de @supabase/supabase-js) confirma: quando a senha está CORRETA
@@ -135,74 +138,35 @@ export function createSupabaseAuthRepository(): AuthRepository {
     },
 
     async signUp(input) {
-      const { data, error } = await supabase.auth.signUp({
-        email: input.email,
-        password: input.password,
-        options: {
-          data: {
-            name: input.name,
-            country_code: input.countryCode,
-          },
-          emailRedirectTo: `${window.location.origin}/auth/callback`,
-        },
-      })
-
-      if (error) {
-        throw new Error(mapAuthErrorMessage(error))
+      // Etapa "B2.4": o cadastro NÃO chama o GoTrue do navegador (o signup
+      // público do Supabase está desabilitado). A rota do servidor valida
+      // flag, Origin, Turnstile, país (BR), consentimentos e versões, cria a
+      // conta pendente pela Admin API e envia o e-mail de confirmação. O
+      // usuário define a senha só depois de confirmar o e-mail.
+      let response: Response
+      try {
+        response = await fetch('/api/auth/signup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(input),
+        })
+      } catch {
+        throw new Error('Não foi possível enviar o cadastro. Verifique sua conexão e tente novamente.')
       }
 
-      const hasSession = data.session !== null
+      const result = (await response.json().catch(() => null)) as { ok: true } | { ok: false; error?: string } | null
 
-      // Se "Confirm email" estivesse desabilitado, já haveria sessão ativa
-      // aqui e o usuário nunca passaria por app/auth/callback/route.ts
-      // (que é quem aplica country_code a partir do metadata na
-      // confirmação). Cobrimos os dois cenários gravando diretamente
-      // enquanto a sessão está disponível — sem duplicar a criação do
-      // profile em si, que continua exclusivamente a cargo do trigger.
-      if (hasSession && input.countryCode && data.user) {
-        await supabase.from('profiles').update({ country_code: input.countryCode }).eq('id', data.user.id)
+      if (!result || !result.ok) {
+        throw new Error((result && !result.ok && result.error) || 'Não foi possível concluir o cadastro. Tente novamente.')
       }
 
-      if (hasSession && data.user) {
-        const attribution = getStoredAttribution()
-        if (attribution) {
-          // Falha aqui nunca deve impedir o cadastro — atribuição é
-          // enriquecimento, não caminho crítico. try/catch (não só o
-          // `error` de retorno) porque uma exceção de rede/timeout no
-          // upsert não pode propagar e derrubar um signUp() que já teve
-          // sucesso no GoTrue — mesmo padrão de app/auth/callback/route.ts.
-          try {
-            const { error: attributionError } = await supabase.from('user_acquisition').upsert(
-              {
-                user_id: data.user.id,
-                first_source: attribution.source,
-                first_medium: attribution.medium,
-                first_campaign: attribution.campaign,
-                first_term: attribution.term,
-                first_content: attribution.content,
-                landing_path: attribution.landingPath,
-                referrer: attribution.referrer,
-                captured_at: attribution.capturedAt,
-              },
-              { onConflict: 'user_id', ignoreDuplicates: true },
-            )
-
-            if (!attributionError) {
-              clearStoredAttribution()
-            }
-          } catch (err) {
-            // Exceção de rede/timeout — nunca bloqueia o cadastro.
-            Sentry.captureException(err)
-          }
-        }
-      }
-
-      return { hasSession }
+      return { needsEmailConfirmation: true }
     },
 
-    async requestPasswordReset(email) {
+    async requestPasswordReset(email, captchaToken) {
       const { error } = await supabase.auth.resetPasswordForEmail(email, {
         redirectTo: `${window.location.origin}/auth/reset-password`,
+        ...(captchaToken ? { captchaToken } : {}),
       })
       if (error) {
         throw new Error(mapAuthErrorMessage(error))

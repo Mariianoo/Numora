@@ -10,6 +10,7 @@
  * nenhuma categoria ou cookie além dos que existem de fato no código.
  */
 import { Card } from '@/components/ui/Card'
+import { LegalDocumentMeta } from '@/components/legal/LegalDocumentMeta'
 import Link from 'next/link'
 
 export const metadata = {
@@ -33,6 +34,8 @@ export default function CookiesPage() {
           estritamente necessária para o produto funcionar.
         </p>
       </div>
+
+      <LegalDocumentMeta type="cookies" />
 
       <Card className="p-8">
         <div className="flex flex-col gap-7 text-sm leading-relaxed text-text-secondary">

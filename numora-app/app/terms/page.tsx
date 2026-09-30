@@ -11,6 +11,7 @@
 import Link from 'next/link'
 
 import { Card } from '@/components/ui/Card'
+import { LegalDocumentMeta } from '@/components/legal/LegalDocumentMeta'
 
 export const metadata = {
   title: 'Termos de Uso — Numora',
@@ -33,6 +34,8 @@ export default function TermsPage() {
           desenvolvimento, ainda pré-operacional.
         </p>
       </div>
+
+      <LegalDocumentMeta type="terms" />
 
       <Card className="p-8">
         <div className="flex flex-col gap-7 text-sm leading-relaxed text-text-secondary">

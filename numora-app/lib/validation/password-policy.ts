@@ -48,5 +48,38 @@ export const PASSWORD_REQUIREMENTS: PasswordRequirement[] = [
 
 /** Único ponto de decisão sobre "esta senha nova é forte o suficiente?". */
 export function isPasswordStrong(password: string): boolean {
-  return PASSWORD_REQUIREMENTS.every((requirement) => requirement.test(password))
+  return validatePassword(password).valid
+}
+
+/**
+ * Etapa "B2 — Signup + Legal": limite máximo aceito pelo GoTrue/bcrypt (72
+ * bytes). Fica FORA de `PASSWORD_REQUIREMENTS` de propósito — não é um
+ * requisito de força mostrado ao usuário na checklist, só um limite técnico.
+ */
+export const MAX_PASSWORD_LENGTH = 72
+
+export const PASSWORD_POLICY_SUMMARY = `Use ao menos ${MIN_PASSWORD_LENGTH} caracteres, com letra maiúscula, minúscula, número e símbolo.`
+
+export type PasswordValidationResult =
+  | { valid: true }
+  | { valid: false; failedRequirements: string[]; tooLong: boolean }
+
+/**
+ * Validação única usada por cadastro (cliente e servidor), redefinição e
+ * testes. Devolve só IDs de requisitos — nunca ecoa a senha.
+ */
+export function validatePassword(password: unknown): PasswordValidationResult {
+  if (typeof password !== 'string') {
+    return { valid: false, failedRequirements: PASSWORD_REQUIREMENTS.map((requirement) => requirement.id), tooLong: false }
+  }
+
+  const failedRequirements = PASSWORD_REQUIREMENTS.filter((requirement) => !requirement.test(password)).map(
+    (requirement) => requirement.id,
+  )
+  const tooLong = new TextEncoder().encode(password).length > MAX_PASSWORD_LENGTH
+
+  if (failedRequirements.length === 0 && !tooLong) {
+    return { valid: true }
+  }
+  return { valid: false, failedRequirements, tooLong }
 }

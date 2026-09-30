@@ -19,6 +19,7 @@
  * desta etapa (só testes, sem mudança de comportamento funcional).
  */
 import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
+import { PASSWORD_POLICY_SUMMARY } from '@/lib/validation/password-policy'
 
 export function mapAuthErrorMessage(error: { code?: string; message: string }): string {
   switch (error.code) {
@@ -30,9 +31,11 @@ export function mapAuthErrorMessage(error: { code?: string; message: string }): 
     case 'email_exists':
       return 'Já existe uma conta com este e-mail.'
     case 'weak_password':
-      return 'Senha muito fraca. Use pelo menos 8 caracteres.'
+      return `Senha muito fraca. ${PASSWORD_POLICY_SUMMARY}`
     case 'same_password':
       return 'A nova senha precisa ser diferente da atual.'
+    case 'captcha_failed':
+      return 'Não foi possível validar a verificação de segurança. Tente novamente.'
     case 'over_email_send_rate_limit':
       return 'Muitas tentativas em pouco tempo. Aguarde alguns minutos e tente novamente.'
     default:

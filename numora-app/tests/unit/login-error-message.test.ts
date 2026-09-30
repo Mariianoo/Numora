@@ -68,7 +68,10 @@ describe('app/login/page.tsx — exibição do erro do callback', () => {
   })
 
   it('o fluxo normal de login não foi alterado (mesmo signInWithPassword, mesmos redirects, mesmo formulário)', () => {
+    // B2.1 — sem CAPTCHA: a chamada continua exatamente signInWithPassword(email, password);
+    // com CAPTCHA habilitado: o token de uso único vai como 3º argumento (ver tests/unit/captcha-login-reset.test.ts).
     expect(code).toMatch(/authRepository\.signInWithPassword\(email, password\)/)
+    expect(code).toMatch(/authRepository\.signInWithPassword\(email, password, captcha\.consume\(\) \?\? undefined\)/)
     expect(code).toMatch(/router\.replace\('\/dashboard'\)/)
     expect(code).toMatch(/router\.refresh\(\)/)
     expect(code).toMatch(/Esqueci minha senha/)

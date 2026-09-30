@@ -59,14 +59,25 @@ const SECURITY_HEADERS = [
   { key: 'Cross-Origin-Resource-Policy', value: 'same-origin' },
 ]
 
+/**
+ * Etapa "B2 — Signup + Legal": Cloudflare Turnstile (CAPTCHA futuro) precisa
+ * de `script-src` e `frame-src` em https://challenges.cloudflare.com (doc
+ * oficial da Cloudflare) — e só isso. O domínio é liberado APENAS quando
+ * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` está definida no build; sem ela (caso de
+ * Production hoje) a CSP fica exatamente como antes (`frame-src 'none'`).
+ * Nenhum curinga em nenhuma diretiva.
+ */
+const TURNSTILE_ORIGIN = 'https://challenges.cloudflare.com'
+const isTurnstileEnabled = Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim())
+
 const CONTENT_SECURITY_POLICY = [
   "default-src 'self'",
-  "script-src 'self' 'unsafe-inline' https://www.googletagmanager.com",
+  `script-src 'self' 'unsafe-inline' https://www.googletagmanager.com${isTurnstileEnabled ? ` ${TURNSTILE_ORIGIN}` : ''}`,
   "style-src 'self' 'unsafe-inline'",
   "img-src 'self' data: https://*.supabase.co",
   "font-src 'self' data:",
   "connect-src 'self' https://*.supabase.co https://*.ingest.us.sentry.io https://www.googletagmanager.com",
-  "frame-src 'none'",
+  isTurnstileEnabled ? `frame-src ${TURNSTILE_ORIGIN}` : "frame-src 'none'",
   "frame-ancestors 'none'",
   "form-action 'self'",
   "base-uri 'self'",

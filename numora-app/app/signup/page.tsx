@@ -8,18 +8,41 @@
  *
  * Reaproveita AuthShell (mesma moldura de login/forgot-password/
  * reset-password) — nenhum componente novo foi criado.
+ *
+ * Etapa "B2 — Signup + Legal": a página passou a decidir NO SERVIDOR, a
+ * cada requisição (`force-dynamic`), se o formulário de cadastro existe —
+ * só com `SIGNUP_ENABLED === "true"` (fail-closed; ver lib/auth/signup-flag.ts)
+ * E a configuração completa do endpoint (origem canônica, Resend, Turnstile —
+ * obrigatório em Production; ver lib/auth/signup-config.ts). Em QUALQUER outro
+ * caso o comportamento é exatamente o de antes: tela de Beta Fechado, sem
+ * formulário. (Etapa B2.4: a V1 aceita só o Brasil, então a página não lista
+ * mais países.)
  */
 import Link from 'next/link'
 import { Sparkles } from 'lucide-react'
 
 import { Card } from '@/components/ui/Card'
 import { AuthShell } from '@/components/ui/AuthShell'
+import { SignupForm } from '@/features/auth/components/SignupForm'
+import { resolveSignupConfig } from '@/lib/auth/signup-config'
+import { isSignupEnabled } from '@/lib/auth/signup-flag'
+import { getTurnstileSiteKey } from '@/lib/captcha/captcha'
+
+export const dynamic = 'force-dynamic'
 
 export const metadata = {
   title: 'Beta Fechado — Numora',
 }
 
 export default function SignupPage() {
+  if (isSignupEnabled() && resolveSignupConfig(process.env).ok) {
+    return <SignupForm captchaSiteKey={getTurnstileSiteKey()} />
+  }
+
+  return <ClosedSignup />
+}
+
+function ClosedSignup() {
   return (
     <AuthShell tagline="Sua coleção. Sua história.">
       <Card className="w-full max-w-sm p-7">

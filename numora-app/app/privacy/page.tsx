@@ -22,6 +22,7 @@
 import Link from 'next/link'
 
 import { Card } from '@/components/ui/Card'
+import { LegalDocumentMeta } from '@/components/legal/LegalDocumentMeta'
 
 export const metadata = {
   title: 'Política de Privacidade — Numora',
@@ -44,6 +45,8 @@ export default function PrivacyPage() {
           dados nesta fase. Ela pode ser atualizada conforme o produto evolui rumo ao lançamento comercial.
         </p>
       </div>
+
+      <LegalDocumentMeta type="privacy" />
 
       <Card className="p-8">
         <div className="flex flex-col gap-7 text-sm leading-relaxed text-text-secondary">
