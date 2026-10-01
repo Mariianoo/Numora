@@ -175,7 +175,7 @@ describe('SIGNUP_ENABLED e configuração — fail-closed', () => {
     ['Resend sem remetente', { RESEND_FROM_EMAIL: '' }],
     ['Turnstile só com site key (sem secret)', { NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' }],
     ['Turnstile só com secret (sem site key)', { TURNSTILE_SECRET_KEY: 's' }],
-    ['Production sem Turnstile', { VERCEL_ENV: 'production' }],
+    ['CAPTCHA_REQUIRED=true sem Turnstile', { CAPTCHA_REQUIRED: 'true' }],
     ['Production com http', { VERCEL_ENV: 'production', NEXT_PUBLIC_SITE_URL: 'http://localhost:3000' }],
   ])('configuração incompleta (%s) → 503 signup_unavailable, sem criar nada', async (_label, overrides) => {
     const { deps, admin, sendEmail } = makeDeps({ env: { ...BASE_ENV, ...overrides } })
@@ -184,6 +184,20 @@ describe('SIGNUP_ENABLED e configuração — fail-closed', () => {
     expect(result.body).toMatchObject({ code: 'signup_unavailable' })
     expect(admin.createPendingUser).not.toHaveBeenCalled()
     expect(sendEmail).not.toHaveBeenCalled()
+  })
+
+  it('Etapa B2.5.2: VERCEL_ENV="production" ISOLADO (sem CAPTCHA_REQUIRED, sem chaves) NÃO bloqueia mais o cadastro — a dependência implícita foi removida', async () => {
+    const { deps, admin } = makeDeps({ env: { ...BASE_ENV, VERCEL_ENV: 'production' } })
+    const result = await handleSignupRequest(makeRequest(body()), deps)
+    expect(result.status).toBe(200)
+    expect(admin.createPendingUser).toHaveBeenCalledTimes(1)
+  })
+
+  it('Etapa B2.5.2: CAPTCHA_REQUIRED=true FORA de Production também bloqueia sem as chaves (a política não depende mais do ambiente)', async () => {
+    const { deps, admin } = makeDeps({ env: { ...BASE_ENV, CAPTCHA_REQUIRED: 'true', VERCEL_ENV: 'development' } })
+    const result = await handleSignupRequest(makeRequest(body()), deps)
+    expect(result.status).toBe(503)
+    expect(admin.createPendingUser).not.toHaveBeenCalled()
   })
 
   it('a origem da requisição/Host nunca substitui a origem canônica: link do e-mail usa NEXT_PUBLIC_SITE_URL', async () => {

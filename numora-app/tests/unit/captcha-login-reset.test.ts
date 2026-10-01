@@ -114,7 +114,7 @@ describe('recuperação de senha — repositório', () => {
   })
 
   it('a semântica anti-enumeração da tela não mudou: mesma mensagem de sucesso, exista ou não o e-mail', () => {
-    const page = readCode('app/forgot-password/page.tsx')
+    const page = readCode('features/auth/components/ForgotPasswordForm.tsx') // Etapa B2.5.2: lógica movida para cá
     expect(page).toMatch(/Se <span className="text-text-primary">\{email\}<\/span> estiver cadastrado, enviamos um link/)
     expect(page).toMatch(/setSubmitted\(true\)/)
   })
@@ -129,8 +129,11 @@ describe('mapAuthErrorMessage — captcha_failed', () => {
 })
 
 describe('páginas — fail-closed e sem persistência do token', () => {
-  const login = readCode('app/login/page.tsx')
-  const forgot = readCode('app/forgot-password/page.tsx')
+  // Etapa "B2.5.2": a lógica de login/reset (inalterada) mora agora em
+  // features/auth/components/{LoginForm,ForgotPasswordForm}.tsx; app/login e
+  // app/forgot-password viraram Server Components finos (ver describe abaixo).
+  const login = readCode('features/auth/components/LoginForm.tsx')
+  const forgot = readCode('features/auth/components/ForgotPasswordForm.tsx')
 
   it('login: CAPTCHA desabilitado → signInWithPassword(email, password); habilitado → com o token consumido', () => {
     expect(login).toMatch(/authRepository\.signInWithPassword\(email, password\)/)
@@ -172,6 +175,8 @@ describe('páginas — fail-closed e sem persistência do token', () => {
       'lib/captcha/captcha-client.ts',
       'app/login/page.tsx',
       'app/forgot-password/page.tsx',
+      'features/auth/components/LoginForm.tsx',
+      'features/auth/components/ForgotPasswordForm.tsx',
       'features/auth/components/SignupForm.tsx',
     ]) {
       const code = readCode(file)
@@ -233,6 +238,29 @@ describe('site key no navegador (lib/captcha/captcha-client.ts)', () => {
     const hook = readCode('features/auth/use-captcha.ts')
     expect(hook).toMatch(/siteKey: string \| null = CLIENT_TURNSTILE_SITE_KEY/)
     expect(hook).toMatch(/enabled: siteKey !== null/)
+  })
+})
+
+describe('Etapa B2.5.2 — login/forgot-password viraram Server Components fail-closed', () => {
+  const loginPage = readCode('app/login/page.tsx')
+  const forgotPage = readCode('app/forgot-password/page.tsx')
+
+  it.each([
+    ['login', 'app/login/page.tsx', 'LoginForm'],
+    ['forgot-password', 'app/forgot-password/page.tsx', 'ForgotPasswordForm'],
+  ])('%s: resolve a política no servidor e, se !ok, mostra indisponibilidade em vez do formulário', (_label, file, formName) => {
+    const code = readCode(file)
+    expect(code).not.toMatch(/^\s*['"]use client['"]/m)
+    expect(code).toMatch(/resolveClientCaptchaPolicy\(process\.env\)/)
+    expect(code).toMatch(/if \(!captcha\.ok\)/)
+    expect(code).toMatch(new RegExp(`<${formName} captchaSiteKey=\\{captcha\\.siteKey\\} />`))
+    expect(code).not.toMatch(/TURNSTILE_SECRET_KEY/)
+  })
+
+  it('nenhuma das duas páginas importa a secret do Turnstile nem o verificador de servidor do cadastro', () => {
+    for (const code of [loginPage, forgotPage]) {
+      expect(code).not.toMatch(/turnstile-server|checkTurnstileServerConfig|resolveSignupCaptchaPolicy|TURNSTILE_SECRET/)
+    }
   })
 })
 

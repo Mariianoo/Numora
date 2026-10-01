@@ -1,182 +1,40 @@
 /**
  * app/login/page.tsx
- * Login por e-mail e senha (Etapa 7). Google OAuth fica sem uso na UI —
- * `authRepository.signInWithGoogle()` continua existindo no repositório,
- * só não é mais chamado daqui.
+ * Etapa "B2.5.2 — Hardening explícito do CAPTCHA": este arquivo virou um
+ * Server Component fino. A decisão de EXIGIR CAPTCHA (`CAPTCHA_REQUIRED`) só
+ * pode ser lida no servidor (variável sem prefixo `NEXT_PUBLIC_`, nunca
+ * inlinada no bundle do cliente) — aqui resolvemos a política uma única vez
+ * por requisição (`resolveClientCaptchaPolicy`, lib/captcha/captcha.ts, a
+ * MESMA função usada por app/forgot-password/page.tsx) e repassamos só o
+ * necessário (a site key pública; nunca a secret) para
+ * features/auth/components/LoginForm.tsx, que mantém toda a lógica de login
+ * (inalterada — ver o cabeçalho daquele arquivo).
  *
- * `router.replace()` + `router.refresh()` juntos (mesmo padrão já usado em
- * app/signup/page.tsx e app/auth/reset-password/page.tsx): sem o refresh,
- * a navegação client-side pode reaproveitar um payload RSC de /dashboard
- * já em cache no Router Cache do App Router (de uma visita anterior na
- * mesma aba), renderizado com dados antigos — nesse caso, `profiles.name`
- * (usado na saudação) ficava desatualizado até um reload completo (F5),
- * que sempre ignora esse cache client-side. `refresh()` força o
- * Server Component de /dashboard a rodar de novo com a sessão atual.
- *
- * Etapa "B1 — Official Launch, código de cobrança": `app/auth/callback/route.ts`
- * redireciona para `/login?error=auth_callback_failed` quando a troca do
- * código falha — antes esse parâmetro nunca era lido (falha silenciosa). Agora
- * `getLoginQueryErrorMessage` (whitelist estrita) mostra uma mensagem clara;
- * qualquer outro valor/ausência de parâmetro não altera o comportamento. O
- * `useSearchParams()` exige um limite de `<Suspense>` (a página é estática).
- *
- * Etapa "B2.1 — Hardening": CAPTCHA (Turnstile). Só existe quando
- * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` está configurada — sem ela o login chama
- * `signInWithPassword(email, password)` exatamente como antes. Com ela, o
- * token é OBRIGATÓRIO no navegador (fail-closed: sem token, nada é enviado) e
- * repassado ao Supabase Auth, que o verifica. O token é de uso único, vive só
- * em memória e nunca é registrado.
+ * `CAPTCHA_REQUIRED=true` sem a site key configurada é fail-closed: a tela
+ * mostra uma mensagem de indisponibilidade em vez de um formulário que
+ * prometeria proteção e não teria como cumprir.
  */
-'use client'
-
-import { Suspense, useEffect, useState, type FormEvent } from 'react'
-import Link from 'next/link'
-import { useRouter, useSearchParams } from 'next/navigation'
-import { Loader2 } from 'lucide-react'
-
-import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
-import type { AuthSession } from '@/features/auth/types'
-import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
-import { getLoginQueryErrorMessage } from '@/features/auth/login-error-message'
-import { CAPTCHA_REQUIRED_MESSAGE, useCaptcha } from '@/features/auth/use-captcha'
-import { TurnstileWidget } from '@/components/auth/TurnstileWidget'
-import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
-import { PasswordInput } from '@/components/ui/PasswordInput'
-import { Card } from '@/components/ui/Card'
+import { resolveClientCaptchaPolicy } from '@/lib/captcha/captcha'
+import { LoginForm } from '@/features/auth/components/LoginForm'
 import { AuthShell } from '@/components/ui/AuthShell'
+import { Card } from '@/components/ui/Card'
 
-const authRepository = createSupabaseAuthRepository()
+export const dynamic = 'force-dynamic'
 
-function LoginContent() {
-  const router = useRouter()
-  const searchParams = useSearchParams()
-  const queryErrorMessage = getLoginQueryErrorMessage(searchParams.get('error'))
-  const [session, setSession] = useState<AuthSession | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  // O aviso vindo da URL some assim que o usuário tenta entrar de novo.
-  const [hasAttemptedLogin, setHasAttemptedLogin] = useState(false)
+export default function LoginPage() {
+  const captcha = resolveClientCaptchaPolicy(process.env)
 
-  const [email, setEmail] = useState('')
-  const [password, setPassword] = useState('')
-  const captcha = useCaptcha()
-
-  useEffect(() => {
-    authRepository.getSession().then((currentSession) => {
-      setSession(currentSession)
-      setIsLoading(false)
-    })
-
-    return authRepository.onAuthStateChange((nextSession) => {
-      setSession(nextSession)
-    })
-  }, [])
-
-  useEffect(() => {
-    // proxy.ts não valida a sessão de verdade em /login (só checa presença
-    // de cookie em /dashboard) — este redirect aqui é quem efetivamente
-    // tira o usuário já logado da tela de login, validando a sessão de
-    // verdade via supabase-js.
-    if (session) {
-      router.replace('/dashboard')
-      router.refresh()
-    }
-  }, [session, router])
-
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault()
-    setError(null)
-    setHasAttemptedLogin(true)
-
-    if (captcha.enabled && !captcha.token) {
-      setError(CAPTCHA_REQUIRED_MESSAGE)
-      return
-    }
-
-    setIsSubmitting(true)
-
-    try {
-      if (captcha.enabled) {
-        // Token de uso único: consumido aqui (sucesso ou falha) e renovado pelo widget.
-        await authRepository.signInWithPassword(email, password, captcha.consume() ?? undefined)
-      } else {
-        await authRepository.signInWithPassword(email, password)
-      }
-      // onAuthStateChange (acima) atualiza `session`; o efeito redireciona.
-    } catch (err) {
-      setError(getUserFriendlyErrorMessage(err))
-      setIsSubmitting(false)
-    }
-  }
-
-  if (isLoading || session) {
+  if (!captcha.ok) {
     return (
-      <div className="flex flex-1 items-center justify-center">
-        <Loader2 className="size-6 animate-spin text-text-secondary" aria-hidden />
-      </div>
+      <AuthShell tagline="Sua coleção. Sua história.">
+        <Card className="w-full max-w-sm p-7">
+          <p className="text-sm text-danger" role="alert">
+            O login está temporariamente indisponível. Tente novamente em alguns instantes.
+          </p>
+        </Card>
+      </AuthShell>
     )
   }
 
-  return (
-    <AuthShell tagline="Sua coleção. Sua história.">
-      <Card className="w-full max-w-sm p-7">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <Input
-            label="E-mail"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-          <PasswordInput
-            label="Senha"
-            autoComplete="current-password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-          />
-
-          {captcha.siteKey && <TurnstileWidget siteKey={captcha.siteKey} onToken={captcha.handleToken} resetKey={captcha.resetKey} />}
-
-          {(error ?? (hasAttemptedLogin ? null : queryErrorMessage)) && (
-            <p className="text-sm text-danger" role="alert">
-              {error ?? queryErrorMessage}
-            </p>
-          )}
-
-          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
-            {isSubmitting ? 'Entrando...' : 'Entrar'}
-          </Button>
-
-          <Link
-            href="/forgot-password"
-            className="text-center text-sm text-text-secondary transition-colors hover:text-accent"
-          >
-            Esqueci minha senha
-          </Link>
-        </form>
-
-        <div className="mt-6 flex flex-col items-center gap-1 border-t border-border pt-5 text-center">
-          <p className="text-sm text-text-secondary">Beta fechado — acesso somente por convite.</p>
-        </div>
-      </Card>
-    </AuthShell>
-  )
-}
-
-export default function LoginPage() {
-  return (
-    <Suspense
-      fallback={
-        <div className="flex flex-1 items-center justify-center">
-          <Loader2 className="size-6 animate-spin text-text-secondary" aria-hidden />
-        </div>
-      }
-    >
-      <LoginContent />
-    </Suspense>
-  )
+  return <LoginForm captchaSiteKey={captcha.siteKey} />
 }

@@ -14,7 +14,7 @@
  * origem canônica (ausente ou diferente → recusa) e recusamos
  * `Sec-Fetch-Site: cross-site`.
  */
-import { checkTurnstileServerConfig } from '@/lib/captcha/captcha'
+import { resolveSignupCaptchaPolicy } from '@/lib/captcha/captcha'
 
 export type SiteOriginResult = { ok: true; origin: string } | { ok: false }
 
@@ -79,9 +79,10 @@ export type SignupConfigResult =
  * ausente ou incoerente → `ok: false` (503 fail-closed):
  * - origem canônica válida;
  * - Resend configurado;
- * - Turnstile: `disabled` (nenhuma chave) só fora de Production; chave
- *   pública sem secret (ou o inverso) é configuração quebrada; em
- *   Production o CAPTCHA é obrigatório.
+ * - Turnstile: etapa "B2.5.2" — a obrigatoriedade é decidida por
+ *   `resolveSignupCaptchaPolicy` (política explícita via `CAPTCHA_REQUIRED`,
+ *   nunca mais por `VERCEL_ENV`). Chave pública sem secret (ou o inverso)
+ *   continua sendo configuração quebrada, sempre `ok:false`.
  */
 export function resolveSignupConfig(env: Record<string, string | undefined>): SignupConfigResult {
   const origin = getCanonicalOrigin(env)
@@ -90,9 +91,8 @@ export function resolveSignupConfig(env: Record<string, string | undefined>): Si
   const email = getEmailConfig(env)
   if (!email) return { ok: false }
 
-  const captcha = checkTurnstileServerConfig(env)
-  if (captcha.state === 'misconfigured') return { ok: false }
-  if (captcha.state === 'disabled' && env.VERCEL_ENV === 'production') return { ok: false }
+  const captcha = resolveSignupCaptchaPolicy(env)
+  if (!captcha.ok) return { ok: false }
 
   return {
     ok: true,

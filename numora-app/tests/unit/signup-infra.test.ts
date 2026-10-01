@@ -12,7 +12,7 @@ import type { SupabaseClient } from '@supabase/supabase-js'
 import { createSignupAdminPort, readOwnership } from '@/lib/auth/signup-adapters'
 import { getCanonicalOrigin, getEmailConfig, isAllowedRequestOrigin, resolveSignupConfig } from '@/lib/auth/signup-config'
 import { generateDiscardedPassword } from '@/lib/auth/random-password'
-import { checkTurnstileServerConfig, isCaptchaRequirementMet } from '@/lib/captcha/captcha'
+import { checkTurnstileServerConfig, isCaptchaRequired } from '@/lib/captcha/captcha'
 import { verifyTurnstileToken } from '@/lib/captcha/turnstile-server'
 import { EmailSendError, sendEmail } from '@/lib/email/resend'
 import { TOKEN_HASH_PATTERN, buildConfirmationUrl, buildSignupConfirmationEmail } from '@/lib/email/signup-email'
@@ -83,20 +83,24 @@ describe('configuração do Turnstile no servidor', () => {
     expect(checkTurnstileServerConfig({ NEXT_PUBLIC_TURNSTILE_SITE_KEY: ' ', TURNSTILE_SECRET_KEY: ' ' })).toEqual({ state: 'disabled' })
   })
 
-  it('Production exige CAPTCHA completo; fora dela só recusa configuração quebrada', () => {
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production' })).toBe(false)
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'a' })).toBe(false)
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'a', TURNSTILE_SECRET_KEY: 'b' })).toBe(true)
-    expect(isCaptchaRequirementMet({})).toBe(true)
-    expect(isCaptchaRequirementMet({ NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'a' })).toBe(false)
+  it('Etapa B2.5.2: isCaptchaRequired lê SÓ CAPTCHA_REQUIRED — VERCEL_ENV não influencia mais a leitura', () => {
+    expect(isCaptchaRequired({ CAPTCHA_REQUIRED: 'true' })).toBe(true)
+    expect(isCaptchaRequired({ CAPTCHA_REQUIRED: 'true', VERCEL_ENV: 'preview' })).toBe(true)
+    expect(isCaptchaRequired({ VERCEL_ENV: 'production' })).toBe(false)
+    expect(isCaptchaRequired({})).toBe(false)
   })
 })
 
 describe('resolveSignupConfig', () => {
   const env = { NEXT_PUBLIC_SITE_URL: ORIGIN, RESEND_API_KEY: 're_k', RESEND_FROM_EMAIL: 'Numora <a@numoracollect.com>' }
 
-  it('completo (sem CAPTCHA, não Production) → ok e captcha disabled', () => {
+  it('completo (sem CAPTCHA, CAPTCHA_REQUIRED ausente) → ok e captcha disabled', () => {
     expect(resolveSignupConfig(env)).toMatchObject({ ok: true, origin: ORIGIN, captcha: 'disabled', turnstileSecret: null })
+  })
+
+  it('CAPTCHA_REQUIRED=true por si só NÃO basta — Production por si só também não: ambos exigem as duas chaves', () => {
+    expect(resolveSignupConfig({ ...env, CAPTCHA_REQUIRED: 'true' })).toEqual({ ok: false })
+    expect(resolveSignupConfig({ ...env, VERCEL_ENV: 'production' })).toMatchObject({ ok: true, captcha: 'disabled' })
   })
 
   it('completo com Turnstile → ok e a secret disponível SÓ no resultado do servidor', () => {
@@ -108,7 +112,7 @@ describe('resolveSignupConfig', () => {
     ['sem origem', { NEXT_PUBLIC_SITE_URL: undefined }],
     ['sem Resend key', { RESEND_API_KEY: undefined }],
     ['sem remetente', { RESEND_FROM_EMAIL: undefined }],
-    ['Production sem Turnstile', { VERCEL_ENV: 'production' }],
+    ['CAPTCHA_REQUIRED=true sem Turnstile', { CAPTCHA_REQUIRED: 'true' }],
     ['Turnstile pela metade', { TURNSTILE_SECRET_KEY: 'x' }],
   ])('%s → falha segura', (_label, overrides) => {
     expect(resolveSignupConfig({ ...env, ...overrides })).toEqual({ ok: false })

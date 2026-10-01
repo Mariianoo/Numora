@@ -1,117 +1,37 @@
 /**
  * app/forgot-password/page.tsx
- * Recuperação de senha (Etapa 7). Sempre mostra a mesma mensagem de
- * sucesso, exista ou não o e-mail informado — mesmo princípio de
- * segurança contra enumeração de contas já usado no login.
+ * Etapa "B2.5.2 — Hardening explícito do CAPTCHA": este arquivo virou um
+ * Server Component fino, pelo mesmo motivo de app/login/page.tsx —
+ * `CAPTCHA_REQUIRED` só pode ser lido no servidor. Resolve a política uma
+ * única vez por requisição (`resolveClientCaptchaPolicy`) e repassa só a
+ * site key pública (nunca a secret) para
+ * features/auth/components/ForgotPasswordForm.tsx, que mantém toda a lógica
+ * do fluxo (inalterada).
  *
- * Etapa "B2.1 — Hardening": CAPTCHA (Turnstile) só quando
- * `NEXT_PUBLIC_TURNSTILE_SITE_KEY` está configurada; sem ela o comportamento é
- * o de antes. O token é obrigatório no navegador quando habilitado, repassado
- * ao Supabase Auth (que o verifica), de uso único, só em memória. As
- * mensagens não mudam — nada revela se o e-mail existe. A tela de redefinição
- * (/auth/reset-password) não usa CAPTCHA: a credencial ali é o link de
- * recuperação já validado pelo Supabase.
+ * `CAPTCHA_REQUIRED=true` sem a site key configurada é fail-closed: mostra
+ * indisponibilidade em vez de um formulário sem proteção.
  */
-'use client'
-
-import { useState, type FormEvent } from 'react'
-import Link from 'next/link'
-import { MailCheck } from 'lucide-react'
-
-import { createSupabaseAuthRepository } from '@/features/auth/repositories/auth.repository'
-import { getUserFriendlyErrorMessage } from '@/lib/errors/get-user-friendly-error-message'
-import { CAPTCHA_REQUIRED_MESSAGE, useCaptcha } from '@/features/auth/use-captcha'
-import { TurnstileWidget } from '@/components/auth/TurnstileWidget'
-import { Button } from '@/components/ui/Button'
-import { Input } from '@/components/ui/Input'
-import { Card } from '@/components/ui/Card'
+import { resolveClientCaptchaPolicy } from '@/lib/captcha/captcha'
+import { ForgotPasswordForm } from '@/features/auth/components/ForgotPasswordForm'
 import { AuthShell } from '@/components/ui/AuthShell'
+import { Card } from '@/components/ui/Card'
 
-const authRepository = createSupabaseAuthRepository()
+export const dynamic = 'force-dynamic'
 
 export default function ForgotPasswordPage() {
-  const [email, setEmail] = useState('')
-  const [isSubmitting, setIsSubmitting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [submitted, setSubmitted] = useState(false)
-  const captcha = useCaptcha()
+  const captcha = resolveClientCaptchaPolicy(process.env)
 
-  async function handleSubmit(event: FormEvent) {
-    event.preventDefault()
-    setError(null)
-
-    if (captcha.enabled && !captcha.token) {
-      setError(CAPTCHA_REQUIRED_MESSAGE)
-      return
-    }
-
-    setIsSubmitting(true)
-
-    try {
-      if (captcha.enabled) {
-        // Token de uso único: consumido aqui (sucesso ou falha) e renovado pelo widget.
-        await authRepository.requestPasswordReset(email, captcha.consume() ?? undefined)
-      } else {
-        await authRepository.requestPasswordReset(email)
-      }
-      setSubmitted(true)
-    } catch (err) {
-      setError(getUserFriendlyErrorMessage(err))
-    } finally {
-      setIsSubmitting(false)
-    }
-  }
-
-  if (submitted) {
+  if (!captcha.ok) {
     return (
       <AuthShell tagline="Esqueci minha senha">
-        <div className="flex flex-col items-center gap-4 text-center">
-          <div className="flex size-14 items-center justify-center rounded-full bg-accent/10 text-accent">
-            <MailCheck className="size-7" aria-hidden />
-          </div>
-          <div>
-            <h2 className="text-xl font-semibold text-text-primary">Verifique seu e-mail</h2>
-            <p className="mt-2 max-w-sm text-sm text-text-secondary">
-              Se <span className="text-text-primary">{email}</span> estiver cadastrado, enviamos um link para
-              redefinir sua senha.
-            </p>
-          </div>
-          <Link href="/login" className="text-sm text-accent transition-colors hover:text-accent-hover">
-            Voltar para o login
-          </Link>
-        </div>
+        <Card className="w-full max-w-sm p-7">
+          <p className="text-sm text-danger" role="alert">
+            A recuperação de senha está temporariamente indisponível. Tente novamente em alguns instantes.
+          </p>
+        </Card>
       </AuthShell>
     )
   }
 
-  return (
-    <AuthShell tagline="Esqueci minha senha">
-      <Card className="w-full max-w-sm p-7">
-        <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-          <Input
-            label="E-mail"
-            type="email"
-            autoComplete="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-          />
-
-          {captcha.siteKey && <TurnstileWidget siteKey={captcha.siteKey} onToken={captcha.handleToken} resetKey={captcha.resetKey} />}
-
-          {error && <p className="text-sm text-danger">{error}</p>}
-
-          <Button type="submit" isLoading={isSubmitting} className="mt-1 w-full">
-            {isSubmitting ? 'Enviando...' : 'Enviar link de recuperação'}
-          </Button>
-        </form>
-
-        <div className="mt-6 flex justify-center border-t border-border pt-5">
-          <Link href="/login" className="text-sm text-text-secondary transition-colors hover:text-accent">
-            Voltar para o login
-          </Link>
-        </div>
-      </Card>
-    </AuthShell>
-  )
+  return <ForgotPasswordForm captchaSiteKey={captcha.siteKey} />
 }

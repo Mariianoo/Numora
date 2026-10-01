@@ -7,7 +7,15 @@ import { readFileSync, readdirSync, statSync } from 'node:fs'
 import path from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { CAPTCHA_TOKEN_MAX_LENGTH, checkCaptchaToken, getTurnstileSiteKey, isCaptchaEnabled, isCaptchaRequirementMet } from '@/lib/captcha/captcha'
+import {
+  CAPTCHA_TOKEN_MAX_LENGTH,
+  checkCaptchaToken,
+  getTurnstileSiteKey,
+  isCaptchaEnabled,
+  isCaptchaRequired,
+  resolveClientCaptchaPolicy,
+  resolveSignupCaptchaPolicy,
+} from '@/lib/captcha/captcha'
 
 const ROOT = path.resolve(__dirname, '../..')
 const read = (file: string) => readFileSync(path.join(ROOT, file), 'utf8')
@@ -57,19 +65,76 @@ describe('CAPTCHA — checkCaptchaToken', () => {
   })
 })
 
-describe('CAPTCHA — regra de ambiente (nunca "CAPTCHA fake" em Production)', () => {
-  it('Production sem CAPTCHA → requisito NÃO atendido', () => {
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production' })).toBe(false)
-  })
-  it('Production com CAPTCHA → atendido', () => {
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k', TURNSTILE_SECRET_KEY: 's' })).toBe(true)
-    // B2.4: só a site key, sem a secret do servidor, é configuração QUEBRADA
-    expect(isCaptchaRequirementMet({ VERCEL_ENV: 'production', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' })).toBe(false)
-  })
-  it('Preview/Development/local não exigem', () => {
-    for (const env of [{}, { VERCEL_ENV: 'preview' }, { VERCEL_ENV: 'development' }]) {
-      expect(isCaptchaRequirementMet(env)).toBe(true)
+describe('CAPTCHA_REQUIRED — política explícita (Etapa B2.5.2, substitui VERCEL_ENV)', () => {
+  it('isCaptchaRequired: só o valor EXATO "true" ativa (fail-closed, mesma convenção de SIGNUP_ENABLED)', () => {
+    expect(isCaptchaRequired({ CAPTCHA_REQUIRED: 'true' })).toBe(true)
+    for (const value of [undefined, '', 'false', 'TRUE', 'True', '1', 'yes', ' true', 'true ']) {
+      expect(isCaptchaRequired({ CAPTCHA_REQUIRED: value })).toBe(false)
     }
+  })
+
+  it('VERCEL_ENV sozinho NUNCA mais decide obrigatoriedade (a dependência implícita foi removida)', () => {
+    // Em Production, sem CAPTCHA_REQUIRED e sem nenhuma chave, o cadastro NÃO é mais bloqueado por isso.
+    expect(resolveSignupCaptchaPolicy({ VERCEL_ENV: 'production' })).toEqual({ ok: true, state: 'disabled' })
+    expect(resolveClientCaptchaPolicy({ VERCEL_ENV: 'production' })).toEqual({ ok: true, required: false, siteKey: null })
+  })
+
+  describe('resolveSignupCaptchaPolicy (cadastro — verificação é NOSSA)', () => {
+    it('CAPTCHA_REQUIRED=false/ausente + sem chaves → disabled (comportamento anterior preservado)', () => {
+      expect(resolveSignupCaptchaPolicy({})).toEqual({ ok: true, state: 'disabled' })
+      expect(resolveSignupCaptchaPolicy({ CAPTCHA_REQUIRED: 'false' })).toEqual({ ok: true, state: 'disabled' })
+    })
+
+    it('CAPTCHA_REQUIRED=true + sem chaves → fail-closed', () => {
+      expect(resolveSignupCaptchaPolicy({ CAPTCHA_REQUIRED: 'true' })).toEqual({ ok: false })
+    })
+
+    it('CAPTCHA_REQUIRED=true + as duas chaves → enabled, com a secret', () => {
+      expect(resolveSignupCaptchaPolicy({ CAPTCHA_REQUIRED: 'true', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k', TURNSTILE_SECRET_KEY: 's' })).toEqual({
+        ok: true,
+        state: 'enabled',
+        siteKey: 'k',
+        secret: 's',
+      })
+    })
+
+    it('configuração pela metade é SEMPRE ok:false, com ou sem CAPTCHA_REQUIRED', () => {
+      for (const required of [undefined, 'true', 'false']) {
+        expect(resolveSignupCaptchaPolicy({ CAPTCHA_REQUIRED: required, NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' })).toEqual({ ok: false })
+        expect(resolveSignupCaptchaPolicy({ CAPTCHA_REQUIRED: required, TURNSTILE_SECRET_KEY: 's' })).toEqual({ ok: false })
+      }
+    })
+
+    it('com as duas chaves, o token é verificado mesmo sem CAPTCHA_REQUIRED=true (preserva o comportamento já existente)', () => {
+      expect(resolveSignupCaptchaPolicy({ NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k', TURNSTILE_SECRET_KEY: 's' })).toMatchObject({ ok: true, state: 'enabled' })
+    })
+  })
+
+  describe('resolveClientCaptchaPolicy (login/forgot-password — verificação é do Supabase)', () => {
+    it('CAPTCHA_REQUIRED=false/ausente + sem site key → ok, opcional, sem widget (comportamento anterior)', () => {
+      expect(resolveClientCaptchaPolicy({})).toEqual({ ok: true, required: false, siteKey: null })
+    })
+
+    it('CAPTCHA_REQUIRED=false + site key presente → ok, opcional, com widget', () => {
+      expect(resolveClientCaptchaPolicy({ NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' })).toEqual({ ok: true, required: false, siteKey: 'k' })
+    })
+
+    it('CAPTCHA_REQUIRED=true + sem site key → fail-closed (a página não pode funcionar)', () => {
+      expect(resolveClientCaptchaPolicy({ CAPTCHA_REQUIRED: 'true' })).toEqual({ ok: false })
+    })
+
+    it('CAPTCHA_REQUIRED=true + site key presente → ok, obrigatório', () => {
+      expect(resolveClientCaptchaPolicy({ CAPTCHA_REQUIRED: 'true', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' })).toEqual({ ok: true, required: true, siteKey: 'k' })
+    })
+
+    it('para login/reset a secret do SERVIDOR (TURNSTILE_SECRET_KEY) é irrelevante — só a site key importa', () => {
+      expect(resolveClientCaptchaPolicy({ CAPTCHA_REQUIRED: 'true', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k', TURNSTILE_SECRET_KEY: 's' })).toEqual({
+        ok: true,
+        required: true,
+        siteKey: 'k',
+      })
+      expect(resolveClientCaptchaPolicy({ CAPTCHA_REQUIRED: 'true', NEXT_PUBLIC_TURNSTILE_SITE_KEY: 'k' })).toEqual({ ok: true, required: true, siteKey: 'k' })
+    })
   })
 })
 
@@ -100,11 +165,17 @@ describe('CAPTCHA — nenhum secret no código do cliente', () => {
     }
   })
 
-  it('a única variável do CAPTCHA no bundle é a site key PÚBLICA', () => {
+  it('a única variável do CAPTCHA no bundle é a site key PÚBLICA (CAPTCHA_REQUIRED e a secret nunca são lidas por código de cliente)', () => {
     const widget = read('components/auth/TurnstileWidget.tsx')
     expect(widget).not.toMatch(/process\.env/)
     const captcha = read('lib/captcha/captcha.ts')
-    expect(captcha.match(/process\.env\.[A-Z_]+|env\.[A-Z_]+/g)?.filter((v) => !/NEXT_PUBLIC_TURNSTILE_SITE_KEY|TURNSTILE_SECRET_KEY|VERCEL_ENV/.test(v)) ?? []).toEqual([])
+    expect(captcha.match(/process\.env\.[A-Z_]+|env\.[A-Z_]+/g)?.filter((v) => !/NEXT_PUBLIC_TURNSTILE_SITE_KEY|TURNSTILE_SECRET_KEY|VERCEL_ENV|CAPTCHA_REQUIRED/.test(v)) ?? []).toEqual([])
+    // lib/captcha/captcha.ts é server-only (usado só por Server Components/rotas) — CAPTCHA_REQUIRED
+    // nunca é NEXT_PUBLIC_, então o Next.js nunca o inlina no bundle do cliente de qualquer forma.
+    for (const file of ['features/auth/use-captcha.ts', 'lib/captcha/captcha-client.ts']) {
+      // `CAPTCHA_REQUIRED_MESSAGE` (texto de UI, pré-existente) não conta — só a leitura da env var.
+      expect(read(file)).not.toMatch(/\bCAPTCHA_REQUIRED\b(?!_MESSAGE)/)
+    }
   })
 })
 
@@ -146,7 +217,7 @@ describe('CAPTCHA — repositório aceita token para signup/login/reset', () => 
   })
 
   it('sem token o login segue chamando o SDK sem `options` (comportamento anterior preservado)', () => {
-    const page = read('app/login/page.tsx')
+    const page = read('features/auth/components/LoginForm.tsx') // Etapa B2.5.2: lógica movida para cá
     expect(page).toMatch(/authRepository\.signInWithPassword\(email, password\)/)
   })
 })

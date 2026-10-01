@@ -47,14 +47,26 @@ describe('getLoginQueryErrorMessage', () => {
   })
 })
 
-describe('app/login/page.tsx — exibição do erro do callback', () => {
-  const code = readCode('app/login/page.tsx')
+describe('app/login/page.tsx — Server Component (Etapa B2.5.2: fail-closed do CAPTCHA_REQUIRED)', () => {
+  const page = readCode('app/login/page.tsx')
+
+  it('continua exportando LoginPage (default) e delega a UI para LoginForm', () => {
+    expect(page).toMatch(/export default function LoginPage\(\)/)
+    expect(page).toMatch(/resolveClientCaptchaPolicy\(process\.env\)/)
+    expect(page).toMatch(/<LoginForm captchaSiteKey=\{captcha\.siteKey\} \/>/)
+    expect(page).not.toMatch(/useSearchParams|'use client'/)
+  })
+})
+
+describe('features/auth/components/LoginForm.tsx — exibição do erro do callback', () => {
+  // Etapa "B2.5.2": a lógica de login (inalterada) foi movida para cá; app/login/page.tsx
+  // virou um Server Component fino só para resolver a política de CAPTCHA no servidor.
+  const code = readCode('features/auth/components/LoginForm.tsx')
 
   it('lê o parâmetro `error` da URL via useSearchParams, dentro de um limite de Suspense (a página é estática)', () => {
     expect(code).toMatch(/useSearchParams\(\)/)
     expect(code).toMatch(/searchParams\.get\('error'\)/)
     expect(code).toMatch(/<Suspense/)
-    expect(code).toMatch(/export default function LoginPage\(\)/)
   })
 
   it('a mensagem sai da whitelist (getLoginQueryErrorMessage), nunca do valor cru da URL', () => {
