@@ -23,6 +23,7 @@ import {
   type SignupHandlerDeps,
 } from '@/lib/auth/signup-handler'
 import { AGE_CONFIRMATION_VERSION, PRIVACY_VERSION, TERMS_VERSION } from '@/lib/legal/versions'
+import { allowAllRateLimiter } from '../support/signup-rate-limiter'
 
 const ORIGIN = 'https://app.numora.test'
 const TOKEN_HASH = 'th_secret_hash_0123456789'
@@ -137,6 +138,7 @@ function makeDeps(options: {
   const deps: SignupHandlerDeps = {
     env: options.env ?? BASE_ENV,
     admin,
+    rateLimiter: allowAllRateLimiter,
     verifyCaptcha,
     recordConsents,
     sendEmail,

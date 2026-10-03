@@ -14,6 +14,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { resolveClientCaptchaPolicy, resolveSignupCaptchaPolicy } from '@/lib/captcha/captcha'
 import { handleSignupRequest, type SignupAdminPort, type SignupHandlerDeps } from '@/lib/auth/signup-handler'
 import { AGE_CONFIRMATION_VERSION, PRIVACY_VERSION, TERMS_VERSION } from '@/lib/legal/versions'
+import { allowAllRateLimiter } from '../support/signup-rate-limiter'
 
 const ROOT = path.resolve(__dirname, '../..')
 const readCode = (file: string) =>
@@ -99,7 +100,7 @@ describe('TESTE F — Signup: CAPTCHA obrigatório quando configurado (via handl
     }
     const verifyCaptcha = vi.fn().mockResolvedValue(verdict)
     const deps: SignupHandlerDeps = {
-      env, admin, verifyCaptcha,
+      env, admin, verifyCaptcha, rateLimiter: allowAllRateLimiter,
       recordConsents: vi.fn().mockResolvedValue(undefined),
       sendEmail: vi.fn().mockResolvedValue(undefined),
       generateNonce: () => 'n1',

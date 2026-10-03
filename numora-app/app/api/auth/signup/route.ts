@@ -13,7 +13,7 @@
 import { randomUUID } from 'node:crypto'
 import { NextResponse } from 'next/server'
 
-import { createSignupAdminPort } from '@/lib/auth/signup-adapters'
+import { createSignupAdminPort, createSignupRateLimiterPort } from '@/lib/auth/signup-adapters'
 import { handleSignupRequest } from '@/lib/auth/signup-handler'
 import { verifyTurnstileToken } from '@/lib/captcha/turnstile-server'
 import { sendEmail } from '@/lib/email/resend'
@@ -27,10 +27,11 @@ export async function POST(request: Request) {
     env: process.env,
     requestId: randomUUID(),
     admin: createSignupAdminPort(getSupabaseAdminClient),
+    rateLimiter: createSignupRateLimiterPort(getSupabaseAdminClient),
     verifyCaptcha: (token, secret) => verifyTurnstileToken({ token, secret }),
     recordConsents: (userId, consents) => recordSignupConsents(getSupabaseAdminClient(), userId, consents),
     sendEmail: (email, config) => sendEmail(email, { apiKey: config.apiKey, from: config.from }),
   })
 
-  return NextResponse.json(result.body, { status: result.status, headers: { 'Cache-Control': 'no-store' } })
+  return NextResponse.json(result.body, { status: result.status, headers: { ...result.headers, 'Cache-Control': 'no-store' } })
 }

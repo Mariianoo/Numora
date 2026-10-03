@@ -77,8 +77,11 @@ export function createAnonClient(env: TestEnv): SupabaseClient {
 }
 
 /** Client `service_role` — só para setup/cleanup de dados de teste, nunca para exercer um caminho que deveria respeitar RLS. */
-export function createAdminClient(env: TestEnv): SupabaseClient {
-  return createClient(env.url, env.serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } })
+export function createAdminClient(env: TestEnv, options: { fetch?: typeof fetch } = {}): SupabaseClient {
+  return createClient(env.url, env.serviceRoleKey, {
+    auth: { persistSession: false, autoRefreshToken: false },
+    ...(options.fetch ? { global: { fetch: options.fetch } } : {}),
+  })
 }
 
 export interface DisposableUser {

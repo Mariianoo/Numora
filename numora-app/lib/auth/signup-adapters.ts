@@ -19,6 +19,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js'
 
 import type { AuthUserInfo, CreatePendingResult, GenerateLinkResult, SignupAdminPort, SignupState } from '@/lib/auth/signup-handler'
+import { SIGNUP_RATE_LIMIT_TIMEOUT_MS, type RateLimitDecision, type SignupRateLimiterPort } from '@/lib/auth/signup-rate-limit'
 
 const PUBLIC_FLOW_MARKER = 'public_v1'
 
@@ -36,6 +37,44 @@ export function readOwnership(appMetadata: Record<string, unknown> | null | unde
     ownedByPublicFlow: flow === PUBLIC_FLOW_MARKER && attemptNonce !== null,
     attemptNonce,
     state: state === 'provisioning' || state === 'ready' ? state : null,
+  }
+}
+
+/**
+ * Contador de rate limit sobre a RPC atômica do Postgres; lança em qualquer falha (o handler falha fechado).
+ *
+ * TIMEOUT (só desta chamada, sem retry): o sinal aborta a requisição HTTP de verdade e a corrida contra o
+ * mesmo sinal garante que a Promise SEMPRE termina, mesmo que o cliente ignore o abort. Estourou → lança.
+ */
+export function createSignupRateLimiterPort(
+  getAdmin: () => SupabaseClient,
+  { timeoutMs = SIGNUP_RATE_LIMIT_TIMEOUT_MS }: { timeoutMs?: number } = {},
+): SignupRateLimiterPort {
+  return {
+    async consume({ bucketKey, limit, windowSeconds }): Promise<RateLimitDecision> {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), timeoutMs)
+      const timedOut = new Promise<never>((_, reject) => {
+        controller.signal.addEventListener('abort', () => reject(new Error('Tempo esgotado ao consultar o limite de tentativas.')), { once: true })
+      })
+
+      let result: { data: unknown; error: unknown }
+      try {
+        const call = getAdmin()
+          .rpc('consume_signup_rate_limit', { p_bucket: bucketKey, p_limit: limit, p_window_seconds: windowSeconds })
+          .abortSignal(controller.signal)
+        result = await Promise.race([Promise.resolve(call), timedOut])
+      } finally {
+        clearTimeout(timer)
+      }
+
+      const { data, error } = result
+      const row = Array.isArray(data) ? (data[0] as { allowed?: unknown; retry_after_seconds?: unknown } | undefined) : undefined
+      if (error || !row || typeof row.allowed !== 'boolean' || typeof row.retry_after_seconds !== 'number') {
+        throw new Error('Falha ao consultar o limite de tentativas.')
+      }
+      return { allowed: row.allowed, retryAfterSeconds: row.retry_after_seconds }
+    },
   }
 }
 

@@ -26,7 +26,8 @@
  *  C) usuário confirmado — nada acontece.
  *
  * Ordem do caminho A (cada passo é fail-closed):
- *  1. flag, configuração, Origin, corpo, validação, Turnstile no servidor;
+ *  1. flag, configuração, Origin, rate limit por IP, corpo, validação, Turnstile
+ *     no servidor, rate limit por e-mail (B2.5.4 — lib/auth/signup-rate-limit.ts);
  *  2. createUser (dono do nonce) → generateLink (token; só toca user_metadata);
  *  3. PROVA de ownership: reler o usuário e conferir nonce, marcador,
  *     `provisioning` e não confirmado — ANTES de gravar consentimento ou
@@ -46,6 +47,13 @@ import { generateDiscardedPassword } from '@/lib/auth/random-password'
 import { isSignupEnabled } from '@/lib/auth/signup-flag'
 import { isAllowedRequestOrigin, resolveSignupConfig } from '@/lib/auth/signup-config'
 import { generateAttemptNonce } from '@/lib/auth/signup-nonce'
+import {
+  consumeSignupEmailLimit,
+  consumeSignupIpLimit,
+  getTrustedClientIp,
+  type RateLimitDecision,
+  type SignupRateLimiterPort,
+} from '@/lib/auth/signup-rate-limit'
 import { SIGNUP_ERROR_MESSAGES, validateSignupPayload, type SignupErrorCode } from '@/lib/auth/signup-validation'
 import { checkCaptchaToken } from '@/lib/captcha/captcha'
 import type { TurnstileVerdict } from '@/lib/captcha/turnstile-server'
@@ -69,6 +77,7 @@ export type SignupResponseCode =
   | 'signup_unavailable'
   | 'forbidden'
   | 'captcha_failed'
+  | 'rate_limited'
 
 export interface AuthUserInfo {
   id: string
@@ -112,6 +121,8 @@ export interface SignupAdminPort {
 export interface SignupHandlerDeps {
   env: Record<string, string | undefined>
   admin: SignupAdminPort
+  /** Contador distribuído de tentativas (Postgres). Obrigatório: sem ele o cadastro não existe. */
+  rateLimiter: SignupRateLimiterPort
   /** Verificação do Turnstile no servidor (a secret nunca sai daqui). */
   verifyCaptcha: (token: string, secret: string) => Promise<TurnstileVerdict>
   /** Grava os consentimentos (service_role, só no servidor); lança em falha. */
@@ -131,6 +142,8 @@ export interface SignupHandlerDeps {
 export interface SignupHandlerResult {
   status: number
   body: { ok: true; needsEmailConfirmation: true } | { ok: false; code: SignupResponseCode; error: string }
+  /** Headers extras da resposta (hoje só `Retry-After` no 429). */
+  headers?: Record<string, string>
 }
 
 const OTHER_MESSAGES: Record<Exclude<SignupResponseCode, SignupErrorCode>, string> = {
@@ -138,11 +151,17 @@ const OTHER_MESSAGES: Record<Exclude<SignupResponseCode, SignupErrorCode>, strin
   signup_unavailable: 'O cadastro está temporariamente indisponível. Tente novamente mais tarde.',
   forbidden: 'Não foi possível processar o cadastro.',
   captcha_failed: 'Não foi possível validar a verificação de segurança. Tente novamente.',
+  rate_limited: 'Muitas tentativas. Tente novamente em alguns minutos.',
 }
 
 function failure(status: number, code: SignupResponseCode): SignupHandlerResult {
   const error = code in SIGNUP_ERROR_MESSAGES ? SIGNUP_ERROR_MESSAGES[code as SignupErrorCode] : OTHER_MESSAGES[code as keyof typeof OTHER_MESSAGES]
   return { status, body: { ok: false, code, error } }
+}
+
+function rateLimited(decision: RateLimitDecision): SignupHandlerResult {
+  const retryAfter = Math.max(1, Math.ceil(decision.retryAfterSeconds))
+  return { ...failure(429, 'rate_limited'), headers: { 'Retry-After': String(retryAfter) } }
 }
 
 /** Resposta ÚNICA para e-mail novo, existente ou pendente (sem enumeração de contas). */
@@ -198,6 +217,16 @@ export async function handleSignupRequest(request: Request, deps: SignupHandlerD
   // 3 — Origin (CSRF): exatamente a origem canônica
   if (!isAllowedRequestOrigin(request, config.origin)) return failure(403, 'forbidden')
 
+  // 3b — rate limit por IP, antes de ler o corpo, do Turnstile e de qualquer criação (falha do limiter → 503)
+  let ipDecision: RateLimitDecision
+  try {
+    ipDecision = await consumeSignupIpLimit(deps.rateLimiter, getTrustedClientIp(request.headers, deps.env))
+  } catch (error) {
+    captureAuthError('signup_rate_limit', error, meta)
+    return failure(503, 'signup_unavailable')
+  }
+  if (!ipDecision.allowed) return rateLimited(ipDecision)
+
   // 4 — corpo e validação
   if (!request.headers.get('content-type')?.toLowerCase().startsWith('application/json')) return failure(400, 'invalid_body')
   const payload = await readJsonBody(request)
@@ -219,6 +248,17 @@ export async function handleSignupRequest(request: Request, deps: SignupHandlerD
       return failure(503, 'signup_unavailable')
     }
   }
+
+  // 5b — rate limit por e-mail, DEPOIS do Turnstile (quem não resolve o desafio não consegue esgotar o
+  // bucket de um endereço alheio). Estourou → resposta neutra, sem criar, reemitir nem enviar nada.
+  let emailDecision: RateLimitDecision
+  try {
+    emailDecision = await consumeSignupEmailLimit(deps.rateLimiter, data.email)
+  } catch (error) {
+    captureAuthError('signup_rate_limit', error, meta)
+    return failure(503, 'signup_unavailable')
+  }
+  if (!emailDecision.allowed) return NEUTRAL_SUCCESS
 
   const redirectTo = new URL('/auth/confirm', config.origin).toString()
   const discardedPassword = (deps.generatePassword ?? generateDiscardedPassword)()

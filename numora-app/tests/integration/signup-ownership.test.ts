@@ -29,6 +29,7 @@ import { EmailSendError, type OutgoingEmail } from '@/lib/email/resend'
 import { recordSignupConsents } from '@/lib/legal/signup-consents'
 import { AGE_CONFIRMATION_VERSION, PRIVACY_VERSION, TERMS_VERSION } from '@/lib/legal/versions'
 import { createAdminClient, createAnonClient, deleteDisposableUser, getTestEnv, hasTestEnv, type TestEnv } from '../support/dev-env'
+import { allowAllRateLimiter } from '../support/signup-rate-limiter'
 
 const ORIGIN = 'https://app.numora.test'
 const ENV = { SIGNUP_ENABLED: 'true', NEXT_PUBLIC_SITE_URL: ORIGIN, RESEND_API_KEY: 're_not_a_real_key', RESEND_FROM_EMAIL: 'Numora <no-reply@numora.test>' }
@@ -100,6 +101,7 @@ describe.skipIf(!hasTestEnv())('ownership do signup público — DEV real (B2.4.
     const deps: SignupHandlerDeps = {
       env: ENV,
       admin: options.wrap ? options.wrap(port) : port,
+      rateLimiter: allowAllRateLimiter,
       verifyCaptcha: async () => 'ok',
       recordConsents: options.recordConsents ?? ((userId, consents) => recordSignupConsents(admin, userId, consents)),
       sendEmail:

@@ -18,6 +18,7 @@ export type AuthErrorContext =
   | 'signup_captcha'
   | 'signup_email'
   | 'signup_config'
+  | 'signup_rate_limit'
   | 'signup_cleanup'
   | 'auth_confirm'
   | 'auth_callback'

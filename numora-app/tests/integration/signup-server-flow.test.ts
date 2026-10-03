@@ -21,6 +21,7 @@ import type { OutgoingEmail } from '@/lib/email/resend'
 import { recordSignupConsents } from '@/lib/legal/signup-consents'
 import { AGE_CONFIRMATION_VERSION, PRIVACY_VERSION, TERMS_VERSION } from '@/lib/legal/versions'
 import { createAdminClient, createAnonClient, deleteDisposableUser, getTestEnv, hasTestEnv, type TestEnv } from '../support/dev-env'
+import { allowAllRateLimiter } from '../support/signup-rate-limiter'
 
 const ORIGIN = 'https://app.numora.test'
 const ENV = {
@@ -72,6 +73,7 @@ describe.skipIf(!hasTestEnv())('signup server-controlled — DEV real (B2.4)', (
     const deps: SignupHandlerDeps = {
       env: ENV,
       admin: createSignupAdminPort(() => admin),
+      rateLimiter: allowAllRateLimiter,
       verifyCaptcha: async () => 'ok',
       recordConsents: (userId, consents) => recordSignupConsents(admin, userId, consents),
       sendEmail: async (email) => {

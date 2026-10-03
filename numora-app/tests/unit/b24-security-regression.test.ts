@@ -169,8 +169,11 @@ describe('segredos e credenciais nunca em log, Sentry, resposta ou navegador', (
     expect(holders).toEqual(['lib/auth/signup-config.ts'])
   })
 
-  it('a resposta HTTP do signup é sempre no-store e só carrega ok/código/mensagem', () => {
-    expect(code('app/api/auth/signup/route.ts')).toMatch(/NextResponse\.json\(result\.body, \{ status: result\.status, headers: \{ 'Cache-Control': 'no-store' \} \}\)/)
+  it('a resposta HTTP do signup é sempre no-store e só carrega ok/código/mensagem (+ Retry-After no 429, B2.5.4)', () => {
+    // `Cache-Control` vem DEPOIS do spread: nenhum header de resultado consegue sobrescrever o no-store.
+    expect(code('app/api/auth/signup/route.ts')).toMatch(
+      /NextResponse\.json\(result\.body, \{ status: result\.status, headers: \{ \.\.\.result\.headers, 'Cache-Control': 'no-store' \} \}\)/,
+    )
   })
 })
 
