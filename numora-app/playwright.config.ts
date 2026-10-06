@@ -41,6 +41,25 @@ loadTestEnvFile()
 
 const baseURL = process.env.PLAYWRIGHT_BASE_URL ?? 'http://localhost:3000'
 
+/**
+ * Etapa "B2.5.7" — MODO "SIGNUP ABERTO" do E2E, só por `E2E_SIGNUP_OPEN=true` (nunca implícito). Sobe o
+ * servidor de DESENVOLVIMENTO local com `SIGNUP_ENABLED=true` e a configuração mínima do cadastro
+ * (origem canônica = baseURL local, Resend com chave FALSA — nenhum e-mail real é enviado, o envio
+ * simplesmente falha e o rollback é exercitado — e SEM Turnstile). Só vale no processo do servidor
+ * local de teste: nada disso toca Vercel, Production nem qualquer arquivo versionado de env. Sem a
+ * variável, o servidor sobe exatamente como antes (cadastro FECHADO) e `signup-open.spec.ts` é pulado.
+ */
+const signupOpenMode = process.env.E2E_SIGNUP_OPEN === 'true'
+const signupOpenServerEnv: Record<string, string> = signupOpenMode
+  ? {
+      SIGNUP_ENABLED: 'true',
+      NEXT_PUBLIC_SITE_URL: baseURL,
+      RESEND_API_KEY: 're_e2e_not_a_real_key',
+      RESEND_FROM_EMAIL: 'Numora E2E <no-reply@numora.test>',
+      CAPTCHA_REQUIRED: 'false',
+    }
+  : {}
+
 export default defineConfig({
   testDir: './tests/e2e',
   timeout: 30_000,
@@ -59,5 +78,6 @@ export default defineConfig({
     url: baseURL,
     reuseExistingServer: true,
     timeout: 60_000,
+    env: signupOpenServerEnv,
   },
 })

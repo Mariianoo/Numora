@@ -190,9 +190,12 @@ describe('cleanup de pendentes — fail-closed e restrito', () => {
     expect(route.indexOf("process.env.CRON_SECRET")).toBeLessThan(route.indexOf('getSupabaseAdminClient()'))
   })
 
-  it('NENHUM agendador foi criado (sem vercel.json / cron)', () => {
-    expect(existsSync(path.join(ROOT, 'vercel.json'))).toBe(false)
+  it('o ÚNICO agendador é o cron diário do cleanup em vercel.json (B2.5.7); nenhum vercel.json fora do app e nenhum outro cron', () => {
+    // Substitui a regra do B2.4 ("sem vercel.json"): a decisão mudou na B2.5.7, e tests/unit/vercel-cron.test.ts
+    // detalha o conteúdo. Aqui fica a guarda de escopo: um arquivo, um cron, a rota de cleanup.
     expect(existsSync(path.join(ROOT, '..', 'vercel.json'))).toBe(false)
+    const config = JSON.parse(readFileSync(path.join(ROOT, 'vercel.json'), 'utf8')) as { crons?: Array<{ path: string }> }
+    expect(config.crons?.map((cron) => cron.path)).toEqual(['/api/internal/signup-cleanup'])
   })
 
   it('a função do banco só lista o escopo seguro: não confirmado, nunca logou, marcador do fluxo, role user, fora das Contas de Análise', () => {
